@@ -7,7 +7,7 @@ from musicplayer.ui.mobile.controls import heading, scroll_page
 
 
 def _home_view(app) -> ft.Control:
-    tracks, recent, favorites = app._home_collections()
+    tracks, recent, favorites = app.home_page._home_collections()
     sections = [
         heading(_time_greeting(), "Your music, ready when you are."),
         ft.Button(
@@ -15,7 +15,7 @@ def _home_view(app) -> ft.Control:
             icon=ft.Icons.SHUFFLE_ROUNDED,
             height=52,
             disabled=not tracks,
-            on_click=lambda _: app._play_collection(tracks, shuffle=True),
+            on_click=lambda _: app.shared._play_collection(tracks, shuffle=True),
         ),
     ]
     for title, items, message in (

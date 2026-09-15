@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
-from musicplayer.application.contracts import Playlist, Track
+from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _artwork,
     _format_duration,
@@ -49,7 +49,7 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
     app.library_query.col = {"xs": 12, "md": 8}
     app.library_sort.col = {"xs": 12, "md": 4}
     app.library_list = ft.Column(spacing=4)
-    app._refresh_library_list(update=False)
+    app.library_page._refresh_library_list(update=False)
     has_visible_tracks = bool(app._visible_library_tracks())
     library_header = _page_header(
         "Library", "Your favorites, downloads, and local discoveries."
@@ -106,13 +106,15 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
     )
     return ft.Column(
         [
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [library_header, library_actions],
                 spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             library_sections,
-            app._responsive_grid([app.library_query, app.library_sort], spacing=12),
+            app.shared._responsive_grid(
+                [app.library_query, app.library_sort], spacing=12
+            ),
             ft.Column([app.library_list], scroll=ft.ScrollMode.AUTO, expand=True),
         ],
         spacing=20,
@@ -150,7 +152,9 @@ def _library_track_row(
             else ft.Icons.FAVORITE_BORDER_ROUNDED,
             icon_color=ft.Colors.PINK_400 if details.favorite else None,
             tooltip="Remove favorite" if details.favorite else "Favorite",
-            on_click=lambda _, item=str(track.id): app._toggle_favorite(item),
+            on_click=lambda _, item=str(track.id): app.library_page._toggle_favorite(
+                item
+            ),
         ),
         ft.IconButton(
             ft.Icons.PLAY_ARROW_ROUNDED,

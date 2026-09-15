@@ -65,11 +65,11 @@ def _playlist_card(app, playlist) -> ft.Control:
         playlist.name,
         f"{len(playlist.track_ids)} tracks",
         artwork,
-        lambda _: app._open_playlist(str(playlist.id)),
+        lambda _: app.playlists_page._open_playlist(str(playlist.id)),
         icon_button(
             ft.Icons.PLAY_ARROW_ROUNDED,
             f"Play {playlist.name}",
-            lambda _: app._play_playlist(playlist),
+            lambda _: app.playlists_page._play_playlist(playlist),
         ),
         cache=getattr(app, "thumbnails", None),
     )
@@ -96,7 +96,7 @@ def _playlist_detail(app, playlist) -> ft.Control:
                 ft.PopupMenuItem(
                     content="Add playlist to queue",
                     icon=ft.Icons.ADD_TO_QUEUE_ROUNDED,
-                    on_click=lambda _: app._queue_collection(tracks),
+                    on_click=lambda _: app.shared._queue_collection(tracks),
                 )
             ]
             if tracks
@@ -142,14 +142,16 @@ def _playlist_detail(app, playlist) -> ft.Control:
                         height=48,
                         expand=True,
                         disabled=not tracks,
-                        on_click=lambda _: app._play_playlist(playlist),
+                        on_click=lambda _: app.playlists_page._play_playlist(playlist),
                     ),
                     ft.OutlinedButton(
                         "Shuffle",
                         icon=ft.Icons.SHUFFLE_ROUNDED,
                         height=48,
                         disabled=not tracks,
-                        on_click=lambda _: app._play_playlist(playlist, shuffle=True),
+                        on_click=lambda _: app.playlists_page._play_playlist(
+                            playlist, shuffle=True
+                        ),
                     ),
                 ]
             ),

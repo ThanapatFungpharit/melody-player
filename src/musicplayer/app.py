@@ -33,16 +33,7 @@ from musicplayer.ui.components import (
     SharedUIComponents,
 )
 from musicplayer.ui.components.common import (
-    _artwork,
-    _download_detail,
-    _empty_state,
-    _format_bytes,
-    _format_duration,
-    _page_header,
     _theme_mode,
-    _time_greeting,
-    _track_credit,
-    _track_title,
 )
 from musicplayer.ui.pages import (
     DownloadsPage,
@@ -61,16 +52,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "MusicPlayerApp",
-    "_artwork",
-    "_download_detail",
-    "_empty_state",
-    "_format_bytes",
-    "_format_duration",
-    "_page_header",
-    "_theme_mode",
-    "_time_greeting",
-    "_track_credit",
-    "_track_title",
     "main",
 ]
 
@@ -122,10 +103,34 @@ class MusicPlayerApp(
             )
             self.__dict__[name] = tasks
             return tasks
+        # Presentation modules now address feature areas through named
+        # facades (``app.home_page``, ``app.shared``, and so on).  The
+        # production root remains their shared state owner, so expose the
+        # root as those facades as well.  This keeps the modules usable both
+        # standalone and as mixins, including lightweight ``__new__`` test
+        # fixtures that intentionally skip full application startup.
+        if name in {
+            "app",
+            "shared",
+            "home_page",
+            "library_page",
+            "playlists_page",
+            "queue_page",
+            "downloads_page",
+            "settings_page",
+            "navigation",
+            "player_bar",
+            "context_panel",
+        }:
+            return self
         raise AttributeError(name)
 
     def __init__(self, page: ft.Page, resources: AppResources | None = None) -> None:
         self.page = page
+        # Page and component modules are mixins over the composition root.  A
+        # few of them use ``self.app`` so that they can also be embedded as
+        # standalone objects; when mounted here that facade is the root.
+        self.app = self
         resources = resources or AppResources.load()
         self.data_directory = resources.directory
         self.store = resources.store
@@ -290,7 +295,7 @@ class MusicPlayerApp(
                 try:
                     track = self.manager.get_track(self.playback.current_track_id)
                     details = self.library.details(self.playback.current_track_id)
-                except (KeyError, OSError, ValueError):
+                except KeyError, OSError, ValueError:
                     logger.debug(
                         "Could not resolve system media metadata", exc_info=True
                     )
@@ -541,4 +546,5 @@ async def main(page: ft.Page) -> None:
 
 
 def _application_data_directory() -> Path:
+    """Compatibility seam for startup and packaged-runtime configuration."""
     return application_data_directory()

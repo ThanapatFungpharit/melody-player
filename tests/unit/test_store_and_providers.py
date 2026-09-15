@@ -363,7 +363,7 @@ class ProviderMappingTests(unittest.TestCase):
         provider = YtDlpProvider(
             yt_dlp_options={"socket_timeout": 30, "cookiefile": "cookies.txt"}
         )
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             extractor = youtube_dl.return_value.__enter__.return_value
             extractor.extract_info.return_value = {
                 "entries": [None, {"url": "https://media.test/audio"}]
@@ -401,7 +401,7 @@ class ProviderMappingTests(unittest.TestCase):
                 operation()
 
     def test_stream_resolution_rejects_missing_audio_url(self) -> None:
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             youtube_dl.return_value.__enter__.return_value.extract_info.return_value = {}
             with self.assertRaisesRegex(ProviderError, "playable audio stream"):
                 YtDlpProvider().resolve_stream("https://youtu.be/one")
@@ -422,7 +422,7 @@ class ProviderMappingTests(unittest.TestCase):
 
     def test_uploaded_cookie_file_is_passed_to_yt_dlp_search(self) -> None:
         provider = YtDlpProvider(yt_dlp_options={"cookiefile": "/private/cookies.txt"})
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             youtube_dl.return_value.__enter__.return_value.extract_info.return_value = {
                 "entries": []
             }
@@ -434,7 +434,7 @@ class ProviderMappingTests(unittest.TestCase):
 
     def test_search_offset_requests_the_next_result_window(self) -> None:
         provider = YtDlpProvider()
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             extractor = youtube_dl.return_value.__enter__.return_value
             extractor.extract_info.return_value = {"entries": []}
 
@@ -451,7 +451,7 @@ class ProviderMappingTests(unittest.TestCase):
     def test_playlist_url_offset_requests_the_next_track_window(self) -> None:
         provider = YtDlpProvider()
         playlist_url = "https://www.youtube.com/playlist?list=playlist-id"
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             extractor = youtube_dl.return_value.__enter__.return_value
             extractor.extract_info.return_value = {
                 "_type": "playlist",
@@ -469,7 +469,7 @@ class ProviderMappingTests(unittest.TestCase):
     def test_playlist_import_loads_every_flat_entry_without_downloading(self) -> None:
         provider = YtDlpProvider()
         playlist_url = "https://www.youtube.com/playlist?list=playlist-id"
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             extractor = youtube_dl.return_value.__enter__.return_value
             extractor.extract_info.return_value = {
                 "_type": "playlist",
@@ -499,7 +499,7 @@ class ProviderMappingTests(unittest.TestCase):
         self,
     ) -> None:
         provider = YtDlpProvider(yt_dlp_options={"cookiefile": "/private/cookies.txt"})
-        with patch("musicplayer.application.providers.YoutubeDL") as youtube_dl:
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
             authenticated = youtube_dl.return_value.__enter__.return_value
             authenticated.extract_info.side_effect = [
                 CookieLoadError("failed to load cookies"),

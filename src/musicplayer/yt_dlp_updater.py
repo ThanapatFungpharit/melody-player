@@ -96,6 +96,8 @@ class UpdateResult:
     active_source: str
     errors: tuple[str, ...] = ()
 
+    # Keep the compact field names while preserving the public result API
+    # consumed by startup and callers that display updater status.
     @property
     def active(self) -> str:
         return self.active_version
@@ -608,7 +610,7 @@ class YtDlpUpdater:
         for entry in sys.path:
             try:
                 resolved = str(Path(entry).resolve()) if entry else ""
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 resolved = ""
             if resolved in runtime_paths or (
                 resolved
@@ -828,7 +830,7 @@ def _entry_shape(value: object) -> bool:
         return False
     try:
         version = Version(value["version"])
-    except (InvalidVersion, TypeError):
+    except InvalidVersion, TypeError:
         return False
     parsed = _parse_wheel_name(value["filename"])
     return (

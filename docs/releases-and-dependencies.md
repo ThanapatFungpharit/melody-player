@@ -52,7 +52,7 @@ change, run headless tests, compiled desktop/mobile smoke tests, and native
 play/pause/seek/queue/system-controls/lifecycle checks on supported targets.
 
 `uv.lock` freezes the Python resolution; CI uses `uv sync --locked` so stale
-metadata fails validation. CI passes the Python version explicitly on every run, so the source-tree `.python-version` cannot silently override its matrix. Native builds also involve Flet's packaging resolver,
+metadata fails validation. CI explicitly uses free-threaded CPython 3.14t on every run, so the source-tree `.python-version` cannot silently override its matrix. Native builds also involve Flet's packaging resolver,
 Flutter, SDKs, and transitive Dart/native packages. Those artifacts are not
 claimed to be bitwise reproducible until their full target-specific inputs and
 locks are captured. Signing variables are required before the Android build;

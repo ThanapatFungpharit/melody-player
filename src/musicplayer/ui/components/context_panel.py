@@ -5,14 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
-
-    _Base = AppProtocol
+    _Base = object
 else:
     _Base = object
 
 
-class ContextPanel(_Base):
+class ContextPanel:
     def _open_queue_panel(self) -> None:
         self.shell.open_panel("queue")
 

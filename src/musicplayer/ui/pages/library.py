@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from musicplayer.application.contracts import Playlist, Track
+from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _empty_state,
     _format_duration,
@@ -14,77 +14,82 @@ from musicplayer.ui.components.common import (
 from musicplayer.ui.tasks import page_action
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
+    from musicplayer.app import MusicPlayerApp
 
-    _Base = AppProtocol
+    _Base = object
 else:
     _Base = object
 
 
-class LibraryPage(_Base):
+class LibraryPage:
+    def __init__(self, app: MusicPlayerApp):
+        self.app = app
+
     """Library page UI and local-track workflows."""
 
     def _initialize_library_page(self) -> None:
-        self.library_mode = "tracks"
-        self.library_query_text = ""
-        self.library_sort_key = "recent"
+        self.app.library_mode = "tracks"
+        self.app.library_query_text = ""
+        self.app.library_sort_key = "recent"
 
     def _library_view(self) -> ft.Control:
-        return self.views._library_view(self)
+        return self.app.views._library_view(self)
 
     def _refresh_library_list(self, *, update: bool = True) -> None:
-        if self.library_mode not in {"tracks", "playlists"}:
-            self.library_mode = "tracks"
-        if self.library_mode == "tracks":
-            tracks = self.library.tracks(
-                query=self.library_query_text,
-                sort=self.library_sort_key,
+        if self.app.library_mode not in {"tracks", "playlists"}:
+            self.app.library_mode = "tracks"
+        if self.app.library_mode == "tracks":
+            tracks = self.app.library.tracks(
+                query=self.app.library_query_text,
+                sort=self.app.library_sort_key,
             )
             # Playlist menus share one immutable snapshot for the whole render;
             # fetching and copying the same collection once per row made large
             # libraries increasingly expensive to display.
-            playlists = self.manager.list_playlists()
+            playlists = self.app.manager.list_playlists()
             controls = [
-                self._library_track_row(track, index, playlists)
+                self.app._library_track_row(track, index, playlists)
                 for index, track in enumerate(tracks)
             ]
-        elif self.library_mode == "playlists":
-            search_term = self.library_query_text.casefold()
+        elif self.app.library_mode == "playlists":
+            search_term = self.app.library_query_text.casefold()
             controls: list[ft.Control] = [
-                self._playlist_card(playlist)
-                for playlist in self.manager.list_playlists()
+                self.app.shared._playlist_card(playlist)
+                for playlist in self.app.manager.list_playlists()
                 if not search_term or search_term in playlist.name.casefold()
             ]
             if controls:
                 controls = [ft.Row(controls, wrap=True, spacing=14, run_spacing=14)]
-        self.library_list.controls = controls
+        self.app.library_list.controls = controls
         if not controls:
-            self.library_list.controls = [
+            self.app.library_list.controls = [
                 _empty_state(
                     ft.Icons.LIBRARY_MUSIC_ROUNDED,
                     "Nothing matches this view. Search for music or add local files.",
                 )
             ]
         if update:
-            self.page.update(self.library_list)
+            self.app.page.update(self.app.library_list)
 
     def _set_library_mode(self, selected: list[str]) -> None:
-        self.library_mode = selected[0] if selected else "tracks"
+        self.app.library_mode = selected[0] if selected else "tracks"
         self._refresh_library_list()
 
     def _visible_library_tracks(self) -> tuple[Track, ...]:
-        return self.library.tracks(
-            query=self.library_query_text, sort=self.library_sort_key
+        return self.app.library.tracks(
+            query=self.app.library_query_text, sort=self.app.library_sort_key
         )
 
     def _play_visible_library(self, *, shuffle: bool = False) -> None:
-        self._play_collection(self._visible_library_tracks(), shuffle=shuffle)
+        self.app.shared._play_collection(
+            self.app._visible_library_tracks(), shuffle=shuffle
+        )
 
     def _queue_visible_library(self) -> None:
-        self._queue_collection(self._visible_library_tracks())
+        self.app.shared._queue_collection(self.app._visible_library_tracks())
 
     async def _pick_local_files(self, _: Any) -> None:
-        files = await self.file_picker.pick_files(
+        files = await self.app.file_picker.pick_files(
             dialog_title="Add music to Melody",
             file_type=ft.FilePickerFileType.CUSTOM,
             allowed_extensions=["mp3", "m4a", "opus", "wav", "flac", "ogg", "aac"],
@@ -92,8 +97,8 @@ class LibraryPage(_Base):
         )
         paths = [item.path for item in (files or []) if item.path]
         if paths:
-            self._import_local_files(paths)
-            self._show_message(
+            self.app._import_local_files(paths)
+            self.app._show_message(
                 f"Importing {len(paths)} local file{'s' if len(paths) != 1 else ''}…"
             )
 
@@ -103,42 +108,42 @@ class LibraryPage(_Base):
         failures: list[str] = []
         for path in paths:
             try:
-                await self.tasks.io(self.library.import_local_file, path)
+                await self.app.tasks.io(self.app.library.import_local_file, path)
             except (OSError, ValueError) as error:
                 failures.append(f"{Path(path).name}: {error}")
             else:
                 imported += 1
-        if self.selected_navigation == 2:
+        if self.app.selected_navigation == 2:
             self._refresh_library_list()
         if failures:
-            self._show_error(
+            self.app._show_error(
                 f"Imported {imported} file{'s' if imported != 1 else ''}. "
                 + " • ".join(failures[:3])
             )
         else:
-            self._show_message(
+            self.app._show_message(
                 f"Added {imported} local file{'s' if imported != 1 else ''} to the library."
             )
 
     def _library_track_row(
         self, track: Track, index: int, playlists: tuple[Playlist, ...] | None = None
     ) -> ft.Control:
-        return self.views._library_track_row(self, track, index, playlists)
+        return self.app.views._library_track_row(self, track, index, playlists)
 
     @page_action
     async def _toggle_favorite(self, track_id: str) -> None:
-        await self.tasks.io(self.library.toggle_favorite, track_id)
-        if self.selected_navigation == 2:
+        await self.app.tasks.io(self.app.library.toggle_favorite, track_id)
+        if self.app.selected_navigation == 2:
             self._refresh_library_list()
-        elif self.selected_navigation == 0:
-            self.navigate(0)
-        elif self.selected_navigation == 3:
-            self.navigate(3)
-        self._refresh_player()
+        elif self.app.selected_navigation == 0:
+            self.app.navigation.navigate(0)
+        elif self.app.selected_navigation == 3:
+            self.app.navigation.navigate(3)
+        self.app.player_bar._refresh_player()
 
     def _toggle_current_favorite(self, event: Any) -> None:
-        if self.playback.current_track_id:
-            self._toggle_favorite(self.playback.current_track_id)
+        if self.app.playback.current_track_id:
+            self._toggle_favorite(self.app.playback.current_track_id)
 
     def _rename_track_dialog(self, track: Track) -> None:
         field = ft.TextField(
@@ -147,37 +152,41 @@ class LibraryPage(_Base):
 
         async def save(_: Any) -> None:
             try:
-                await self.tasks.io(self.library.rename_track, track.id, field.value)
+                await self.app.tasks.io(
+                    self.app.library.rename_track, track.id, field.value
+                )
             except ValueError as error:
-                self._show_error(str(error))
+                self.app._show_error(str(error))
                 return
-            self.page.pop_dialog()
-            if self.selected_navigation == 2:
+            self.app.page.pop_dialog()
+            if self.app.selected_navigation == 2:
                 self._refresh_library_list()
             else:
-                self.navigate(self.selected_navigation)
-            self._refresh_player()
-            if self.playback.current_track_id == str(track.id):
-                self._sync_system_media()
+                self.app.navigation.navigate(self.app.selected_navigation)
+            self.app.player_bar._refresh_player()
+            if self.app.playback.current_track_id == str(track.id):
+                self.app._sync_system_media()
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
                 title=ft.Text("Edit track title"),
                 content=field,
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     ft.Button("Save", on_click=save),
                 ],
             )
         )
 
     def _track_details_dialog(self, track: Track) -> None:
-        details = self.library.details(track.id)
+        details = self.app.library.details(track.id)
         try:
-            path = str(self.manager.track_path(track.id))
-        except (KeyError, ValueError):
+            path = str(self.app.manager.track_path(track.id))
+        except KeyError, ValueError:
             path = "Unavailable"
         rows = [
             ("Title", _track_title(track)),
@@ -186,7 +195,7 @@ class LibraryPage(_Base):
             ("Source", details.source_name or track.source or "Local"),
             ("File", path),
         ]
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
@@ -212,7 +221,9 @@ class LibraryPage(_Base):
                 ),
                 inset_padding=ft.Padding.symmetric(horizontal=16, vertical=24),
                 actions=[
-                    ft.TextButton("Close", on_click=lambda _: self.page.pop_dialog())
+                    ft.TextButton(
+                        "Close", on_click=lambda _: self.app.page.pop_dialog()
+                    )
                 ],
             )
         )
@@ -221,21 +232,25 @@ class LibraryPage(_Base):
         async def confirm(_: Any) -> None:
             queue_indexes = [
                 index
-                for index, track_id in enumerate(self.playback.queue.items)
+                for index, track_id in enumerate(self.app.playback.queue.items)
                 if track_id == str(track.id)
             ]
             # Detach the file from the active player before deleting it. The
             # queue controller pauses or advances the backend as needed.
             for index in reversed(queue_indexes):
-                self.playback.remove_queue_item(index)
+                self.app.playback.remove_queue_item(index)
             try:
-                await self.tasks.io(self.library.delete_track_and_file, track.id)
+                await self.app.tasks.io(
+                    self.app.library.delete_track_and_file, track.id
+                )
             except OSError as error:
-                self._show_error(f"The track could not be deleted completely: {error}")
-            self.page.pop_dialog()
-            self.navigate(2)
+                self.app._show_error(
+                    f"The track could not be deleted completely: {error}"
+                )
+            self.app.page.pop_dialog()
+            self.app.navigation.navigate(2)
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
@@ -249,7 +264,9 @@ class LibraryPage(_Base):
                     tight=True,
                 ),
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     ft.Button(
                         "Delete track",
                         icon=ft.Icons.DELETE_FOREVER_ROUNDED,
@@ -262,20 +279,20 @@ class LibraryPage(_Base):
     def _library_track_menu(
         self, track: Track, index: int, playlists: tuple[Playlist, ...] | None = None
     ) -> list[ft.PopupMenuItem]:
-        details = self.library.details(track.id)
+        details = self.app.library.details(track.id)
         playlists = (
-            playlists if playlists is not None else self.manager.list_playlists()
+            playlists if playlists is not None else self.app.manager.list_playlists()
         )
         menu_items: list[ft.PopupMenuItem] = [
             ft.PopupMenuItem(
                 content="Play next",
                 icon=ft.Icons.QUEUE_PLAY_NEXT_ROUNDED,
-                on_click=lambda _, item=str(track.id): self.playback.add_next(item),
+                on_click=lambda _, item=str(track.id): self.app.playback.add_next(item),
             ),
             ft.PopupMenuItem(
                 content="Add to queue",
                 icon=ft.Icons.ADD_TO_QUEUE_ROUNDED,
-                on_click=lambda _, item=str(track.id): self.playback.add_last(item),
+                on_click=lambda _, item=str(track.id): self.app.playback.add_last(item),
             ),
         ]
         menu_items.extend(
@@ -298,7 +315,7 @@ class LibraryPage(_Base):
                 ft.PopupMenuItem(
                     content="Edit title",
                     icon=ft.Icons.EDIT_ROUNDED,
-                    on_click=lambda _, item=track: self._rename_track_dialog(item),
+                    on_click=lambda _, item=track: self.app._rename_track_dialog(item),
                 ),
                 ft.PopupMenuItem(
                     content="View details",
@@ -308,21 +325,21 @@ class LibraryPage(_Base):
                 ft.PopupMenuItem(
                     content="Delete track and file…",
                     icon=ft.Icons.DELETE_FOREVER_ROUNDED,
-                    on_click=lambda _, item=track: self._delete_track_dialog(item),
+                    on_click=lambda _, item=track: self.app._delete_track_dialog(item),
                 ),
             ]
         )
         return menu_items
 
     def _library_query_changed(self, event) -> None:
-        self.library_query_text = event.control.value or ""
+        self.app.library_query_text = event.control.value or ""
         self._refresh_library_list()
 
     def _library_sort_changed(self, event) -> None:
-        self._set_library_sort(event.control.value or "recent")
+        self.app._set_library_sort(event.control.value or "recent")
 
     def _set_library_sort(self, value: str) -> None:
-        self.library_sort_key = value
+        self.app.library_sort_key = value
         sort_control = getattr(self, "library_sort", None)
         if sort_control is not None:
             sort_control.value = value

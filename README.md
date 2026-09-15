@@ -1,6 +1,6 @@
 # Melody
 
-Melody is a cross-platform music player and downloader built with Python 3.12+, Flet, `flet-audio`, and `yt-dlp`. It provides one continuous workflow for searching, previewing, downloading, organizing, queueing, and playing music, with dedicated desktop and mobile interfaces for the same shared capabilities.
+Melody is a cross-platform music player and downloader built with free-threaded CPython 3.14t, Flet, `flet-audio`, and `yt-dlp`. It provides one continuous workflow for searching, previewing, downloading, organizing, queueing, and playing music, with dedicated desktop and mobile interfaces for the same shared capabilities.
 
 ## What is implemented
 
@@ -204,8 +204,7 @@ test helpers, cache directories, and the source-checkout bootstrap, and embeds
 a validated `production` configuration with debug, mock data, and source maps
 disabled. The audit permits only the two Flet bootstrap sources required by the
 embedded Python runtime.
-Python 3.13 is pinned for packaged releases so the optional remote-debugging
-module added to the Python 3.14 runtime is not shipped.
+Packaged releases use the free-threaded CPython 3.14t runtime.
 
 Local Android builds must provide the four `FLET_ANDROID_SIGNING_*` variables
 accepted by Flet (`KEY_STORE`, `KEY_STORE_PASSWORD`, `KEY_PASSWORD`, and

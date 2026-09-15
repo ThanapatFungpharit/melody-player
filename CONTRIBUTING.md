@@ -26,8 +26,8 @@ Shared fixtures live in `tests/ui_support.py`; new tests belong in the relevant
 group. Tests must not use the user's library, live cookies, or external network.
 
 CI runs quality checks and these groups independently on pull requests and main
-or master changes. Unit/integration/UI validation covers Python 3.12 and 3.13 on
-Linux and Windows; packaging validation uses the packaged Python 3.13 baseline.
+or master changes. Unit/integration/UI validation covers free-threaded CPython
+3.14t on Linux and Windows; packaging validation uses the same 3.14t baseline.
 Native builds are a separate release workflow and depend on validation.
 
 For stateful changes, test failure boundaries: persistence failing after bytes

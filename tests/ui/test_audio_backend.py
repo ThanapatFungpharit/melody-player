@@ -7,8 +7,14 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any, cast
 
+from flet.controls.control_event import get_event_field_type
+
 from musicplayer.app import MusicPlayerApp
-from musicplayer.ui.audio_backend import FletAudioBackend
+from musicplayer.ui.audio_backend import (
+    FletAudioBackend,
+    ManagedAudio,
+    ManagedAudioDurationChangeEvent,
+)
 
 
 class FakePage:
@@ -29,6 +35,15 @@ class FakePage:
 
 
 class FletAudioBackendTests(unittest.TestCase):
+    def test_custom_duration_event_annotation_resolves_in_flet(self) -> None:
+        """Native duration events must be deserializable in packaged runtimes."""
+        audio = ManagedAudio()
+
+        self.assertIs(
+            get_event_field_type(audio, "on_duration_change"),
+            ManagedAudioDurationChangeEvent,
+        )
+
     def test_phone_gain_uses_system_volume_while_desktop_keeps_precise_gain(self):
         for mobile, expected in ((True, 1.0), (False, 0.25)):
             backend = FletAudioBackend(FakePage(), use_device_volume=mobile)  # ty: ignore[invalid-argument-type]

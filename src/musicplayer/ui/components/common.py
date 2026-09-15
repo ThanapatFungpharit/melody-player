@@ -6,13 +6,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import flet as ft
 
-from musicplayer.application.contracts import Playlist, Track
 from musicplayer.application.models import DownloadRecord, TrackDetails
+from musicplayer.core.library.models import Playlist, Track
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
-
-    _Base = AppProtocol
+    _Base = object
 else:
     _Base = object
 

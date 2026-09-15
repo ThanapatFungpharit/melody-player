@@ -100,7 +100,7 @@ class PlaybackBindings:
                 try:
                     track = self.app.manager.get_track(playback.current_track_id)
                     details = self.app.library.details(track.id)
-                except (KeyError, TypeError, ValueError):
+                except KeyError, TypeError, ValueError:
                     pass
                 else:
                     title, credit, thumbnail = (
@@ -194,19 +194,21 @@ class PlaybackBindings:
 class PlayerBar:
     """Application event bridge with no platform layout decisions."""
 
-    if TYPE_CHECKING:
-        player: PlaybackBindings
-        page: ft.Page
-
     def _refresh_player(self) -> None:
+        if "player" not in self.__dict__:
+            return
         self.player.refresh()
         self.page.update(*self.player.state_controls())
 
     def _refresh_player_progress(self) -> None:
+        if "player" not in self.__dict__:
+            return
         self.player.refresh("progress")
         self.page.update(*self.player.progress_controls())
 
     def _refresh_player_volume(self) -> None:
+        if "player" not in self.__dict__:
+            return
         self.player.refresh("volume")
         controls = self.player.volume_controls()
         if controls:

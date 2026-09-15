@@ -21,7 +21,7 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
     for index, track_id in enumerate(app.playback.queue.items):
         try:
             track = app.manager.get_track(track_id)
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         details = app.library.details(track_id)
         current = index == app.playback.queue.current_index
@@ -100,7 +100,9 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
         )
     return ft.Column(
         [
-            app._context_header("Queue", f"{len(queue_rows)} tracks • Drag to reorder"),
+            app.shared._context_header(
+                "Queue", f"{len(queue_rows)} tracks • Drag to reorder"
+            ),
             ft.TextButton(
                 "Clear upcoming",
                 icon=ft.Icons.CLEAR_ALL_ROUNDED,

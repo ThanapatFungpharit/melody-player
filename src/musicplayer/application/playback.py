@@ -918,7 +918,7 @@ class PlaybackController:
             self._preload_future = None
             try:
                 source = future.result()
-            except (CancelledError, OSError, KeyError, ValueError, RuntimeError):
+            except CancelledError, OSError, KeyError, ValueError, RuntimeError:
                 self._preload_track_id = None
                 return
             self._preloaded_source = source
@@ -926,7 +926,7 @@ class PlaybackController:
         if preload is not None:
             try:
                 preload(source)
-            except (OSError, ValueError, RuntimeError):
+            except OSError, ValueError, RuntimeError:
                 # Python preparation is still reusable even if a platform does
                 # not have enough native resources for speculative decoding.
                 pass
@@ -955,7 +955,7 @@ class PlaybackController:
         if had_preload and cancel is not None and not self._closed:
             try:
                 cancel()
-            except (OSError, ValueError, RuntimeError):
+            except OSError, ValueError, RuntimeError:
                 pass
 
     def _persist(self) -> None:

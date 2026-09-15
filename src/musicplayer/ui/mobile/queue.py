@@ -19,7 +19,7 @@ def _queue_view(app) -> ft.Control:
         try:
             track = app.manager.get_track(track_id)
             details = app.library.details(track_id)
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         current = index == queue.current_index
         actions = [
@@ -64,7 +64,7 @@ def _queue_view(app) -> ft.Control:
                 icon_button(
                     ft.Icons.ARROW_BACK_ROUNDED,
                     "Back",
-                    lambda _: app._close_context_panel(),
+                    lambda _: app.context_panel._close_context_panel(),
                 ),
             ),
             ft.TextButton(

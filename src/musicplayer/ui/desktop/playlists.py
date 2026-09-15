@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
-from musicplayer.application.contracts import Playlist, Track
+from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _artwork,
     _empty_state,
@@ -34,7 +34,7 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
     playlists = app.manager.list_playlists()
     if playlists:
         body: ft.Control = ft.Row(
-            [app._playlist_card(playlist) for playlist in playlists],
+            [app.shared._playlist_card(playlist) for playlist in playlists],
             wrap=True,
             spacing=14,
             run_spacing=18,
@@ -81,7 +81,7 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
     )
     return ft.Column(
         [
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [playlists_header, playlist_actions],
                 spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -112,7 +112,7 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
         elevation=0,
         icon=ft.Icons.PLAY_ARROW_ROUNDED,
         disabled=not tracks,
-        on_click=lambda _: app._play_playlist(playlist),
+        on_click=lambda _: app.playlists_page._play_playlist(playlist),
     )
     rows: ft.Control
     if tracks:
@@ -168,13 +168,15 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                         ft.Icons.SHUFFLE_ROUNDED,
                         tooltip="Shuffle playlist",
                         disabled=not tracks,
-                        on_click=lambda _: app._play_playlist(playlist, shuffle=True),
+                        on_click=lambda _: app.playlists_page._play_playlist(
+                            playlist, shuffle=True
+                        ),
                     ),
                     ft.IconButton(
                         ft.Icons.ADD_TO_QUEUE_ROUNDED,
                         tooltip="Add playlist to queue",
                         disabled=not tracks,
-                        on_click=lambda _: app._queue_collection(tracks),
+                        on_click=lambda _: app.shared._queue_collection(tracks),
                     ),
                     ft.PopupMenuButton(
                         icon=ft.Icons.MORE_HORIZ_ROUNDED,
@@ -317,7 +319,9 @@ def _playlist_card(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                                 height=40,
                                 tooltip=f"Play {playlist.name}",
                                 disabled=not track_count,
-                                on_click=lambda _: app._play_playlist(playlist),
+                                on_click=lambda _: app.playlists_page._play_playlist(
+                                    playlist
+                                ),
                             ),
                             right=8,
                             bottom=8,
@@ -347,6 +351,8 @@ def _playlist_card(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
         bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
         on_hover=hover_surface,
         animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
-        on_click=lambda _, item=str(playlist.id): app._open_playlist(item),
+        on_click=lambda _, item=str(playlist.id): app.playlists_page._open_playlist(
+            item
+        ),
     )
     return card_widget

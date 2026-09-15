@@ -65,7 +65,7 @@ class ThumbnailCache:
         try:
             data = path.read_bytes()
             _validate_image(data)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning("Ignoring invalid cached thumbnail: path=%s", path)
             return source
         self._remember(key, data)

@@ -477,7 +477,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
                 download=lambda _, destination: shutil.copyfile(source, destination),
             ).prepare()
         self.assertFalse(result.updated)
-        self.assertEqual(result.active, "2026.9.8")
+        self.assertEqual(result.active_version, "2026.9.8")
         self.assertEqual(Path(sys.path[0]), old)
         self.assertTrue(old.is_file())
 

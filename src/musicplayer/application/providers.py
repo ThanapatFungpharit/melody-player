@@ -16,24 +16,31 @@ logger = logging.getLogger(__name__)
 
 
 def __getattr__(name: str) -> Any:
-    """Keep the old patchable module attributes without an eager import."""
+    """Expose patchable yt-dlp symbols without importing them at startup."""
     if name not in {"CookieLoadError", "YoutubeDL"}:
         raise AttributeError(name)
-    symbols = _yt_dlp_symbols()
-    return symbols[name]
+    return _yt_dlp_symbols()[name]
 
 
 def _yt_dlp_symbols() -> dict[str, Any]:
+    """Resolve the current yt-dlp implementation at the point of use.
+
+    Keeping these names on the module also lets a runtime updater (and tests)
+    replace the implementation. Caching the imported classes made stream
+    resolution keep using a stale downloader after an update.
+    """
+    # ``globals().get`` intentionally avoids invoking ``__getattr__``.  A
+    # replacement installed by the runtime updater is honoured, while the
+    # normal path imports the current yt-dlp package each time rather than
+    # retaining a stale class object.
     youtube_dl = globals().get("YoutubeDL")
     cookie_load_error = globals().get("CookieLoadError")
     if youtube_dl is None or cookie_load_error is None:
         from yt_dlp import CookieLoadError as loaded_cookie_error
         from yt_dlp import YoutubeDL as loaded_youtube_dl
 
-        youtube_dl = loaded_youtube_dl
-        cookie_load_error = loaded_cookie_error
-        globals()["YoutubeDL"] = youtube_dl
-        globals()["CookieLoadError"] = cookie_load_error
+        youtube_dl = youtube_dl or loaded_youtube_dl
+        cookie_load_error = cookie_load_error or loaded_cookie_error
     return {"CookieLoadError": cookie_load_error, "YoutubeDL": youtube_dl}
 
 
@@ -274,7 +281,7 @@ def _absolute_thumbnail_url(url: str) -> str:
 def _number(value: Any) -> float:
     try:
         return float(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 

@@ -20,11 +20,11 @@ def _settings_view(app: MusicPlayerApp) -> ft.Control:
         section.border_radius = 20
     return ft.Column(
         [
-            app._context_header(
+            app.shared._context_header(
                 "Settings",
                 "Make Melody feel like you.",
             ),
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [appearance, download, youtube_access, data_management],
                 scroll=ft.ScrollMode.AUTO,
                 expand=True,

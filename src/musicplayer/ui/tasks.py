@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from functools import partial, wraps
 from typing import Any
 
-from musicplayer.application.contracts import LazyBoundedExecutor
+from musicplayer.core.concurrency import LazyBoundedExecutor
 
 logger = logging.getLogger(__name__)
 

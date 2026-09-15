@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any
 import flet as ft
 
 from musicplayer.application.contracts import (
-    Playlist,
-    Track,
     WorkerQueueFull,
     source_key,
 )
@@ -19,6 +17,7 @@ from musicplayer.application.providers import (
     RemotePlaylist,
     is_youtube_playlist_url,
 )
+from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _track_credit,
     _track_title,
@@ -236,7 +235,7 @@ class PlaylistsPage(_PlaylistBase):
                     except WorkerQueueFull:
                         queue_full = True
                         break
-                    except (OSError, RuntimeError, ValueError):
+                    except OSError, RuntimeError, ValueError:
                         session.failed += 1
                         session.pending.popleft()
                         continue

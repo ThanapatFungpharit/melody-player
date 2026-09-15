@@ -169,7 +169,7 @@ class DownloadCoordinator:
                 if self.manager.check_track_integrity(existing.id) is None
                 else None
             )
-        except (OSError, KeyError, ValueError):
+        except OSError, KeyError, ValueError:
             return None
 
     def request(self, result: SearchResult) -> DownloadTask | None:
@@ -504,7 +504,7 @@ class DownloadCoordinator:
                 self._active_records_by_source.pop(source_key(url), None)
                 self._persist()
                 path.unlink()
-            except (OSError, ValueError, KeyError, TypeError):
+            except OSError, ValueError, KeyError, TypeError:
                 # Keep ambiguous files and the receipt for repair; never adopt
                 # unrelated files merely because they share the music folder.
                 logger.warning(
@@ -649,7 +649,7 @@ class DownloadCoordinator:
             path = self.manager.track_path(track_id)
             status = path.stat()
             return status.st_size > 0 and stat.S_ISREG(status.st_mode)
-        except (OSError, KeyError, ValueError):
+        except OSError, KeyError, ValueError:
             return False
 
 

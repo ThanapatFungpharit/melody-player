@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from musicplayer.application.contracts import Track
+from musicplayer.core.library.models import Track
 from musicplayer.ui.components.common import (
     _artwork,
     _empty_state,
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def _home_view(app: MusicPlayerApp) -> ft.Control:
-    tracks, recent, favorites = app._home_collections()
+    tracks, recent, favorites = app.home_page._home_collections()
     intro = heading(_time_greeting(), "Your music, ready when you are.")
     intro.col = {"xs": 12, "md": 9}
     count = ft.Container(
@@ -66,22 +66,26 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
                                         color=ft.Colors.ON_PRIMARY,
                                         elevation=0,
                                         on_click=lambda _: (
-                                            app._play_collection(tracks, shuffle=True)
+                                            app.shared._play_collection(
+                                                tracks, shuffle=True
+                                            )
                                             if tracks
-                                            else app.navigate(1)
+                                            else app.navigation.navigate(1)
                                         ),
                                     ),
                                     ft.TextButton(
                                         "Play all",
                                         icon=ft.Icons.PLAY_ARROW_ROUNDED,
                                         disabled=not tracks,
-                                        on_click=lambda _: app._play_collection(tracks),
+                                        on_click=lambda _: app.shared._play_collection(
+                                            tracks
+                                        ),
                                     ),
                                     ft.IconButton(
                                         ft.Icons.ADD_TO_QUEUE_ROUNDED,
                                         tooltip="Add library to queue",
                                         disabled=not tracks,
-                                        on_click=lambda _: app._queue_collection(
+                                        on_click=lambda _: app.shared._queue_collection(
                                             tracks
                                         ),
                                     ),
@@ -117,18 +121,20 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
         ),
     )
     sections: list[ft.Control] = [
-        app._responsive_grid(
+        app.shared._responsive_grid(
             [intro, count], vertical_alignment=ft.CrossAxisAlignment.CENTER
         ),
         hero,
     ]
     sections.extend(
-        app._track_shelf(
+        app.home_page._track_shelf(
             "Recently played", recent, "Play a track to start your listening history."
         )
     )
     sections.extend(
-        app._track_shelf("Favorites", favorites, "Favorite a track to keep it close.")
+        app.home_page._track_shelf(
+            "Favorites", favorites, "Favorite a track to keep it close."
+        )
     )
     return ft.Column(
         sections,
@@ -148,7 +154,7 @@ def _track_shelf(
             ft.TextButton(
                 "Open library",
                 icon=ft.Icons.ARROW_FORWARD_ROUNDED,
-                on_click=lambda _: app.navigate(2),
+                on_click=lambda _: app.navigation.navigate(2),
             ),
         ]
     )
@@ -157,7 +163,7 @@ def _track_shelf(
     return [
         section_heading,
         ft.Row(
-            [app._track_card(track) for track in tracks],
+            [app.home_page._track_card(track) for track in tracks],
             scroll=ft.ScrollMode.AUTO,
             spacing=16,
         ),
@@ -219,7 +225,7 @@ def _track_card(app: MusicPlayerApp, track: Track) -> ft.Control:
         padding=12,
         border_radius=20,
         bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-        on_hover=app._card_hover,
+        on_hover=app.home_page._card_hover,
         animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
     )
 

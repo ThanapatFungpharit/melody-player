@@ -77,7 +77,7 @@ def _read_candidates(path: Path) -> list[bytes]:
         for encoded in media.get("metadata_block_picture", []):
             try:
                 picture = Picture(base64.b64decode(encoded, validate=True))
-            except (binascii.Error, TypeError, ValueError):
+            except binascii.Error, TypeError, ValueError:
                 continue
             if picture.data:
                 result.append((picture.type, bytes(picture.data)))

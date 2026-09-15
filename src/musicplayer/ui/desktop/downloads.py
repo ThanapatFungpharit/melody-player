@@ -28,7 +28,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
         elif record.status in {"failed", "cancelled"}:
             issues += 1
     finished = completed + issues
-    summary = app._responsive_grid(
+    summary = app.shared._responsive_grid(
         [
             app._download_metric(
                 "Active", str(active), ft.Icons.DOWNLOADING_ROUNDED, ft.Colors.PRIMARY
@@ -54,7 +54,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
         ]
     )
     if records:
-        body: ft.Control = app._responsive_grid(
+        body: ft.Control = app.shared._responsive_grid(
             [app._download_row(record) for record in records],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -69,7 +69,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
             alignment=ft.Alignment.CENTER,
         )
     controls: list[ft.Control] = [
-        app._context_header(
+        app.shared._context_header(
             "Downloads",
             "Save it here. Take it with you.",
             ft.TextButton(
@@ -86,7 +86,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
         controls.extend(
             [
                 ft.Text("Recent batches", size=18, weight=ft.FontWeight.BOLD),
-                app._responsive_grid(
+                app.shared._responsive_grid(
                     [
                         app._batch_overview(items)
                         for items in list(batch_groups.values())[:3]
@@ -96,7 +96,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
         )
     controls.extend(
         [
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [
                     ft.Text(
                         "Download activity",

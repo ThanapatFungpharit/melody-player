@@ -17,7 +17,6 @@ class DesktopShell:
             expand=True, padding=28, bgcolor=ft.Colors.SURFACE, border_radius=24
         )
         app.player = DesktopPlayer(app)
-        app.player_bar = app.player.root
         self.nav_buttons = []
         self.nav_labels = []
         self.nav_icons = []
@@ -25,20 +24,20 @@ class DesktopShell:
         for index, (label, filled, outlined) in enumerate(NAVIGATION):
             self.nav_buttons.append(
                 self._navigation_button(
-                    label, outlined, lambda _, i=index: app.navigate(i)
+                    label, outlined, lambda _, i=index: app.navigation.navigate(i)
                 )
             )
         downloads = self._navigation_button(
             "Downloads",
             ft.Icons.DOWNLOAD_ROUNDED,
-            lambda _: app._open_downloads_panel(),
+            lambda _: app.context_panel._open_downloads_panel(),
             "Downloads (Ctrl+D)",
         )
         self.downloads = self.nav_icons[-1]
         settings = self._navigation_button(
             "Settings",
             ft.Icons.SETTINGS_OUTLINED,
-            lambda _: app._open_settings_panel(),
+            lambda _: app.context_panel._open_settings_panel(),
             "Settings (Ctrl+,)",
         )
         self.utility_buttons = {"downloads": downloads, "settings": settings}
@@ -242,16 +241,16 @@ class DesktopShell:
         key = event.key.casefold()
         modifier = event.ctrl or event.meta
         if key == "escape" and app.active_panel:
-            app._close_context_panel()
+            app.context_panel._close_context_panel()
         elif modifier and key == "l":
-            app.navigate(1)
+            app.navigation.navigate(1)
             app.page.run_task(app.search_query.focus)
         elif modifier and key == "q":
-            app._open_queue_panel()
+            app.context_panel._open_queue_panel()
         elif modifier and key == "d":
-            app._open_downloads_panel()
+            app.context_panel._open_downloads_panel()
         elif modifier and key == ",":
-            app._open_settings_panel()
+            app.context_panel._open_settings_panel()
         elif modifier and key == " ":
             app.playback.toggle()
 

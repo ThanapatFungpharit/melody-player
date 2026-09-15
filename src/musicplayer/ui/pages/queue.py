@@ -5,15 +5,18 @@ from typing import TYPE_CHECKING
 import flet as ft
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
+    from musicplayer.app import MusicPlayerApp
 
-    _Base = AppProtocol
+    _Base = object
 else:
     _Base = object
 
 
-class QueuePage(_Base):
+class QueuePage:
+    def __init__(self, app: MusicPlayerApp):
+        self.app = app
+
     """Playback queue page UI."""
 
     def _queue_view(self) -> ft.Control:
-        return self.views._queue_view(self)
+        return self.app.views._queue_view(self)

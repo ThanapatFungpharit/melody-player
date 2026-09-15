@@ -13,15 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 def _as_uuid(value: UUID | str) -> UUID:
-    result = value if isinstance(value, UUID) else UUID(str(value))
-    logger.debug("Converted value to UUID: input=%r result=%s", value, result)
-    return result
+    return value if isinstance(value, UUID) else UUID(str(value))
 
 
 def _read_utf8_string(data: bytes, offset: int) -> tuple[str, int]:
-    logger.debug(
-        "Reading UTF-8 field from metadata: offset=%d data_length=%d", offset, len(data)
-    )
     if offset + U32.size > len(data):
         logger.error(
             "Metadata is truncated before UTF-8 field length: offset=%d", offset
@@ -45,12 +40,6 @@ def _read_utf8_string(data: bytes, offset: int) -> tuple[str, int]:
             "Invalid UTF-8 metadata field: offset=%d length=%d", offset, length
         )
         raise
-    logger.debug(
-        "Read UTF-8 metadata field: offset=%d length=%d next_offset=%d",
-        offset,
-        length,
-        end,
-    )
     return value, end
 
 
@@ -60,7 +49,6 @@ def _pack_utf8_string(value: str) -> bytes:
 
 
 def _sha256(path: Path) -> str:
-    logger.debug("Calculating SHA-256: path=%s", path)
     digest = hashlib.sha256()
     bytes_read = 0
     try:
@@ -72,7 +60,4 @@ def _sha256(path: Path) -> str:
         logger.exception("SHA-256 calculation failed while reading file: path=%s", path)
         raise
     result = digest.hexdigest()
-    logger.debug(
-        "Calculated SHA-256: path=%s bytes_read=%d digest=%s", path, bytes_read, result
-    )
     return result

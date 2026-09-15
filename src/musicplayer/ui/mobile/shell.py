@@ -18,13 +18,12 @@ class MobileShell:
             expand=True, padding=ft.Padding.symmetric(horizontal=16, vertical=12)
         )
         app.player = MobilePlayer(app)
-        app.player_bar = app.player.root
         self.downloads = ft.IconButton(
             ft.Icons.DOWNLOAD_ROUNDED,
             tooltip="Downloads",
             width=48,
             height=48,
-            on_click=lambda _: app._open_downloads_panel(),
+            on_click=lambda _: app.context_panel._open_downloads_panel(),
         )
         self.bottom_nav = ft.NavigationBar(
             selected_index=0,
@@ -34,7 +33,7 @@ class MobileShell:
                 ft.NavigationBarDestination(icon=o, selected_icon=f, label=n)
                 for n, f, o in NAVIGATION
             ],
-            on_change=lambda e: app.navigate(int(e.control.selected_index)),
+            on_change=lambda e: app.navigation.navigate(int(e.control.selected_index)),
         )
         header = ft.Row(
             [
@@ -46,7 +45,7 @@ class MobileShell:
                     tooltip="Settings",
                     width=48,
                     height=48,
-                    on_click=lambda _: app._open_settings_panel(),
+                    on_click=lambda _: app.context_panel._open_settings_panel(),
                 ),
             ],
             spacing=4,
@@ -89,7 +88,7 @@ class MobileShell:
         if self.app.selected_playlist_id and self.app.selected_navigation == 3:
             self.app._close_playlist()
         elif self.app.selected_navigation != 0:
-            self.app.navigate(0)
+            self.app.navigation.navigate(0)
         await event.control.confirm_pop(False)
 
     def _back(self, _) -> None:

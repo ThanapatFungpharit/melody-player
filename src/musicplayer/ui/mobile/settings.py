@@ -46,7 +46,7 @@ def _settings_view(app) -> ft.Control:
                 icon_button(
                     ft.Icons.ARROW_BACK_ROUNDED,
                     "Back",
-                    lambda _: app._close_context_panel(),
+                    lambda _: app.context_panel._close_context_panel(),
                 ),
             ),
             appearance,

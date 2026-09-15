@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING
 import flet as ft
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
-
-    _Base = AppProtocol
+    _Base = object
 else:
     _Base = object
 
@@ -21,7 +19,7 @@ NAVIGATION = (
 )
 
 
-class NavigationShell(_Base):
+class NavigationShell:
     def _build_shell(self) -> None:
         self.shell.build()
         self.navigate(self.selected_navigation)

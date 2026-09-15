@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
-from musicplayer.application.contracts import Playlist
 from musicplayer.application.models import SearchResult
+from musicplayer.core.library.models import Playlist
 from musicplayer.ui.components.common import (
     _artwork,
     _empty_state,
@@ -120,11 +120,11 @@ def _search_view(app: MusicPlayerApp) -> ft.Control:
     return ft.Column(
         [
             _page_header("Search", "Find music on YouTube."),
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [app.search_query, app.search_button, app.batch_download_button],
                 spacing=12,
             ),
-            app._responsive_grid(
+            app.shared._responsive_grid(
                 [app.search_status, app.search_view_selector],
                 spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,

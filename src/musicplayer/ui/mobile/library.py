@@ -22,7 +22,7 @@ def _library_view(app) -> ft.Control:
         expand=True,
     )
     app.library_list = ft.Column(spacing=6)
-    app._refresh_library_list(update=False)
+    app.library_page._refresh_library_list(update=False)
     has_visible_tracks = bool(app._visible_library_tracks())
     actions = [
         ft.PopupMenuItem(

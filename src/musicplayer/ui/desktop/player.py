@@ -50,7 +50,7 @@ class DesktopPlayer(PlaybackBindings):
         self.queue_button = self.button(
             ft.Icons.QUEUE_MUSIC_ROUNDED,
             "Queue (Ctrl+Q)",
-            lambda _: app._open_queue_panel(),
+            lambda _: app.context_panel._open_queue_panel(),
         )
         self.root = ft.Container(
             ft.Row(

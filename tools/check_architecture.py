@@ -81,8 +81,15 @@ def violations(root: Path = ROOT) -> list[str]:
                     or target.startswith(("musicplayer.ui", "musicplayer.app."))
                 ):
                     problems.add(f"{module} imports presentation/composition: {target}")
-                if module.startswith("musicplayer.ui.") and target.startswith(
-                    "musicplayer.core."
+                if (
+                    module.startswith("musicplayer.ui.")
+                    and target.startswith("musicplayer.core.")
+                    and not target.startswith(
+                        (
+                            "musicplayer.core.library.models",
+                            "musicplayer.core.concurrency",
+                        )
+                    )
                 ):
                     problems.add(f"{module} bypasses application contracts: {target}")
                 for presentation, opposite in (

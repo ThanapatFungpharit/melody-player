@@ -94,7 +94,7 @@ class MobilePlayer(PlaybackBindings):
                         self.button(
                             ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED,
                             "Close Now Playing",
-                            lambda _: self.app._close_context_panel(),
+                            lambda _: self.app.context_panel._close_context_panel(),
                         ),
                     ]
                 ),
@@ -114,7 +114,9 @@ class MobilePlayer(PlaybackBindings):
                         ft.TextButton(
                             "Queue",
                             icon=ft.Icons.QUEUE_MUSIC_ROUNDED,
-                            on_click=lambda _: self.app._open_queue_panel(),
+                            on_click=lambda _: (
+                                self.app.context_panel._open_queue_panel()
+                            ),
                             height=48,
                         ),
                     ],
