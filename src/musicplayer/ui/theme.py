@@ -21,8 +21,7 @@ PAGE_TITLE_SIZE = 24
 CARD_RADIUS = 18
 FONT_FAMILY = "Segoe UI"
 
-# Legacy constant kept for call-sites that don't have access to settings.
-ACCENT = THEME_PALETTES[DEFAULT_PALETTE]
+DEFAULT_ACCENT = THEME_PALETTES[DEFAULT_PALETTE]
 
 
 def accent_color(name: str) -> str:
@@ -40,7 +39,7 @@ def palette_names() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_theme(seed: str = ACCENT) -> ft.Theme:
+def build_theme(seed: str = DEFAULT_ACCENT) -> ft.Theme:
     return ft.Theme(
         color_scheme_seed=seed,
         use_material3=True,

@@ -116,28 +116,27 @@ class PlaybackQueue:
 
     def peek_next(self, *, automatic: bool = False) -> str | None:
         """Return the next visible queue item without advancing the queue."""
+        index = self.next_index(automatic=automatic)
+        return self.items[index] if index is not None else None
+
+    def next_index(self, *, automatic: bool = False) -> int | None:
+        """Return the exact next row, including automatic repeat behavior."""
         if not self.items:
             return None
         if automatic and self.repeat is RepeatMode.TRACK:
-            return self.current
+            return self.current_index if self.current is not None else None
         if self.current_index + 1 < len(self.items):
-            return self.items[self.current_index + 1]
+            return self.current_index + 1
         if self.repeat is RepeatMode.PLAYLIST:
-            return self.items[0]
+            return 0
         return None
 
     def next(self, *, automatic: bool = False) -> str | None:
-        if not self.items:
+        index = self.next_index(automatic=automatic)
+        if index is None:
             return None
-        if automatic and self.repeat is RepeatMode.TRACK:
-            return self.current
-        if self.current_index + 1 < len(self.items):
-            self.current_index += 1
-            return self.current
-        if self.repeat is RepeatMode.PLAYLIST:
-            self.current_index = 0
-            return self.current
-        return None
+        self.current_index = index
+        return self.current
 
     def previous(self) -> str | None:
         if not self.items:

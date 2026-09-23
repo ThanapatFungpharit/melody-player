@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import stat
 import tempfile
 import threading
 from collections import OrderedDict
@@ -22,7 +23,8 @@ from musicplayer.core.storage import sync_directory
 logger = logging.getLogger(__name__)
 
 _MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
-_MEMORY_CACHE_ENTRIES = 64
+_MEMORY_CACHE_ENTRIES = 32
+_MEMORY_CACHE_BYTES = 16 * 1024 * 1024
 
 
 class ThumbnailCache:
@@ -37,6 +39,7 @@ class ThumbnailCache:
         self._lock = threading.RLock()
         self._key_locks: dict[str, tuple[threading.Lock, int]] = {}
         self._memory: OrderedDict[str, bytes] = OrderedDict()
+        self._memory_bytes = 0
 
     def cached_path(self, url: str) -> Path | None:
         """Return the durable entry for a remote URL without touching network."""
@@ -45,7 +48,12 @@ class ThumbnailCache:
             return None
         path = self.directory / f"{key}.thumb"
         try:
-            return path if path.is_file() and path.stat().st_size > 0 else None
+            metadata = path.stat()
+            return (
+                path
+                if stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0
+                else None
+            )
         except OSError:
             return None
 
@@ -123,10 +131,20 @@ class ThumbnailCache:
 
     def _remember(self, key: str, data: bytes) -> None:
         with self._lock:
+            previous = self._memory.pop(key, None)
+            if previous is not None:
+                self._memory_bytes -= len(previous)
+            if len(data) > _MEMORY_CACHE_BYTES:
+                return
             self._memory[key] = data
+            self._memory_bytes += len(data)
             self._memory.move_to_end(key)
-            while len(self._memory) > _MEMORY_CACHE_ENTRIES:
-                self._memory.popitem(last=False)
+            while (
+                len(self._memory) > _MEMORY_CACHE_ENTRIES
+                or self._memory_bytes > _MEMORY_CACHE_BYTES
+            ):
+                _, removed = self._memory.popitem(last=False)
+                self._memory_bytes -= len(removed)
 
     def _key_lock(self, key: str) -> threading.Lock:
         with self._lock:

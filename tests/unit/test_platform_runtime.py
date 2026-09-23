@@ -13,6 +13,7 @@ from musicplayer.platform_runtime import (
     current_platform,
     default_music_directory,
     media_binary_bundle,
+    public_music_directory,
 )
 
 
@@ -22,11 +23,15 @@ class PlatformRuntimeTests(unittest.TestCase):
         self.assertEqual(current_platform("linux"), "linux")
         self.assertEqual(current_platform("darwin"), "macos")
         self.assertEqual(current_platform("android"), "android")
+        self.assertEqual(current_platform("ios"), "ios")
 
     def test_flet_environment_detects_android_runtime(self) -> None:
         self.assertEqual(
             current_platform(environ={"FLET_PLATFORM": "android"}), "android"
         )
+
+    def test_flet_environment_detects_ios_runtime(self) -> None:
+        self.assertEqual(current_platform(environ={"FLET_PLATFORM": "ios"}), "ios")
 
     def test_architecture_names_are_normalized(self) -> None:
         self.assertEqual(current_architecture("AMD64"), "x86_64")
@@ -34,6 +39,8 @@ class PlatformRuntimeTests(unittest.TestCase):
         self.assertEqual(current_architecture("aarch64"), "arm64")
         self.assertEqual(current_architecture("arm64"), "arm64")
         self.assertEqual(current_architecture("arm64-v8a"), "arm64")
+        self.assertEqual(current_architecture("iPhone15,4"), "arm64")
+        self.assertEqual(current_architecture("iPad14,5"), "arm64")
 
     def test_unsupported_runtime_has_an_actionable_error(self) -> None:
         for platform_name in ("freebsd", "cygwin", "linux2"):
@@ -187,6 +194,15 @@ class PlatformRuntimeTests(unittest.TestCase):
             ),
             Path("/data/user/app/files/data"),
         )
+        self.assertEqual(
+            application_data_directory(
+                platform_name="ios",
+                environ={"FLET_APP_STORAGE_DATA": "/private/app/data"},
+                home="/private/app",
+                create=False,
+            ),
+            Path("/private/app/data"),
+        )
 
     def test_android_default_music_directory_is_app_writable(self) -> None:
         self.assertEqual(
@@ -196,6 +212,37 @@ class PlatformRuntimeTests(unittest.TestCase):
                 home="/data/user/app/files",
             ),
             Path("/data/user/app/files/data/Music"),
+        )
+
+    def test_ios_default_music_directory_is_app_writable(self) -> None:
+        self.assertEqual(
+            default_music_directory(
+                platform_name="ios",
+                environ={"FLET_APP_STORAGE_DATA": "/private/app/data"},
+                home="/private/app",
+            ),
+            Path("/private/app/data/Music"),
+        )
+
+    def test_ios_bundle_uses_packaged_arm64_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = media_binary_bundle(
+                platform_name="ios",
+                architecture="arm64",
+                binary_root=directory,
+            )
+
+            self.assertEqual(bundle.directory, Path(directory) / "ios" / "arm64")
+            self.assertEqual(bundle.ffmpeg.name, "ffmpeg")
+            self.assertEqual(bundle.ffprobe.name, "ffprobe")
+
+    def test_android_public_music_directory_uses_shared_music_collection(self) -> None:
+        self.assertEqual(
+            public_music_directory(
+                platform_name="android",
+                environ={"EXTERNAL_STORAGE": "/storage/shared"},
+            ),
+            Path("/storage/shared/Music/Melody"),
         )
 
     def test_source_launch_fetches_and_validates_current_desktop_bundle(self) -> None:
@@ -261,18 +308,23 @@ class PlatformRuntimeTests(unittest.TestCase):
         ):
             validate_development_audio_encoders(bundle)
 
-    def test_source_launch_does_not_fetch_android_executables(self) -> None:
+    def test_source_launch_does_not_fetch_mobile_executables(self) -> None:
         from musicplayer.__main__ import prepare_development_media_binaries
 
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            mock.patch("musicplayer.__main__.current_platform", return_value="android"),
-            mock.patch("tools.fetch_media_binaries.fetch_bundle") as fetch,
-        ):
-            result = prepare_development_media_binaries(Path(directory))
+        for platform_name in ("android", "ios"):
+            with (
+                self.subTest(platform=platform_name),
+                tempfile.TemporaryDirectory() as directory,
+                mock.patch(
+                    "musicplayer.__main__.current_platform",
+                    return_value=platform_name,
+                ),
+                mock.patch("tools.fetch_media_binaries.fetch_bundle") as fetch,
+            ):
+                result = prepare_development_media_binaries(Path(directory))
 
-        self.assertIsNone(result)
-        fetch.assert_not_called()
+                self.assertIsNone(result)
+                fetch.assert_not_called()
 
     def test_source_launch_only_applies_codec_gate_to_windows_manifest(self) -> None:
         from musicplayer.__main__ import prepare_development_media_binaries

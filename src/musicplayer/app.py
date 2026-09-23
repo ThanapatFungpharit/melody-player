@@ -23,9 +23,10 @@ from musicplayer.platform_runtime import (
     UnsupportedPlatformError,
     application_data_directory,
     current_platform,
+    public_music_directory,
 )
 from musicplayer.runtime_environment import public_error_message
-from musicplayer.ui.audio_backend import FletAudioBackend
+from musicplayer.ui.audio_backend import ManagedAudioBackend
 from musicplayer.ui.components import (
     ContextPanel,
     NavigationShell,
@@ -50,26 +51,21 @@ from musicplayer.ui.theme import accent_color, build_theme
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_DOWNLOAD_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_EMPTY_MEDIA_METADATA = ("", "", "", "")
+
 __all__ = [
+    "AppServices",
     "MusicPlayerApp",
     "main",
 ]
 
 
-class MusicPlayerApp(
-    NavigationShell,
-    PlayerBar,
-    ContextPanel,
-    SharedUIComponents,
-    HomePage,
-    SearchPage,
-    LibraryPage,
-    PlaylistsPage,
-    QueuePage,
-    DownloadsPage,
-    SettingsPage,
-):
+class MusicPlayerApp:
     """Application composition root for Melody's page and component modules."""
+
+    content: ft.Container
+    player: Any
 
     @property
     def views(self):
@@ -86,59 +82,33 @@ class MusicPlayerApp(
 
         return desktop
 
-    def __getattr__(self, name: str) -> Any:
-        # Small, synchronous fixtures and embedders sometimes construct the
-        # composition root with ``__new__`` to exercise one page workflow. Keep
-        # those callers on the same I/O boundary without requiring a full app
-        # startup; normal pages initialize ``tasks`` eagerly in ``__init__``.
-        if name == "tasks" and "page" in self.__dict__:
-            tasks = PageTasks(
-                self.page,
-                LazyBoundedExecutor(
-                    max_workers=1,
-                    max_pending=1,
-                    thread_name_prefix="melody-fixture",
-                ),
-                getattr(self, "_show_error", lambda _: None),
-            )
-            self.__dict__[name] = tasks
-            return tasks
-        # Presentation modules now address feature areas through named
-        # facades (``app.home_page``, ``app.shared``, and so on).  The
-        # production root remains their shared state owner, so expose the
-        # root as those facades as well.  This keeps the modules usable both
-        # standalone and as mixins, including lightweight ``__new__`` test
-        # fixtures that intentionally skip full application startup.
-        if name in {
-            "app",
-            "shared",
-            "home_page",
-            "library_page",
-            "playlists_page",
-            "queue_page",
-            "downloads_page",
-            "settings_page",
-            "navigation",
-            "player_bar",
-            "context_panel",
-        }:
-            return self
-        raise AttributeError(name)
-
-    def __init__(self, page: ft.Page, resources: AppResources | None = None) -> None:
+    def __init__(self, page: ft.Page, services: AppServices | None = None) -> None:
         self.page = page
-        # Page and component modules are mixins over the composition root.  A
-        # few of them use ``self.app`` so that they can also be embedded as
-        # standalone objects; when mounted here that facade is the root.
-        self.app = self
-        resources = resources or AppResources.load()
-        self.data_directory = resources.directory
-        self.store = resources.store
-        self.settings = resources.store.settings
-        self.manager = resources.manager
-        self.library = resources.library
-        self.providers = resources.providers
-        self.thumbnails = resources.thumbnails
+        services = services or AppServices.load()
+        self._attach_services(services)
+        self._create_task_runtime()
+        self._create_playback(services.available_track_ids)
+        self._create_components()
+        self._initialize_state()
+        self.shell = self._create_shell()
+        self._configure_page()
+        self.navigation._build_shell()
+        if self._is_android_platform():
+            self._queue_private_tracks_for_export()
+
+    def _attach_services(self, services: AppServices) -> None:
+        """Expose application services to the presentation controllers."""
+        self.data_directory = services.directory
+        self.store = services.store
+        self.settings = services.store.settings
+        self.manager = services.manager
+        self.library = services.library
+        self.providers = services.providers
+        self.thumbnails = services.thumbnails
+        self.downloads = services.downloads
+
+    def _create_task_runtime(self) -> None:
+        """Create the bounded executors owned by this page."""
         # Search, stream resolution, and imports share a bounded I/O pool that
         # exists only while at least one background operation is in flight.
         self.workers = LazyBoundedExecutor(
@@ -146,29 +116,27 @@ class MusicPlayerApp(
             max_pending=2,
             thread_name_prefix="melody-io",
         )
-        self.tasks = PageTasks(page, self.workers, self._show_error)
-        self.playback_workers = LazyBoundedExecutor(
-            max_workers=2, max_pending=1, thread_name_prefix="melody-playback"
-        )
+        self.tasks = PageTasks(self.page, self.workers, self._show_error)
         self.persistence = PlaybackPersistence(
             self.store, lambda message: self.tasks.dispatch(self._show_error, message)
         )
+
+    def _create_playback(self, available_track_ids: set[str]) -> None:
+        """Wire the playback controller to its Flet/native backend."""
         self._system_media_key: tuple[str, ...] | None = None
-        self._system_media_metadata = ("", "", "", "")
+        self._system_media_metadata = _EMPTY_MEDIA_METADATA
         self.file_picker = ft.FilePicker()
-        page.services.append(self.file_picker)
-        self.backend = FletAudioBackend(
-            page, use_device_volume=self._is_mobile_platform()
+        self.page.services.append(self.file_picker)
+        self.backend = ManagedAudioBackend(
+            self.page, use_device_volume=self._is_mobile_platform()
         )
         self.playback = PlaybackController(
             self.manager,
             self.library,
             self.store,
             self.backend,
-            io_executor=self.playback_workers,
             persistence=self.persistence,
-            dispatch=self.tasks.dispatch,
-            available_track_ids=resources.available_track_ids,
+            available_track_ids=available_track_ids,
             on_change=self._playback_changed,
             on_error=self._show_error,
         )
@@ -178,34 +146,53 @@ class MusicPlayerApp(
             on_duration=self.playback.on_duration,
             on_playing=self.playback.on_playing,
             on_completed=self.playback.on_completed,
+            on_track_changed=self.playback.on_track_changed,
+            on_stopped=self.playback.on_stopped,
             on_error=self.playback.on_backend_error,
             on_media_action=self._media_action,
         )
-        self.downloads = resources.downloads
         self.downloads.on_change = lambda record: self.tasks.dispatch(
             self._download_changed, record
         )
+
+    def _create_components(self) -> None:
+        """Create the feature controllers consumed by the active shell."""
+        self.shared = SharedUIComponents(self)
+        self.home_page = HomePage(self)
+        self.search_page = SearchPage(self)
+        self.library_page = LibraryPage(self)
+        self.playlists_page = PlaylistsPage(self)
+        self.queue_page = QueuePage(self)
+        self.downloads_page = DownloadsPage(self)
+        self.settings_page = SettingsPage(self)
+        self.navigation = NavigationShell(self)
+        self.player_bar = PlayerBar(self)
+        self.context_panel = ContextPanel(self)
+
+    def _initialize_state(self) -> None:
+        """Initialize transient state that is not owned by a feature controller."""
+        self._closing = False
+        self._pending_music_exports: set[str] = set()
+        self._private_export_sources: dict[str, Path] = {}
         self.selected_navigation = 0
-        self._initialize_search_page()
-        self._initialize_library_page()
-        self._initialize_playlists_page()
         self.active_panel: str | None = None
         self.pending_download_actions: dict[str, tuple[str, str | None]] = {}
         self._download_play_requests: dict[str, int] = {}
         self._last_announced_track: str | None = None
+
+    def _create_shell(self) -> Any:
+        """Create only the presentation shell bundled for this target."""
         self.presentation = presentation_kind(
-            page.platform, native_mobile=self._is_mobile_platform()
+            self.page.platform, native_mobile=self._is_mobile_platform()
         )
         if self.presentation is PresentationKind.MOBILE:
             from musicplayer.ui.mobile.shell import MobileShell
 
-            self.shell = MobileShell(self)
-        else:
-            from musicplayer.ui.desktop.shell import DesktopShell
+            return MobileShell(self)
 
-            self.shell = DesktopShell(self)
-        self._configure_page()
-        self._build_shell()
+        from musicplayer.ui.desktop.shell import DesktopShell
+
+        return DesktopShell(self)
 
     def _configure_page(self) -> None:
         self.page.title = "Melody — Music player"
@@ -225,10 +212,18 @@ class MusicPlayerApp(
         self.page.on_resize = self._page_resized
         self.page.on_app_lifecycle_state_change = self._app_lifecycle_changed
         self.page.on_close = self._close
+        # Browser tabs disconnect without emitting the native window close
+        # event. Use the same idempotent teardown path for both lifecycles.
+        self.page.on_disconnect = self._close
 
     def _app_lifecycle_changed(self, event: ft.AppLifecycleStateChangeEvent) -> None:
         """Refresh native playback state after the page returns to the foreground."""
-        if event.state not in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):
+        foreground = event.state in (
+            ft.AppLifecycleState.SHOW,
+            ft.AppLifecycleState.RESUME,
+        )
+        self.backend.set_foreground(foreground)
+        if not foreground:
             return
         self.backend.refresh_state()
         self.backend.invalidate_media_session()
@@ -240,13 +235,15 @@ class MusicPlayerApp(
     def _playback_changed(self, change: str = "state") -> None:
         if change != "volume":
             self._sync_system_media(refresh_metadata=change == "track")
+        if change == "track" and self._private_export_sources:
+            self.tasks.start(self._cleanup_exported_sources)
         if change == "progress":
-            self._refresh_player_progress()
+            self.player_bar._refresh_player_progress()
             return
         if change == "volume":
-            self._refresh_player_volume()
+            self.player_bar._refresh_player_volume()
             return
-        self._refresh_player()
+        self.player_bar._refresh_player()
         current = self.playback.current_track_id or (
             f"stream:{self.playback.external_title}"
             if self.playback.external_title
@@ -261,61 +258,15 @@ class MusicPlayerApp(
             self._last_announced_track = current
             self._show_message(f"Now playing: {self.player.title.value}")
         if self.active_panel == "queue" and change in {"queue", "track"}:
-            self._refresh_context_panel()
+            self.context_panel._refresh_context_panel()
 
     def _sync_system_media(self, *, refresh_metadata: bool = True) -> None:
         """Keep native lock-screen/notification controls aligned with playback."""
-        if self.playback.external_title:
-            media_key = (
-                "stream",
-                self.playback.external_title,
-                self.playback.external_uploader,
-                self.playback.external_thumbnail,
-            )
-        elif self.playback.current_track_id:
-            media_key = ("track", self.playback.current_track_id)
-        else:
-            media_key = None
-
+        media_key = self._system_media_identity()
         if refresh_metadata or media_key != self._system_media_key:
-            title = ""
-            artist = ""
-            album = ""
-            artwork_uri = ""
-            if self.playback.external_title:
-                title = self.playback.external_title
-                artist = self.playback.external_uploader
-                cache = getattr(self, "thumbnails", None)
-                artwork_uri = (
-                    cache.artwork_uri(self.playback.external_thumbnail)
-                    if cache is not None
-                    else self.playback.external_thumbnail
-                )
-            elif self.playback.current_track_id:
-                try:
-                    track = self.manager.get_track(self.playback.current_track_id)
-                    details = self.library.details(self.playback.current_track_id)
-                except KeyError, OSError, ValueError:
-                    logger.debug(
-                        "Could not resolve system media metadata", exc_info=True
-                    )
-                else:
-                    title = track.title or Path(track.filename).stem
-                    artist = details.uploader
-                    cache = getattr(self, "thumbnails", None)
-                    artwork_uri = (
-                        cache.artwork_uri(details.thumbnail)
-                        if cache is not None
-                        else details.thumbnail
-                    )
-                    # Melody does not currently persist album tags. The source
-                    # name is still useful context in media panels without
-                    # pretending it is an album title.
-                    album = details.source_name
             self._system_media_key = media_key
-            self._system_media_metadata = (title, artist, album, artwork_uri)
-        else:
-            title, artist, album, artwork_uri = self._system_media_metadata
+            self._system_media_metadata = self._resolve_system_media_metadata()
+        title, artist, album, artwork_uri = self._system_media_metadata
 
         has_media = bool(title) and self.playback.media_session_active
         self.backend.sync_media_session(
@@ -338,6 +289,51 @@ class MusicPlayerApp(
             # Stop clears has_media and remains the teardown boundary.
             keep_alive=has_media and bool(getattr(self.playback.queue, "items", ())),
         )
+
+    def _system_media_identity(self) -> tuple[str, ...] | None:
+        """Return the fields whose changes require a metadata refresh."""
+        if self.playback.external_title:
+            return (
+                "stream",
+                self.playback.external_title,
+                self.playback.external_uploader,
+                self.playback.external_thumbnail,
+            )
+        if self.playback.current_track_id:
+            return ("track", self.playback.current_track_id)
+        return None
+
+    def _resolve_system_media_metadata(self) -> tuple[str, str, str, str]:
+        """Resolve display metadata only when the active media identity changes."""
+        if self.playback.external_title:
+            return (
+                self.playback.external_title,
+                self.playback.external_uploader,
+                "",
+                self._artwork_uri(self.playback.external_thumbnail),
+            )
+        if not self.playback.current_track_id:
+            return _EMPTY_MEDIA_METADATA
+
+        try:
+            track = self.manager.get_track(self.playback.current_track_id)
+            details = self.library.details(self.playback.current_track_id)
+        except KeyError, OSError, ValueError:
+            logger.debug("Could not resolve system media metadata", exc_info=True)
+            return _EMPTY_MEDIA_METADATA
+
+        return (
+            track.title or Path(track.filename).stem,
+            details.uploader,
+            # Melody does not currently persist album tags. The source name is
+            # still useful context without pretending it is an album title.
+            details.source_name,
+            self._artwork_uri(details.thumbnail),
+        )
+
+    def _artwork_uri(self, source: str) -> str:
+        cache = getattr(self, "thumbnails", None)
+        return cache.artwork_uri(source) if cache is not None else source
 
     def _media_action(self, action: str, seek_position_ms: int | None) -> None:
         """Apply an idempotent command received from native media controls."""
@@ -362,37 +358,41 @@ class MusicPlayerApp(
             self.playback.seek(self.playback.position_ms + 10_000)
 
     def _download_changed(self, record: DownloadRecord) -> None:
-        self._refresh_download_badge()
-        pending = self.pending_download_actions.get(record.id)
-        if pending and record.status in {"completed", "failed", "cancelled"}:
-            self.pending_download_actions.pop(record.id, None)
-            generation = self._download_play_requests.pop(record.id, None)
-            relevant = pending[0] != "play" or (
-                generation is not None and self.playback.is_current_request(generation)
-            )
-            if relevant:
-                if record.status == "completed":
-                    self._apply_track_action(record.track_ids, *pending)
-                else:
-                    self._show_error(
-                        f"Couldn’t finish the requested action for {record.title}."
-                    )
-        if (
-            record.status in {"completed", "failed", "cancelled"}
-            and self.playlist_import_session is not None
-        ):
-            self._continue_playlist_import(
-                record.url,
-                tuple(record.track_ids) if record.status == "completed" else (),
-            )
-        if (
-            record.status in {"completed", "failed", "cancelled"}
-            and self.selected_navigation == 2
-            and hasattr(self, "library_list")
-        ):
-            self._refresh_library_list()
+        self.context_panel._refresh_download_badge()
+        if record.status == "completed" and self._is_android_platform():
+            self._pending_music_exports.update(record.track_ids)
+            self.tasks.start(self._drain_music_exports)
+
+        if record.status in _TERMINAL_DOWNLOAD_STATUSES:
+            self._finish_pending_download_action(record)
+            self._refresh_after_download()
         if self.active_panel == "downloads":
-            self._refresh_context_panel()
+            self.context_panel._refresh_context_panel()
+
+    def _finish_pending_download_action(self, record: DownloadRecord) -> None:
+        """Apply a queued UI action once its download reaches a terminal state."""
+        pending = self.pending_download_actions.get(record.id)
+        if pending is None:
+            return
+
+        self.pending_download_actions.pop(record.id, None)
+        generation = self._download_play_requests.pop(record.id, None)
+        relevant = pending[0] != "play" or (
+            generation is not None and self.playback.is_current_request(generation)
+        )
+        if not relevant:
+            return
+        if record.status == "completed":
+            self.search_page._apply_track_action(record.track_ids, *pending)
+            return
+        self._show_error(f"Couldn’t finish the requested action for {record.title}.")
+
+    def _refresh_after_download(self) -> None:
+        """Refresh feature views affected by a completed download operation."""
+        if self.playlists_page.playlist_import_session is not None:
+            self.playlists_page.notify_download_changed()
+        if self.selected_navigation == 2 and hasattr(self.library_page, "track_list"):
+            self.library_page._refresh_library_list()
 
     def _keyboard_event(self, event: ft.KeyboardEvent) -> None:
         key = event.key.casefold()
@@ -412,29 +412,125 @@ class MusicPlayerApp(
         )
 
     def _is_mobile_platform(self) -> bool:
-        platform = str(getattr(self.page, "platform", "")).casefold()
-        if "android" in platform or "ios" in platform:
+        if self._page_platform_contains("android", "ios"):
             return True
+        return self._runtime_is_android()
+
+    def _is_android_platform(self) -> bool:
+        return self._page_platform_contains("android") or self._runtime_is_android()
+
+    def _page_platform_contains(self, *names: str) -> bool:
+        platform = str(getattr(self.page, "platform", "")).casefold()
+        return any(name in platform for name in names)
+
+    @staticmethod
+    def _runtime_is_android() -> bool:
         try:
             return current_platform() == "android"
         except UnsupportedPlatformError:
             return False
 
+    def _queue_private_tracks_for_export(self) -> None:
+        """Resume Android exports interrupted before their private copy was removed."""
+        private_root = Path(self.data_directory).resolve()
+        for track in self.manager.list_tracks():
+            try:
+                path = self.manager.track_path(track.id).resolve()
+            except OSError, KeyError, ValueError:
+                continue
+            if path.is_relative_to(private_root) and path.is_file():
+                self._pending_music_exports.add(str(track.id))
+        if self._pending_music_exports:
+            self.tasks.start(self._drain_music_exports)
+
+    async def _drain_music_exports(self) -> None:
+        """Publish staged Android audio and make the public copy canonical."""
+        failed = False
+        private_root = Path(self.data_directory).resolve()
+        while self._pending_music_exports:
+            track_id = self._pending_music_exports.pop()
+            try:
+                source = self.manager.track_path(track_id).resolve()
+                if not source.is_relative_to(private_root) or not source.is_file():
+                    continue
+                published = await self.backend.publish_to_music(source)
+                old_source = await self.tasks.io(
+                    self._adopt_published_track,
+                    track_id,
+                    source,
+                    published,
+                )
+                if old_source is None:
+                    continue
+                if self.playback.current_track_id == track_id:
+                    self._private_export_sources[track_id] = old_source
+                else:
+                    await self.tasks.io(self._remove_unreferenced_file, old_source)
+            except asyncio.CancelledError:
+                self._pending_music_exports.add(track_id)
+                raise
+            except Exception:
+                failed = True
+                logger.exception(
+                    "Could not publish track to the Android Music folder: track_id=%s",
+                    track_id,
+                )
+        if failed:
+            self._show_error(
+                "A downloaded track could not be moved to Music/Melody. "
+                "Melody will retry next time it starts."
+            )
+
+    def _adopt_published_track(
+        self, track_id: str, source: Path, published: Path
+    ) -> Path | None:
+        """Atomically repoint library metadata before removing private audio."""
+        public_root = public_music_directory().resolve()
+        destination = published.resolve()
+        if not destination.is_relative_to(public_root):
+            raise ValueError("Android returned a file outside Music/Melody")
+        self.manager.replace_track_file(track_id, destination)
+        return source if source != destination else None
+
+    async def _cleanup_exported_sources(self) -> None:
+        current = self.playback.current_track_id
+        ready = {
+            track_id: path
+            for track_id, path in self._private_export_sources.items()
+            if track_id != current
+        }
+        for track_id, path in ready.items():
+            await self.tasks.io(self._remove_unreferenced_file, path)
+            self._private_export_sources.pop(track_id, None)
+
+    def _remove_unreferenced_file(self, path: Path) -> None:
+        if not self.manager.is_path_referenced(path):
+            path.unlink(missing_ok=True)
+
     def _accent_hex(self) -> str:
         """Resolve the current accent-color hex from settings."""
-        return accent_color(getattr(self, "_accent_draft", self.settings.accent_color))
+        return accent_color(self.settings_page.accent_draft)
 
     def _reapply_accent(self) -> None:
         self.page.theme = build_theme(self._accent_hex())
         self.page.dark_theme = build_theme(self._accent_hex())
 
     def _close(self, _: Any) -> None:
-        self._cancel_playlist_import_retry()
-        self.playback.close()
+        if self._closing:
+            return
+        self._closing = True
+        self.playlists_page._cancel_playlist_import_retry()
+        # Reject native RPCs before controller cleanup can cancel an in-flight
+        # source. This avoids scheduling cleanup against a disposed session.
         self.backend.close()
+        self.playback.close()
+        for path in tuple(self._private_export_sources.values()):
+            try:
+                self._remove_unreferenced_file(path)
+            except OSError:
+                logger.debug("Could not remove exported staging audio", exc_info=True)
         self.tasks.close()
         self.persistence.close(wait=True)
-        self.playback_workers.shutdown(wait=True, cancel_pending=True)
         # Closing a window must not wait for a slow network read or postprocess.
         # Running jobs observe cancellation at their next yt-dlp callback.
         self.downloads.shutdown(wait=False)
@@ -471,7 +567,7 @@ class MusicPlayerApp(
 
 
 @dataclass
-class AppResources:
+class AppServices:
     directory: Path
     store: ApplicationStore
     manager: MusicManager
@@ -482,31 +578,62 @@ class AppResources:
     available_track_ids: set[str]
 
     @classmethod
-    def load(cls) -> AppResources:
+    def load(cls) -> AppServices:
         """Load only state required to render and resume the local application."""
-        directory = _application_data_directory()
+        directory = application_data_directory()
         store = ApplicationStore(directory / "state.json")
         settings = store.settings
-        manager = MusicManager(directory / "library.mmdb", settings.download_directory)
+        platform_name = current_platform()
+        manager = MusicManager(
+            directory / "library.mmdb",
+            settings.download_directory,
+            additional_music_folders=_public_music_folders(platform_name),
+        )
         library = LibraryService(manager, store)
         providers = ProviderRegistry(settings=settings)
         thumbnails = ThumbnailCache(directory / "thumbnails")
         downloads = DownloadCoordinator(manager, store, settings, thumbnails=thumbnails)
-        available = {
-            str(track.id)
-            for track in manager.list_tracks()
-            if manager.track_path(track.id).is_file()
-        }
         return cls(
-            directory,
-            store,
-            manager,
-            library,
-            providers,
-            thumbnails,
-            downloads,
-            available,
+            directory=directory,
+            store=store,
+            manager=manager,
+            library=library,
+            providers=providers,
+            thumbnails=thumbnails,
+            downloads=downloads,
+            available_track_ids=_available_resume_tracks(
+                manager,
+                store,
+                resume_session=settings.resume_session,
+            ),
         )
+
+
+def _public_music_folders(platform_name: str) -> tuple[Path, ...]:
+    if platform_name != "android":
+        return ()
+    return (public_music_directory(platform_name=platform_name),)
+
+
+def _available_resume_tracks(
+    manager: MusicManager,
+    store: ApplicationStore,
+    *,
+    resume_session: bool,
+) -> set[str]:
+    """Check only queue entries needed to restore playback at startup."""
+    # Scanning every file in a large library made startup perform thousands of
+    # unnecessary filesystem calls even when the persisted queue was short.
+    playback = store.get("playback", {}) if resume_session else {}
+    queue = playback.get("queue", []) if isinstance(playback, dict) else []
+    queued_ids = {
+        track_id
+        for track_id in queue
+        if isinstance(track_id, str) and manager.has_track(track_id)
+    }
+    return {
+        track_id for track_id in queued_ids if manager.track_path(track_id).is_file()
+    }
 
 
 async def main(page: ft.Page) -> None:
@@ -519,9 +646,9 @@ async def main(page: ft.Page) -> None:
     )
     page.add(loading)
     try:
-        resources = await asyncio.to_thread(AppResources.load)
+        services = await asyncio.to_thread(AppServices.load)
         page.controls.clear()
-        MusicPlayerApp(page, resources)
+        MusicPlayerApp(page, services)
     except Exception:  # noqa: BLE001 - final UI boundary must stay user-safe
         logger.error("Melody failed to start")
         page.title = "Melody — Startup error"
@@ -543,8 +670,3 @@ async def main(page: ft.Page) -> None:
                 spacing=14,
             )
         )
-
-
-def _application_data_directory() -> Path:
-    """Compatibility seam for startup and packaged-runtime configuration."""
-    return application_data_directory()

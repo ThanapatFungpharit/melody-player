@@ -137,7 +137,8 @@ class MobilePlayer(PlaybackBindings):
         return self.full_player
 
     def _player_is_mounted(self) -> bool:
-        return any(name == "player" for name, _, _ in self.app.shell.panel_history)
+        history = getattr(self.app.shell, "panel_history", ())
+        return any(name == "player" for name, _, _ in history)
 
     def state_controls(self) -> list[ft.Control]:
         return (

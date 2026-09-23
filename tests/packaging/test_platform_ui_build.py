@@ -47,15 +47,15 @@ for populated in (False, True):
         assert app.presentation.value == presentation
         assert app.views.__name__ == 'musicplayer.ui.' + presentation
         for index in range(4):
-            app.navigate(index)
+            app.navigation.navigate(index)
         if populated:
-            app._open_playlist(str(app.manager.list_playlists()[0].id))
+            app.playlists_page._open_playlist(str(app.manager.list_playlists()[0].id))
         for panel in ('queue', 'downloads', 'settings'):
             app.shell.open_panel(panel)
-            app._close_context_panel()
+            app.context_panel._close_context_panel()
         if presentation == 'mobile':
             app.shell.open_panel('player')
-            app._close_context_panel()
+            app.context_panel._close_context_panel()
         assert not any(name.startswith('musicplayer.ui.' + opposite) for name in sys.modules)
     finally:
         app._close(None)

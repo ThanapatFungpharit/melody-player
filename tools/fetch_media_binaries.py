@@ -14,98 +14,153 @@ import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path, PurePosixPath
+from typing import Any
 
-VERSION = "v9.0.1"
-RELEASE_ROOT = f"https://github.com/binmgr/ffmpeg/releases/download/{VERSION}"
-BTBN_VERSION = "autobuild-2026-09-03-13-17"
-BTBN_RELEASE_ROOT = (
-    f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{BTBN_VERSION}"
-)
-ANDROID_VERSION = "build-264"
-ANDROID_RELEASE_ROOT = (
-    f"https://github.com/rhythmcache/ffmpeg-android/releases/download/{ANDROID_VERSION}"
-)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BINARY_ROOT = PROJECT_ROOT / "src" / "musicplayer" / "bin"
 
 
 @dataclass(frozen=True)
 class Archive:
-    filename: str
-    sha256: str
-    release_root: str = RELEASE_ROOT
-    version: str = VERSION
+    """A stable selector for an asset in a provider's latest GitHub release."""
+
+    repository: str
+    filename: str | None = None
+    filename_suffix: str | None = None
     license: str = "GPL-2.0-or-later"
-    source_code: str = f"https://github.com/binmgr/ffmpeg/tree/{VERSION}"
 
     @property
-    def url(self) -> str:
-        return f"{self.release_root}/{self.filename}"
+    def selector(self) -> str:
+        if self.filename is not None:
+            return self.filename
+        if self.filename_suffix is not None:
+            return f"*{self.filename_suffix}"
+        raise ValueError("An FFmpeg archive needs an asset filename selector")
+
+
+@dataclass(frozen=True)
+class ReleaseAsset:
+    filename: str
+    url: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ResolvedArchive:
+    archive: Archive
+    filename: str
+    url: str
+    sha256: str
+    version: str
+
+    @property
+    def source_code(self) -> str:
+        return f"https://github.com/{self.archive.repository}/tree/{self.version}"
 
 
 ARCHIVES: dict[tuple[str, str], Archive] = {
     ("windows", "x86_64"): Archive(
-        "ffmpeg-n9.0.1-11-ge47273f4d9-win64-gpl-9.0.zip",
-        "cf2beec370200044af55f6bed072bb7aa4cdf49901812e249c8a00ce2a7cba0c",
-        release_root=BTBN_RELEASE_ROOT,
-        version="n9.0.1-11-ge47273f4d9",
-        license="GPL-3.0-or-later",
-        source_code=(
-            "https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-09-03-13-17"
-        ),
+        "binmgr/ffmpeg",
+        "ffmpeg-windows-amd64.zip",
     ),
     ("windows", "arm64"): Archive(
-        "ffmpeg-n9.0.1-11-ge47273f4d9-winarm64-gpl-9.0.zip",
-        "e3f7c643a0d3c86fc5538570455906e065faa14685f7d46b1c2302bf49058084",
-        release_root=BTBN_RELEASE_ROOT,
-        version="n9.0.1-11-ge47273f4d9",
-        license="GPL-3.0-or-later",
-        source_code=(
-            "https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-09-03-13-17"
-        ),
+        "binmgr/ffmpeg",
+        "ffmpeg-windows-arm64.zip",
     ),
     ("linux", "x86_64"): Archive(
+        "binmgr/ffmpeg",
         "ffmpeg-linux-amd64.tar.gz",
-        "981493cde0bd9303129e6a7bef1a22bb65089bd8e04fd96622878a865761d706",
     ),
     ("linux", "arm64"): Archive(
+        "binmgr/ffmpeg",
         "ffmpeg-linux-arm64.tar.gz",
-        "4fdc66bd708aef86f4e431f52f72bb26ce49eb9e12d34ff92c069e04dabc2df5",
     ),
     ("macos", "x86_64"): Archive(
+        "binmgr/ffmpeg",
         "ffmpeg-darwin-amd64.tar.gz",
-        "a58d579615e8bfd54cb063e208d9c6c33b6ed81a8030885347167ff86ba43148",
     ),
     ("macos", "arm64"): Archive(
+        "binmgr/ffmpeg",
         "ffmpeg-darwin-arm64.tar.gz",
-        "5e28fe92746c35be5a5c0c7bffe8397c36e9bf75867eb28992c69fcfb69be155",
     ),
     ("android", "arm64"): Archive(
-        "ffmpeg-8.0-ee2eb6c-Static-android-arm64-v8a.zip",
-        "a18551c916b3cb60c41930d0affdf44763497fe318ccec9555ab93097a9c28c8",
-        release_root=ANDROID_RELEASE_ROOT,
-        version=ANDROID_VERSION,
+        "rhythmcache/ffmpeg-android",
+        filename_suffix="-Static-android-arm64-v8a.zip",
         license="GPL-3.0-or-later",
-        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
     ("android", "arm"): Archive(
-        "ffmpeg-8.0-ee2eb6c-Static-android-armeabi-v7a.zip",
-        "15fd326dd60cae3e444e33911663ba3bb37f2f9f1672581d09e1f4d4e4cf5b9f",
-        release_root=ANDROID_RELEASE_ROOT,
-        version=ANDROID_VERSION,
+        "rhythmcache/ffmpeg-android",
+        filename_suffix="-Static-android-armeabi-v7a.zip",
         license="GPL-3.0-or-later",
-        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
     ("android", "x86_64"): Archive(
-        "ffmpeg-8.0-ee2eb6c-Static-android-x86_64.zip",
-        "f41fb1339c4d609e376bc99ea0982a11db5cebeb2dce2e302c60cce9dd0ffe0e",
-        release_root=ANDROID_RELEASE_ROOT,
-        version=ANDROID_VERSION,
+        "rhythmcache/ffmpeg-android",
+        filename_suffix="-Static-android-x86_64.zip",
         license="GPL-3.0-or-later",
-        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
 }
+
+
+@cache
+def _latest_release(repository: str) -> tuple[str, tuple[ReleaseAsset, ...]]:
+    """Read GitHub's current release manifest once for each artifact provider."""
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/releases/latest",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Melody-build/1",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        payload: Any = json.load(response)
+
+    tag = payload.get("tag_name")
+    assets = payload.get("assets")
+    if not isinstance(tag, str) or not isinstance(assets, list):
+        raise TypeError(f"GitHub returned an invalid release manifest for {repository}")
+
+    resolved_assets: list[ReleaseAsset] = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        filename = asset.get("name")
+        url = asset.get("browser_download_url")
+        digest = asset.get("digest")
+        if not isinstance(filename, str) or not isinstance(url, str):
+            continue
+        if not isinstance(digest, str) or not digest.startswith("sha256:"):
+            continue
+        sha256 = digest.removeprefix("sha256:")
+        if len(sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in sha256
+        ):
+            continue
+        resolved_assets.append(ReleaseAsset(filename, url, sha256))
+
+    return tag, tuple(resolved_assets)
+
+
+def _resolve_archive(archive: Archive) -> ResolvedArchive:
+    """Resolve a stable filename selector without embedding a release tag in code."""
+    version, assets = _latest_release(archive.repository)
+    if archive.filename is not None:
+        matches = [asset for asset in assets if asset.filename == archive.filename]
+    else:
+        suffix = archive.filename_suffix
+        matches = [
+            asset
+            for asset in assets
+            if suffix is not None and asset.filename.endswith(suffix)
+        ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected one asset matching {archive.selector!r} in "
+            f"{archive.repository}'s latest release, found {len(matches)}"
+        )
+    asset = matches[0]
+    return ResolvedArchive(archive, asset.filename, asset.url, asset.sha256, version)
 
 
 def fetch_bundle(
@@ -127,20 +182,25 @@ def fetch_bundle(
     metadata_path = target / "bundle.json"
     if all(path.is_file() for path in expected) and metadata_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if metadata.get("archive_sha256") == archive.sha256:
+        if (
+            metadata.get("source_repository") == archive.repository
+            and metadata.get("asset_selector") == archive.selector
+            and isinstance(metadata.get("archive_sha256"), str)
+        ):
             print(f"Using cached media tools for {platform_name}/{architecture}")
             return target
 
+    resolved = _resolve_archive(archive)
     target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="melody-ffmpeg-") as temporary:
-        download = Path(temporary) / archive.filename
-        print(f"Downloading {archive.url}")
-        _download(archive.url, download)
+        download = Path(temporary) / resolved.filename
+        print(f"Downloading {resolved.url}")
+        _download(resolved.url, download)
         actual_digest = _sha256(download)
-        if actual_digest != archive.sha256:
+        if actual_digest != resolved.sha256:
             raise RuntimeError(
-                f"Checksum mismatch for {archive.filename}: expected "
-                f"{archive.sha256}, received {actual_digest}"
+                f"Checksum mismatch for {resolved.filename}: expected "
+                f"{resolved.sha256}, received {actual_digest}"
             )
         extracted = _extract_programs(download, Path(temporary) / "extracted")
         for program in (f"ffmpeg{suffix}", f"ffprobe{suffix}"):
@@ -158,11 +218,13 @@ def fetch_bundle(
     metadata_path.write_text(
         json.dumps(
             {
-                "version": archive.version,
-                "source": archive.url,
-                "archive_sha256": archive.sha256,
+                "version": resolved.version,
+                "source_repository": archive.repository,
+                "asset_selector": archive.selector,
+                "source": resolved.url,
+                "archive_sha256": resolved.sha256,
                 "license": archive.license,
-                "source_code": archive.source_code,
+                "source_code": resolved.source_code,
             },
             indent=2,
         )

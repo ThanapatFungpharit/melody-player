@@ -32,6 +32,19 @@ class ThumbnailCacheTests(unittest.TestCase):
             self.assertFalse(cache.store_bytes("file:///cover.jpg", JPEG))
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_memory_cache_is_bounded_by_bytes_as_well_as_entry_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ThumbnailCache(directory)
+            artwork = b"x" * (6 * 1024 * 1024)
+
+            cache._remember("first", artwork)
+            cache._remember("second", artwork)
+            cache._remember("third", artwork)
+
+            self.assertNotIn("first", cache._memory)
+            self.assertEqual(list(cache._memory), ["second", "third"])
+            self.assertEqual(cache._memory_bytes, 12 * 1024 * 1024)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,6 +117,15 @@ class ApplicationStore:
         # shared with the store by this conversion.
         return TrackDetails.from_dict(raw)
 
+    def track_details_many(self, track_ids: Iterable[str]) -> dict[str, TrackDetails]:
+        """Materialize one metadata snapshot for a multi-row UI render."""
+        raw_details = self._data["track_details"]
+        return {
+            key: TrackDetails.from_dict(raw_details.get(key, {}))
+            for track_id in track_ids
+            if (key := str(track_id))
+        }
+
     def has_track_details(self, track_id: str) -> bool:
         return track_id in self._data["track_details"]
 

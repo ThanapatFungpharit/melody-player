@@ -10,7 +10,9 @@ import flet as ft
 
 from musicplayer.app import MusicPlayerApp
 from musicplayer.application.models import AppSettings
+from musicplayer.ui.components.common import SharedUIComponents
 from musicplayer.ui.desktop.shell import DesktopShell
+from musicplayer.ui.pages.settings import SettingsPage
 
 COOKIE_FILE = b"""# Netscape HTTP Cookie File
 .youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tsecret
@@ -39,8 +41,11 @@ class _Manager:
 class _Store:
     def __init__(self) -> None:
         self.saved: AppSettings | None = None
+        self.fail = False
 
     def save_settings(self, settings: AppSettings) -> None:
+        if self.fail:
+            raise OSError("state write failed")
         self.saved = settings
 
 
@@ -56,9 +61,17 @@ class _FilePicker:
                 id=1,
                 name="cookies.txt",
                 size=len(self.content),
-                bytes=self.content,
+                bytes=self.content,  # ty: ignore[invalid-argument-type]
             )
         ]
+
+
+class _InlineTasks:
+    def start(self, operation, *args, **kwargs) -> None:
+        asyncio.run(operation(*args, **kwargs))
+
+    async def io(self, operation, *args, **kwargs):
+        return operation(*args, **kwargs)
 
 
 class SettingsCookieUiTests(unittest.TestCase):
@@ -72,17 +85,21 @@ class SettingsCookieUiTests(unittest.TestCase):
         app.manager = _Manager()  # ty: ignore[invalid-assignment]
         app.store = _Store()  # ty: ignore[invalid-assignment]
         app.file_picker = _FilePicker(content)  # ty: ignore[invalid-assignment]
+        app.tasks = _InlineTasks()  # ty: ignore[invalid-assignment]
         app._show_error = Mock()
         app._show_message = Mock()
-        app._settings_view()
+        app._reapply_accent = Mock()
+        app.shared = SharedUIComponents(app)
+        app.settings_page = SettingsPage(app)
+        app.settings_page._settings_view()
         return app
 
     def test_valid_upload_is_selected_with_data_and_saved_privately(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             app = self._app(directory, COOKIE_FILE)
 
-            asyncio.run(app._pick_cookie_file(None))
-            app._save_settings()
+            asyncio.run(app.settings_page._pick_cookie_file(None))
+            app.settings_page._save_settings()
 
             cookie_path = app.data_directory / "cookies.txt"
             self.assertTrue(app.file_picker.arguments["with_data"])  # ty: ignore[unresolved-attribute]
@@ -96,11 +113,53 @@ class SettingsCookieUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             app = self._app(directory, b'{"cookies": []}')
 
-            asyncio.run(app._pick_cookie_file(None))
+            asyncio.run(app.settings_page._pick_cookie_file(None))
 
             app._show_error.assert_called_once()  # ty: ignore[unresolved-attribute]
-            self.assertIsNone(app._pending_cookie_file)
+            self.assertIsNone(app.settings_page.pending_cookie_file)
             self.assertFalse((app.data_directory / "cookies.txt").exists())
+
+    def test_failed_save_restores_previous_managed_cookie(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = self._app(directory, COOKIE_FILE)
+            cookie_path = app.data_directory / "cookies.txt"
+            cookie_path.parent.mkdir(parents=True)
+            previous = COOKIE_FILE.replace(b"secret", b"previous")
+            cookie_path.write_bytes(previous)
+            app.settings.cookie_file = str(cookie_path)
+            app.store.fail = True  # ty: ignore[unresolved-attribute]
+
+            asyncio.run(app.settings_page._pick_cookie_file(None))
+            with self.assertRaisesRegex(OSError, "state write failed"):
+                app.settings_page._save_settings()
+
+            self.assertEqual(cookie_path.read_bytes(), previous)
+            self.assertEqual(app.settings.cookie_file, str(cookie_path))
+
+    def test_failed_save_restores_removed_managed_cookie(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = self._app(directory, COOKIE_FILE)
+            cookie_path = app.data_directory / "cookies.txt"
+            cookie_path.parent.mkdir(parents=True)
+            cookie_path.write_bytes(COOKIE_FILE)
+            app.settings.cookie_file = str(cookie_path)
+            app.store.fail = True  # ty: ignore[unresolved-attribute]
+            app.settings_page._remove_cookie_file(None)
+
+            with self.assertRaisesRegex(OSError, "state write failed"):
+                app.settings_page._save_settings()
+
+            self.assertEqual(cookie_path.read_bytes(), COOKIE_FILE)
+            self.assertEqual(app.settings.cookie_file, str(cookie_path))
+
+    def test_missing_saved_cookie_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = self._app(directory, COOKIE_FILE)
+            app.settings.cookie_file = str(Path(directory) / "missing-cookies.txt")
+
+            app.settings_page._settings_view()
+
+            self.assertIn("missing", app.settings_page.cookie_status.value.lower())
 
 
 if __name__ == "__main__":

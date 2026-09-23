@@ -4,7 +4,8 @@ import "package:audioplayers/audioplayers.dart";
 import "package:flet/flet.dart";
 import "package:flutter/foundation.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
-import "package:flutter_media_session/flutter_media_session_platform_interface.dart";
+
+import "native_playback_registry.dart";
 
 class BackgroundAudioSessionService extends FletService {
   BackgroundAudioSessionService({required super.control});
@@ -13,6 +14,8 @@ class BackgroundAudioSessionService extends FletService {
   bool _active = false;
   bool _keepAlive = false;
   bool _disposed = false;
+  (String, String, String, String, int)? _metadataSnapshot;
+  (bool, bool, bool)? _actionsSnapshot;
 
   @override
   void init() {
@@ -27,15 +30,38 @@ class BackgroundAudioSessionService extends FletService {
 
   void _installActionHandler() {
     _session.setActionHandler(
-      onPlay: () => _sendAction("play"),
-      onPause: () => _sendAction("pause"),
-      onSkipToNext: () => _sendAction("skipToNext"),
-      onSkipToPrevious: () => _sendAction("skipToPrevious"),
-      onStop: () => _sendAction("stop"),
-      onSeekTo: (position) => _sendAction("seekTo", seekPosition: position),
-      onRewind: () => _sendAction("rewind"),
-      onFastForward: () => _sendAction("fastForward"),
+      onPlay: () => _handleAction("play"),
+      onPause: () => _handleAction("pause"),
+      onSkipToNext: () => _handleAction("skipToNext"),
+      onSkipToPrevious: () => _handleAction("skipToPrevious"),
+      onStop: () => _handleAction("stop"),
+      onSeekTo: (position) => _handleAction("seekTo", seekPosition: position),
+      onRewind: () => _handleAction("rewind"),
+      onFastForward: () => _handleAction("fastForward"),
     );
+  }
+
+  Future<void> _handleAction(
+    String action, {
+    Duration? seekPosition,
+  }) async {
+    if (_disposed) return;
+    try {
+      final handled = await activeNativePlaybackEngine?.handleMediaAction(
+            action,
+            seekPosition: seekPosition,
+          ) ??
+          false;
+      if (handled) {
+        if (action == "stop") await _deactivate();
+        return;
+      }
+    } catch (error) {
+      debugPrint("BackgroundAudioSession: native action failed: $error");
+    }
+    // A queue-less preview may still need Python application policy (for
+    // example Skip Next returning to the durable library queue).
+    _sendAction(action, seekPosition: seekPosition);
   }
 
   Future<void> _configureAudioContext() async {
@@ -109,6 +135,8 @@ class BackgroundAudioSessionService extends FletService {
       // an activity detach. Re-running the attachment also repairs action
       // handlers if the platform service was recreated while the page slept.
       _active = false;
+      _metadataSnapshot = null;
+      _actionsSnapshot = null;
     }
     await _ensureActive();
     final keepAlive = data["keep_alive"] as bool? ?? false;
@@ -125,28 +153,44 @@ class BackgroundAudioSessionService extends FletService {
     final playing = data["playing"] as bool? ?? false;
     final loading = data["loading"] as bool? ?? false;
 
-    await FlutterMediaSessionPlatform.instance.updateMetadata(
-      MediaMetadata(
-        title: title.isEmpty ? "Melody" : title,
-        artist: artist == null || artist.isEmpty ? "Unknown artist" : artist,
-        album: album == null || album.isEmpty ? null : album,
-        artworkUri: artworkUri == null || artworkUri.isEmpty
-            ? null
-            : artworkUri,
-        duration: Duration(milliseconds: durationMs),
-      ),
+    final metadataSnapshot = (
+      title,
+      artist ?? "",
+      album ?? "",
+      artworkUri ?? "",
+      durationMs,
     );
+    if (_metadataSnapshot != metadataSnapshot) {
+      await FlutterMediaSessionPlatform.instance.updateMetadata(
+        MediaMetadata(
+          title: title.isEmpty ? "Melody" : title,
+          artist: artist == null || artist.isEmpty ? "Unknown artist" : artist,
+          album: album == null || album.isEmpty ? null : album,
+          artworkUri:
+              artworkUri == null || artworkUri.isEmpty ? null : artworkUri,
+          duration: Duration(milliseconds: durationMs),
+        ),
+      );
+      _metadataSnapshot = metadataSnapshot;
+    }
 
-    final actions = <MediaAction>{
-      if (playing) MediaAction.pause else MediaAction.play,
-      MediaAction.stop,
-      MediaAction.seekTo,
-      MediaAction.rewind,
-      MediaAction.fastForward,
-      if (data["has_next"] as bool? ?? false) MediaAction.skipToNext,
-      if (data["has_previous"] as bool? ?? false) MediaAction.skipToPrevious,
-    };
-    await FlutterMediaSessionPlatform.instance.updateAvailableActions(actions);
+    final hasNext = data["has_next"] as bool? ?? false;
+    final hasPrevious = data["has_previous"] as bool? ?? false;
+    final actionsSnapshot = (playing, hasNext, hasPrevious);
+    if (_actionsSnapshot != actionsSnapshot) {
+      final actions = <MediaAction>{
+        if (playing) MediaAction.pause else MediaAction.play,
+        MediaAction.stop,
+        MediaAction.seekTo,
+        MediaAction.rewind,
+        MediaAction.fastForward,
+        if (hasNext) MediaAction.skipToNext,
+        if (hasPrevious) MediaAction.skipToPrevious,
+      };
+      await FlutterMediaSessionPlatform.instance
+          .updateAvailableActions(actions);
+      _actionsSnapshot = actionsSnapshot;
+    }
 
     final repeatMode = switch (data["repeat_mode"] as String? ?? "off") {
       "track" => MediaRepeatMode.one,
@@ -188,6 +232,8 @@ class BackgroundAudioSessionService extends FletService {
     }
     _active = false;
     await _session.deactivate();
+    _metadataSnapshot = null;
+    _actionsSnapshot = null;
   }
 
   @override
@@ -197,7 +243,8 @@ class BackgroundAudioSessionService extends FletService {
     _session.clearActionHandler();
     if (_keepAlive) {
       _keepAlive = false;
-      unawaited(_session.setBackgroundKeepAlive(false).catchError((Object _) {}));
+      unawaited(
+          _session.setBackgroundKeepAlive(false).catchError((Object _) {}));
     }
     unawaited(_session.deactivate().catchError((Object _) {}));
     super.dispose();

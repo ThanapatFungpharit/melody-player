@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -18,19 +17,35 @@ from .queue import PlaybackQueue
 from .store import ApplicationStore
 
 
-class AudioBackend(Protocol):
+class TrackPlayerBackend(Protocol):
+    """Required contract for the package-owned managed track player."""
+
     def load(self, source: str | bytes) -> None: ...
+    def set_queue(
+        self,
+        items: list[dict[str, str]],
+        current_index: int,
+        *,
+        repeat_mode: str,
+        shuffle: bool,
+    ) -> None: ...
+
+    def update_queue(
+        self,
+        items: list[dict[str, str]],
+        current_index: int,
+        *,
+        repeat_mode: str,
+        shuffle: bool,
+    ) -> None: ...
+
     def play(self, position_ms: int = 0) -> None: ...
     def pause(self) -> None: ...
     def resume(self) -> None: ...
     def seek(self, position_ms: int) -> None: ...
     def set_volume(self, value: float) -> None: ...
-
-
-class BackgroundExecutor(Protocol):
-    def submit(
-        self, function: Callable[..., str | bytes], /, *args: object
-    ) -> Future[str | bytes]: ...
+    def cancel_load(self) -> None: ...
+    def discard_source(self) -> None: ...
 
 
 def _serialized[**P, R](method: Callable[P, R]) -> Callable[P, R]:
@@ -56,18 +71,16 @@ class PlaybackSnapshot:
 
 
 class PlaybackController:
-    """Coordinates persistent queue semantics with a platform audio backend."""
+    """Coordinates persistent queue semantics with the managed track player."""
 
     def __init__(
         self,
         manager: MusicManager,
         library: LibraryService,
         store: ApplicationStore,
-        backend: AudioBackend,
+        backend: TrackPlayerBackend,
         *,
-        io_executor: BackgroundExecutor | None = None,
         persistence: PlaybackPersistence | None = None,
-        dispatch: Callable[..., None] | None = None,
         available_track_ids: set[str] | None = None,
         on_change: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
@@ -76,9 +89,7 @@ class PlaybackController:
         self.library = library
         self.store = store
         self.backend = backend
-        self.io_executor = io_executor
         self.persistence = persistence
-        self.dispatch = dispatch
         self.on_change = on_change
         self.on_error = on_error
         settings = store.settings
@@ -130,16 +141,10 @@ class PlaybackController:
         self._source_loaded = False
         self._load_lock = RLock()
         self._load_generation = 0
-        self._load_future: Future[str | bytes] | None = None
-        self._preload_generation = 0
-        self._preload_track_id: str | None = None
-        self._preload_future: Future[str | bytes] | None = None
-        self._preloaded_source: str | bytes | None = None
         self._closed = False
-        self._native_loading = False
+        self._player_loading = False
         self._loading = False
         self._load_autoplay = False
-        self._load_position = 0
         self._last_persisted_position = 0.0
         self._last_backend_error_at: float | None = None
         self._pending_play_record_id: str | None = None
@@ -160,7 +165,7 @@ class PlaybackController:
                 self.current_track_id,
                 tuple(self.queue.items),
                 self._playing,
-                self._loading or self._native_loading,
+                self._loading or self._player_loading,
                 self.position_ms,
                 self.duration_ms,
                 self._load_generation,
@@ -206,7 +211,6 @@ class PlaybackController:
             start_index=available_index,
             shuffle=shuffle,
         )
-        self._cancel_preload()
         self._load_current(autoplay=True)
 
     @_serialized
@@ -220,13 +224,12 @@ class PlaybackController:
     ) -> None:
         """Play an ephemeral search result without adding it to the library."""
         self._cancel_pending_load()
-        self._cancel_preload()
         self.external_title = title
         self.external_uploader = uploader
         self.external_thumbnail = thumbnail
         self._source_loaded = True
         self._loaded_track_id = None
-        self._native_loading = True
+        self._player_loading = True
         self.position_ms = 0
         self.duration_ms = 0
         self._playing = True
@@ -248,7 +251,14 @@ class PlaybackController:
             self.queue.select(self.queue.items.index(track_id))
         except ValueError:
             self.queue.replace([track_id])
-        self._cancel_preload(keep_track_id=track_id)
+        self._load_current(autoplay=True)
+
+    @_serialized
+    def play_queue_index(self, index: int) -> None:
+        """Play one existing queue row without rebuilding or reshuffling it."""
+        if not 0 <= int(index) < len(self.queue.items):
+            return
+        self.queue.select(int(index))
         self._load_current(autoplay=True)
 
     @_serialized
@@ -262,8 +272,8 @@ class PlaybackController:
                 self._error("Your library is empty. Download a track first.")
             return
         if self._loading:
-            # Loading is already off the UI thread. A toggle changes only the
-            # desired state applied when those bytes become available.
+            # A search selection is still resolving or downloading. Preserve
+            # the desired state until its managed-player source is available.
             self._load_autoplay = not self._playing
             self._playing = self._load_autoplay
             if self._source_loaded:
@@ -276,7 +286,7 @@ class PlaybackController:
             self._persist()
             self._notify()
             return
-        if self._native_loading:
+        if self._player_loading:
             self._playing = not self._playing
             if self._playing:
                 self._media_session_active = True
@@ -303,15 +313,14 @@ class PlaybackController:
         self._notify()
 
     @_serialized
-    def next(self, *, automatic: bool = False) -> None:
+    def next(self) -> None:
         was_external = bool(self.external_title)
         source_was_loaded = self._source_loaded
         was_playing = self._playing
         self._clear_external()
-        if self.queue.next(automatic=automatic):
+        if self.queue.next():
             self._load_current(autoplay=True)
         else:
-            self._cancel_preload()
             if source_was_loaded:
                 if was_playing:
                     self.backend.pause()
@@ -332,7 +341,6 @@ class PlaybackController:
         if self.position_ms > 5_000:
             self.seek(0)
         elif self.queue.previous():
-            self._cancel_preload(keep_track_id=self.current_track_id)
             self._load_current(autoplay=True)
 
     @_serialized
@@ -344,14 +352,10 @@ class PlaybackController:
         removes system controls.
         """
         self._cancel_pending_load(discard_source=True)
-        self._cancel_preload()
-        if self._source_loaded or self._playing:
-            self.backend.pause()
-            self.backend.seek(0)
         self._source_loaded = False
         self._loaded_track_id = None
         self._playing = False
-        self._native_loading = False
+        self._player_loading = False
         self._media_session_active = False
         self.position_ms = 0
         self.duration_ms = 0
@@ -369,25 +373,32 @@ class PlaybackController:
             0, min(int(position_ms), self.duration_ms or int(position_ms))
         )
         if self._loading:
-            self._load_position = self.position_ms
             self._persist()
             self._notify()
             return
+        if not self._source_loaded:
+            # A restored queue has a meaningful resume position before its
+            # managed-player source exists. Keep that intent locally so the next
+            # play load start at this position instead of issuing a seek to an
+            # empty decoder.
+            self._persist()
+            self._notify("progress")
+            return
         self.backend.seek(self.position_ms)
         self._persist()
-        self._notify()
+        self._notify("progress")
 
     @_serialized
     def add_next(self, track_id: str) -> None:
         self.queue.add_next(track_id)
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
 
     @_serialized
     def add_last(self, track_id: str) -> None:
         self.queue.add_last(track_id)
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
 
@@ -398,7 +409,7 @@ class PlaybackController:
         for track_id in reversed(items):
             self.queue.add_next(track_id)
         if items:
-            self._refresh_preload_prediction()
+            self._sync_queue()
             self._persist()
             self._notify("queue")
         return len(items)
@@ -410,7 +421,7 @@ class PlaybackController:
         for track_id in items:
             self.queue.add_last(track_id)
         if items:
-            self._refresh_preload_prediction()
+            self._sync_queue()
             self._persist()
             self._notify("queue")
         return len(items)
@@ -419,21 +430,19 @@ class PlaybackController:
     def remove_queue_item(self, index: int) -> None:
         was_current = index == self.queue.current_index
         self.queue.remove_at(index)
-        self._cancel_preload()
         if was_current and not self.external_title:
             if self.queue.current:
                 self._load_current(autoplay=self._playing)
             else:
                 self._cancel_pending_load()
-                if self._source_loaded:
-                    self.backend.pause()
                 self._source_loaded = False
                 self._loaded_track_id = None
                 self._playing = False
                 self.position_ms = 0
                 self.duration_ms = 0
+                self._sync_queue()
         else:
-            self._schedule_preload()
+            self._sync_queue()
         self._persist()
         self._notify("queue")
 
@@ -442,7 +451,7 @@ class PlaybackController:
         target = index + offset
         if 0 <= target < len(self.queue.items):
             self.queue.move(index, target)
-            self._refresh_preload_prediction()
+            self._sync_queue()
             self._persist()
             self._notify("queue")
 
@@ -457,14 +466,14 @@ class PlaybackController:
             new_index -= 1
         target = max(0, min(new_index, len(self.queue.items) - 1))
         self.queue.move(old_index, target)
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
 
     @_serialized
     def clear_queue(self) -> None:
         self.queue.clear(keep_current=True)
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
 
@@ -476,22 +485,20 @@ class PlaybackController:
         )
         if library_source_active:
             self._cancel_pending_load()
-            if self._source_loaded or self._playing:
-                self.backend.pause()
             self._source_loaded = False
             self._loaded_track_id = None
             self._playing = False
             self.position_ms = 0
             self.duration_ms = 0
         self.queue.clear()
-        self._cancel_preload()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
 
     @_serialized
     def toggle_shuffle(self) -> bool:
         self.queue.set_shuffle(not self.queue.shuffle)
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
         return self.queue.shuffle
@@ -499,7 +506,7 @@ class PlaybackController:
     @_serialized
     def cycle_repeat(self):
         mode = self.queue.cycle_repeat()
-        self._refresh_preload_prediction()
+        self._sync_queue()
         self._persist()
         self._notify("queue")
         return mode
@@ -551,9 +558,12 @@ class PlaybackController:
 
     @_serialized
     def on_position(self, position_ms: int) -> None:
-        if self._loading or self._native_loading:
+        if self._loading or self._player_loading:
             return
-        self.position_ms = max(0, int(position_ms))
+        position = max(0, int(position_ms))
+        self.position_ms = (
+            min(position, self.duration_ms) if self.duration_ms else position
+        )
         now = time.monotonic()
         if now - self._last_persisted_position >= 5:
             self._persist()
@@ -562,14 +572,17 @@ class PlaybackController:
 
     @_serialized
     def on_duration(self, duration_ms: int) -> None:
-        if self._loading or self._native_loading:
+        if self._loading or self._player_loading:
             return
         self.duration_ms = max(0, int(duration_ms))
+        if self.duration_ms and self.position_ms > self.duration_ms:
+            self.position_ms = self.duration_ms
+            self._persist()
         self._notify("progress")
 
     @_serialized
     def on_playing(self, playing: bool) -> None:
-        if self._loading or self._native_loading or not self._source_loaded:
+        if self._loading or self._player_loading or not self._source_loaded:
             return
         self._playing = playing
         if playing:
@@ -592,19 +605,70 @@ class PlaybackController:
 
     @_serialized
     def on_completed(self) -> None:
-        if self._loading or self._native_loading or not self._source_loaded:
+        if self._loading or self._player_loading or not self._source_loaded:
             return
-        self.next(automatic=True)
+        # The managed player has already applied repeat/queue policy. A
+        # completion event reaches Python only when it found no next item.
+        self._playing = False
+        self.position_ms = self.duration_ms
+        self._persist()
+        self._notify()
+
+    @_serialized
+    def on_track_changed(self, track_id: str, index: int) -> None:
+        """Mirror a transition selected by the managed queue engine."""
+        if self._closed:
+            return
+        normalized = str(track_id)
+        if not (0 <= int(index) < len(self.queue.items)):
+            return
+        if self.queue.items[int(index)] != normalized:
+            try:
+                index = self.queue.items.index(normalized)
+            except ValueError:
+                return
+        self.queue.select(int(index))
+        self.external_title = ""
+        self.external_uploader = ""
+        self.external_thumbnail = ""
+        self._source_loaded = True
+        self._loaded_track_id = normalized
+        self._player_loading = True
+        self._loading = False
+        self._playing = True
+        self._media_session_active = True
+        self.position_ms = 0
+        self.duration_ms = 0
+        self._pending_play_record_id = normalized
+        self._persist()
+        self._notify("track")
+
+    @_serialized
+    def on_stopped(self) -> None:
+        """Adopt Stop after the managed player handled a system action."""
+        if self._closed:
+            return
+        self._source_loaded = False
+        self._loaded_track_id = None
+        self._player_loading = False
+        self._loading = False
+        self._playing = False
+        self._media_session_active = False
+        self.position_ms = 0
+        self.duration_ms = 0
+        self._pending_play_record_id = None
+        self.external_title = ""
+        self.external_uploader = ""
+        self.external_thumbnail = ""
+        self._persist()
+        self._notify()
 
     @_serialized
     def on_backend_error(self, message: str) -> None:
-        """Reconcile optimistic controller state after a native audio failure."""
-        # A failed native operation can happen while a managed source is still
-        # being read. Invalidate that worker before repairing controller state,
-        # otherwise its late completion can resurrect a track the backend has
-        # already rejected.
+        """Reconcile optimistic state after a managed-player failure."""
+        # Supersede pending selection and player generations before repairing
+        # controller state so a late callback cannot resurrect a rejected track.
         self._cancel_pending_load(discard_source=True)
-        self._cancel_preload()
         self._playing = False
         self._source_loaded = False
         self._loaded_track_id = None
@@ -624,181 +688,78 @@ class PlaybackController:
         track_id = self.current_track_id
         if not track_id:
             return False
-        # Keep the current native source playing while the replacement is
-        # validated or read. The backend swaps only after the new source is
-        # ready, avoiding a silent gap and service teardown on the command path.
+        # The managed player validates the complete queue and prepares the
+        # selected decoder beside the active one before swapping sources.
         self._clear_external()
         if autoplay:
             self._media_session_active = True
         position = max(0, int(position_ms))
-        if self.io_executor is not None:
-            preloaded = self._take_preloaded_source(track_id)
-            if preloaded is not None:
-                try:
-                    self._activate_source(
-                        preloaded,
-                        track_id,
-                        autoplay=autoplay,
-                        position_ms=position,
-                    )
-                except (OSError, ValueError, RuntimeError) as error:
-                    self._playing = False
-                    self._source_loaded = False
-                    self._loaded_track_id = None
-                    self._error(f"This track is unavailable: {error}")
-                    self._persist()
-                    self._notify("track")
-                    return False
-                self._notify("track")
-                return True
-            return self._load_current_in_background(
-                track_id, autoplay=autoplay, position_ms=position
-            )
         try:
-            path = self.manager.track_path(track_id)
-            if not path.is_file():
-                raise FileNotFoundError(path)
-        except (OSError, KeyError, ValueError) as error:
-            self._playing = False
-            self._error(f"This track is unavailable: {error}")
-            self._persist()
-            self._notify()
-            return False
-
-        try:
-            source = (
-                _audio_source(path)
-                if getattr(self.backend, "supports_file_sources", False)
-                else _audio_bytes(path)
-            )
-            self._activate_source(
-                source,
+            self._activate_queue(
                 track_id,
                 autoplay=autoplay,
                 position_ms=position,
             )
-        except (OSError, ValueError, RuntimeError) as error:
+        except (OSError, KeyError, ValueError, RuntimeError) as error:
             self._playing = False
+            self._source_loaded = False
+            self._loaded_track_id = None
             self._error(f"This track is unavailable: {error}")
             self._persist()
-            loaded = False
-        else:
-            loaded = True
-        self._notify("track")
-        return loaded
-
-    def _load_current_in_background(
-        self,
-        track_id: str,
-        *,
-        autoplay: bool,
-        position_ms: int,
-    ) -> bool:
-        """Read managed audio off the UI thread with stale-load suppression."""
-        with self._load_lock:
-            self._cancel_pending_load()
-            self._load_generation += 1
-            generation = self._load_generation
-            self.position_ms = position_ms
-            self.duration_ms = 0
-            self._playing = autoplay
-            self._load_autoplay = autoplay
-            self._load_position = position_ms
-            self._loading = True
-            try:
-                assert self.io_executor is not None
-                future = self._take_preload_future(track_id)
-                if future is None:
-                    future = self.io_executor.submit(self._prepare_track, track_id)
-            except RuntimeError as error:
-                self._loading = False
-                self._playing = False
-                self._error(str(error))
-                self._persist()
-                self._notify()
-                return False
-            self._load_future = future
-            future.add_done_callback(
-                lambda completed: self._source_ready_callback(
-                    completed, generation, track_id
-                )
-            )
+            self._notify("track")
+            return False
         self._notify("track")
         return True
 
-    def _prepare_track(self, track_id: str) -> str | bytes:
-        path = self.manager.track_path(track_id)
-        if getattr(self.backend, "supports_file_sources", False):
-            return _audio_source(path)
-        return _audio_bytes(path)
+    def _queue_items(self) -> list[dict[str, str]]:
+        return [
+            {
+                "track_id": track_id,
+                "source": _audio_source(self.manager.track_path(track_id)),
+            }
+            for track_id in self.queue.items
+        ]
 
-    def _source_ready_callback(
-        self, future: Future[str | bytes], generation: int, track_id: str
-    ) -> None:
-        if self.dispatch is not None:
-            self.dispatch(self._background_source_ready, future, generation, track_id)
-        else:
-            self._background_source_ready(future, generation, track_id)
-
-    def _background_source_ready(
+    def _activate_queue(
         self,
-        future: Future[str | bytes],
-        generation: int,
-        track_id: str,
-    ) -> None:
-        with self._load_lock:
-            if self._closed or generation != self._load_generation or not self._loading:
-                return
-            self._load_future = None
-            self._loading = False
-            try:
-                source = future.result()
-                self._activate_source(
-                    source,
-                    track_id,
-                    autoplay=self._load_autoplay,
-                    position_ms=self._load_position,
-                )
-            except CancelledError:
-                return
-            except (OSError, KeyError, ValueError, RuntimeError) as error:
-                if self._source_loaded:
-                    self.backend.pause()
-                discard = getattr(self.backend, "discard_source", None)
-                if discard is not None:
-                    discard()
-                self._playing = False
-                self._source_loaded = False
-                self._loaded_track_id = None
-                self._error(f"This track is unavailable: {error}")
-                self._persist()
-        self._notify("loading")
-
-    def _activate_source(
-        self,
-        source: str | bytes,
         track_id: str,
         *,
         autoplay: bool,
         position_ms: int,
     ) -> None:
+        items = self._queue_items()
+        current_index = self.queue.items.index(track_id)
         self._source_loaded = True
         self._loaded_track_id = track_id
-        self._native_loading = True
+        self._player_loading = True
         self.position_ms = position_ms
         self.duration_ms = 0
         self._playing = autoplay
+        self._pending_play_record_id = track_id if autoplay else None
+        self.backend.set_queue(
+            items,
+            current_index,
+            repeat_mode=self.queue.repeat.value,
+            shuffle=self.queue.shuffle,
+        )
         if autoplay:
-            self._media_session_active = True
-        self.backend.load(source)
-        if not self._source_loaded:
-            return
-        if autoplay:
-            self._pending_play_record_id = track_id
             self.backend.play(position_ms)
-        else:
-            self._pending_play_record_id = None
         self._persist()
+
+    def _sync_queue(self) -> None:
+        """Send every queue mutation to the authoritative managed player."""
+        if self.external_title or self._closed:
+            return
+        try:
+            items = self._queue_items()
+        except OSError, KeyError, ValueError:
+            return
+        self.backend.update_queue(
+            items,
+            self.queue.current_index,
+            repeat_mode=self.queue.repeat.value,
+            shuffle=self.queue.shuffle,
+        )
 
     def _save_volume(self) -> None:
         if self.persistence is not None:
@@ -825,138 +786,16 @@ class PlaybackController:
     def _cancel_pending_load(self, *, discard_source: bool = False) -> None:
         with self._load_lock:
             self._load_generation += 1
-            future = self._load_future
-            native_was_loading = self._native_loading
-            self._load_future = None
+            player_was_loading = self._player_loading
             self._loading = False
-            self._native_loading = False
+            self._player_loading = False
             self._pending_play_record_id = None
-        if future is not None:
-            future.cancel()
-        discard = getattr(self.backend, "discard_source", None)
-        if discard_source and discard is not None and not self._closed:
-            discard()
-        elif native_was_loading and not self._closed:
-            cancel_native = getattr(self.backend, "cancel_load", None)
-            if cancel_native is not None:
-                cancel_native()
-
-    def _take_preloaded_source(self, track_id: str) -> str | bytes | None:
-        with self._load_lock:
-            if self._preload_track_id != track_id or self._preloaded_source is None:
-                self._cancel_preload(keep_track_id=track_id)
-                return None
-            source = self._preloaded_source
-            self._preload_generation += 1
-            self._preload_track_id = None
-            self._preload_future = None
-            self._preloaded_source = None
-            return source
-
-    def _take_preload_future(self, track_id: str) -> Future[str | bytes] | None:
-        with self._load_lock:
-            if self._preload_track_id != track_id or self._preload_future is None:
-                return None
-            future = self._preload_future
-            self._preload_generation += 1
-            self._preload_track_id = None
-            self._preload_future = None
-            self._preloaded_source = None
-            return future
-
-    def _schedule_preload(self) -> None:
-        if (
-            self._closed
-            or self.io_executor is None
-            or not self._source_loaded
-            or self._native_loading
-        ):
+        if self._closed:
             return
-        track_id = self.queue.peek_next(automatic=True)
-        if not track_id or track_id == self._loaded_track_id:
-            self._cancel_preload()
-            return
-        if self._preload_track_id == track_id and (
-            self._preload_future is not None or self._preloaded_source is not None
-        ):
-            return
-        self._cancel_preload()
-        self._preload_generation += 1
-        generation = self._preload_generation
-        self._preload_track_id = track_id
-        try:
-            future = self.io_executor.submit(self._prepare_track, track_id)
-        except RuntimeError:
-            self._preload_track_id = None
-            return
-        self._preload_future = future
-        future.add_done_callback(
-            lambda completed: self._preload_ready_callback(
-                completed, generation, track_id
-            )
-        )
-
-    def _preload_ready_callback(
-        self, future: Future[str | bytes], generation: int, track_id: str
-    ) -> None:
-        if self.dispatch is not None:
-            self.dispatch(self._background_preload_ready, future, generation, track_id)
-        else:
-            self._background_preload_ready(future, generation, track_id)
-
-    def _background_preload_ready(
-        self, future: Future[str | bytes], generation: int, track_id: str
-    ) -> None:
-        with self._load_lock:
-            if (
-                self._closed
-                or generation != self._preload_generation
-                or track_id != self._preload_track_id
-                or self.queue.peek_next(automatic=True) != track_id
-            ):
-                return
-            self._preload_future = None
-            try:
-                source = future.result()
-            except CancelledError, OSError, KeyError, ValueError, RuntimeError:
-                self._preload_track_id = None
-                return
-            self._preloaded_source = source
-        preload = getattr(self.backend, "preload", None)
-        if preload is not None:
-            try:
-                preload(source)
-            except OSError, ValueError, RuntimeError:
-                # Python preparation is still reusable even if a platform does
-                # not have enough native resources for speculative decoding.
-                pass
-
-    def _refresh_preload_prediction(self) -> None:
-        self._cancel_preload()
-        self._schedule_preload()
-
-    def _cancel_preload(self, *, keep_track_id: str | None = None) -> None:
-        with self._load_lock:
-            if keep_track_id is not None and self._preload_track_id == keep_track_id:
-                return
-            had_preload = (
-                self._preload_track_id is not None
-                or self._preload_future is not None
-                or self._preloaded_source is not None
-            )
-            self._preload_generation += 1
-            future = self._preload_future
-            self._preload_future = None
-            self._preload_track_id = None
-            self._preloaded_source = None
-        if future is not None:
-            future.cancel()
-        cancel = getattr(self.backend, "cancel_preload", None)
-        if had_preload and cancel is not None and not self._closed:
-            try:
-                cancel()
-            except OSError, ValueError, RuntimeError:
-                pass
+        if discard_source:
+            self.backend.discard_source()
+        elif player_was_loading:
+            self.backend.cancel_load()
 
     def _persist(self) -> None:
         state = self.queue.to_dict(position_ms=self.position_ms)
@@ -967,8 +806,7 @@ class PlaybackController:
 
     @_serialized
     def on_loaded(self) -> None:
-        self._native_loading = False
-        self._schedule_preload()
+        self._player_loading = False
         self._notify("loading")
 
     @_serialized
@@ -976,13 +814,11 @@ class PlaybackController:
         self._persist()
         self._closed = True
         self._cancel_pending_load()
-        self._cancel_preload()
 
     @_serialized
     def begin_pending_track(self, title: str) -> int:
         """Reserve playback intent before resolving or downloading a selection."""
         self._cancel_pending_load()
-        self._cancel_preload()
         self.backend.pause()
         self._source_loaded = False
         self._loaded_track_id = None
@@ -1011,19 +847,11 @@ class PlaybackController:
 
 
 def _audio_source(path: Path) -> str:
-    """Validate on a worker; the native decoder reads the file itself.
+    """Return a native path without reading the song through Python.
 
     Never send a whole song through the UI protocol. Use a native path, not a
-    file URI (which Flet interprets as a network URL on Windows).
+    file URI (which Flet interprets as a network URL on Windows). The native
+    decoder owns existence, format, and non-empty validation and reports any
+    failure through the generation-scoped backend error event.
     """
-    with path.open("rb") as source:
-        if not source.read(1):
-            raise ValueError("Audio file is empty")
     return str(path)
-
-
-def _audio_bytes(path: Path) -> bytes:
-    source = path.read_bytes()
-    if not source:
-        raise ValueError("Audio file is empty")
-    return source

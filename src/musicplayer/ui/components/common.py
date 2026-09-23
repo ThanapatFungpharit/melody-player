@@ -10,37 +10,38 @@ from musicplayer.application.models import DownloadRecord, TrackDetails
 from musicplayer.core.library.models import Playlist, Track
 
 if TYPE_CHECKING:
-    _Base = object
-else:
-    _Base = object
+    from musicplayer.app import MusicPlayerApp
 
 
-class SharedUIComponents(_Base):
+class SharedUIComponents:
     """Reusable controls and collection actions shared by multiple pages."""
 
     GRID_COLUMNS = 12
     GRID_GUTTER: ClassVar[dict[str, int]] = {"xs": 12, "md": 16, "xl": 18}
 
+    def __init__(self, app: MusicPlayerApp) -> None:
+        self.app = app
+
     def _play_collection(
         self, tracks: Sequence[Track], *, shuffle: bool = False
     ) -> None:
         ids = [str(track.id) for track in tracks]
-        self.playback.play_tracks(ids, shuffle=True if shuffle else None)
+        self.app.playback.play_tracks(ids, shuffle=True if shuffle else None)
 
     def _queue_collection(self, tracks: Sequence[Track]) -> None:
-        count = self.playback.add_last_many(str(track.id) for track in tracks)
+        count = self.app.playback.add_last_many(str(track.id) for track in tracks)
         if count:
-            self._show_message(
+            self.app._show_message(
                 f"Added {count} track{'s' if count != 1 else ''} to the queue."
             )
 
     def _playlist_card(self, playlist: Playlist) -> ft.Control:
-        return self.views._playlist_card(self, playlist)
+        return self.app.views._playlist_card(self.app, playlist)
 
     def _context_header(
         self, title: str, subtitle: str, *actions: ft.Control
     ) -> ft.Control:
-        return self.shell.context_header(title, subtitle, *actions)
+        return self.app.shell.context_header(title, subtitle, *actions)
 
     @classmethod
     def _responsive_grid(

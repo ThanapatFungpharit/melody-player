@@ -30,7 +30,7 @@ def _downloads_view(app) -> ft.Control:
                     content="Clear download history",
                     icon=ft.Icons.CLEANING_SERVICES_ROUNDED,
                     disabled=not issues and not completed,
-                    on_click=lambda _: app._clear_downloads(),
+                    on_click=lambda _: app.downloads_page._clear_downloads(),
                 ),
             ],
         ),
@@ -65,7 +65,7 @@ def _download_row(app, record) -> ft.Control:
                 "Cancel",
                 icon=ft.Icons.CANCEL_OUTLINED,
                 height=48,
-                on_click=lambda _: app._cancel_download(record.id),
+                on_click=lambda _: app.downloads_page._cancel_download(record.id),
             )
         )
     elif record.status in {"failed", "cancelled"}:
@@ -74,7 +74,7 @@ def _download_row(app, record) -> ft.Control:
                 "Retry",
                 icon=ft.Icons.REFRESH_ROUNDED,
                 height=48,
-                on_click=lambda _: app._retry_download(record.id),
+                on_click=lambda _: app.downloads_page._retry_download(record.id),
             )
         )
     elif playable_ids:

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
+from musicplayer.core.media import (
+    YOUTUBE_MUSIC_NAME,
+    YOUTUBE_PROVIDER_ID,
+    MediaIdentity,
+    is_http_url,
+    is_youtube_playlist_url,
+    is_youtube_url,
+    youtube_music_radio_url,
+    youtube_music_track_url,
+)
 from musicplayer.platform_runtime import yt_dlp_binary_options
 from musicplayer.runtime_environment import public_error_message
 
@@ -13,6 +24,7 @@ from .models import AppSettings, SearchResult
 from .yt_dlp_settings import yt_dlp_options
 
 logger = logging.getLogger(__name__)
+_YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
 
 def __getattr__(name: str) -> Any:
@@ -44,16 +56,6 @@ def _yt_dlp_symbols() -> dict[str, Any]:
     return {"CookieLoadError": cookie_load_error, "YoutubeDL": youtube_dl}
 
 
-YOUTUBE_PROVIDER_ID = "youtube"
-_YOUTUBE_HOSTS = {
-    "youtube.com",
-    "www.youtube.com",
-    "m.youtube.com",
-    "music.youtube.com",
-    "youtu.be",
-}
-
-
 class ProviderError(RuntimeError):
     pass
 
@@ -64,42 +66,19 @@ class RemotePlaylist:
     tracks: tuple[SearchResult, ...]
 
 
-def _is_url(value: str) -> bool:
-    return urlsplit(value.strip()).scheme.casefold() in {"http", "https"}
-
-
-def is_youtube_url(value: str) -> bool:
-    """Return whether *value* is an HTTP(S) URL hosted by YouTube."""
-    parsed = urlsplit(value.strip())
-    return (
-        parsed.scheme.casefold() in {"http", "https"}
-        and (parsed.hostname or "").casefold() in _YOUTUBE_HOSTS
-    )
-
-
-def is_youtube_playlist_url(value: str) -> bool:
-    """Return whether *value* identifies a specific YouTube playlist."""
-    parsed = urlsplit(value.strip())
-    return (
-        parsed.scheme.casefold() in {"http", "https"}
-        and (parsed.hostname or "").casefold() in _YOUTUBE_HOSTS
-        and bool(parse_qs(parsed.query).get("list"))
-    )
-
-
 @dataclass(frozen=True)
 class YtDlpProvider:
     """Search/metadata adapter; downloads remain owned by core.Downloader."""
 
     id: str = YOUTUBE_PROVIDER_ID
-    name: str = "YouTube"
+    name: str = YOUTUBE_MUSIC_NAME
     yt_dlp_options: dict[str, Any] | None = None
 
     def accepts(self, query: str) -> bool:
         parsed = urlsplit(query.strip())
         if parsed.scheme.casefold() not in {"http", "https"}:
             return True
-        return (parsed.hostname or "").casefold() in _YOUTUBE_HOSTS
+        return is_youtube_url(query)
 
     def search(
         self, query: str, *, limit: int = 20, offset: int = 0
@@ -109,7 +88,11 @@ class YtDlpProvider:
             return []
         result_limit = max(1, int(limit))
         result_offset = max(0, int(offset))
-        is_url = _is_url(term)
+        is_url = is_http_url(term)
+        # YouTube Music's search-URL extractor currently emits deliberately
+        # sparse flat entries (id/title/url only). yt-dlp's regular YouTube
+        # search extractor supplies channel and thumbnail metadata in the same
+        # request, while results are still canonicalized to music.youtube.com.
         target = term if is_url else f"ytsearch{result_offset + result_limit}:{term}"
         info = self._extract(
             target,
@@ -129,13 +112,46 @@ class YtDlpProvider:
             raise ProviderError("This result does not expose a playable audio stream.")
         return stream
 
+    def recommendations(self, seed_url: str, *, limit: int = 12) -> list[SearchResult]:
+        """Return YouTube Music radio recommendations for a seed track."""
+        try:
+            target = youtube_music_radio_url(seed_url)
+        except ValueError as error:
+            raise ProviderError(
+                f"A {YOUTUBE_MUSIC_NAME} track is needed for recommendations."
+            ) from error
+
+        result_limit = max(1, int(limit))
+        info = self._extract(
+            target,
+            playliststart=1,
+            # Radio mixes normally include the seed. Request one extra entry
+            # so callers still receive the requested number of new tracks.
+            playlistend=result_limit + 1,
+        )
+        seed = MediaIdentity.from_url(seed_url)
+        recommendations: list[SearchResult] = []
+        seen: set[str] = set()
+        for result in _results_from_info(info, self.name):
+            identity = result.identity
+            key = identity.key if identity is not None else result.url
+            if result.is_playlist or identity == seed or not key or key in seen:
+                continue
+            seen.add(key)
+            recommendations.append(result)
+            if len(recommendations) == result_limit:
+                break
+        return recommendations
+
     def load_playlist(self, url: str) -> RemotePlaylist:
         source = url.strip()
         if not is_youtube_playlist_url(source):
-            raise ProviderError("Paste a complete YouTube playlist URL.")
+            raise ProviderError(f"Paste a complete {YOUTUBE_MUSIC_NAME} playlist URL.")
         info = self._extract(source)
         if not info or not _is_explicit_playlist_info(info):
-            raise ProviderError("That URL did not resolve to a YouTube playlist.")
+            raise ProviderError(
+                f"That URL did not resolve to a {YOUTUBE_MUSIC_NAME} playlist."
+            )
 
         tracks = tuple(
             result
@@ -143,7 +159,9 @@ class YtDlpProvider:
             if result.url and is_youtube_url(result.url)
         )
         return RemotePlaylist(
-            title=str(info.get("title") or "Imported YouTube playlist").strip(),
+            title=str(
+                info.get("title") or f"Imported {YOUTUBE_MUSIC_NAME} playlist"
+            ).strip(),
             tracks=tracks,
         )
 
@@ -190,11 +208,16 @@ class ProviderRegistry:
     ) -> list[SearchResult]:
         provider = self.get(provider_id)
         if not provider.accepts(query):
-            raise ProviderError("Enter a search term or paste a YouTube URL.")
+            raise ProviderError(
+                f"Enter a search term or paste a {YOUTUBE_MUSIC_NAME} URL."
+            )
         return provider.search(query, limit=limit, offset=offset)
 
     def load_playlist(self, url: str) -> RemotePlaylist:
         return self._youtube.load_playlist(url)
+
+    def recommendations(self, seed_url: str, *, limit: int = 12) -> list[SearchResult]:
+        return self._youtube.recommendations(seed_url, limit=limit)
 
 
 def _is_search_container(info: dict[str, Any]) -> bool:
@@ -225,12 +248,13 @@ def _results_from_info(
     results: list[SearchResult] = []
     valid_entries = (entry for entry in raw_entries or [] if entry)
     for entry in islice(valid_entries, None if limit is None else max(0, limit)):
+        media_id = str(entry.get("id") or "")
         url = str(entry.get("webpage_url") or entry.get("url") or "")
-        if url and not _is_url(url) and is_youtube_source:
-            url = f"https://www.youtube.com/watch?v={url}"
+        if is_youtube_source:
+            url = youtube_music_track_url(url, media_id or url)
         results.append(
             SearchResult(
-                id=str(entry.get("id") or url),
+                id=media_id or url,
                 title=str(entry.get("title") or "Untitled track"),
                 uploader=str(
                     entry.get("uploader")
@@ -239,16 +263,18 @@ def _results_from_info(
                     or "Unknown uploader"
                 ),
                 duration=_number(entry.get("duration")),
-                thumbnail=_thumbnail_url(entry),
+                thumbnail=_thumbnail_url(
+                    entry, youtube_id=media_id if is_youtube_source else ""
+                ),
                 url=url,
-                source=str(entry.get("extractor_key") or source),
+                source=source,
                 playlist_title=str(entry.get("playlist_title") or playlist_title),
             )
         )
     return results
 
 
-def _thumbnail_url(info: dict[str, Any]) -> str:
+def _thumbnail_url(info: dict[str, Any], *, youtube_id: str = "") -> str:
     """Choose a usable thumbnail from full or flat yt-dlp metadata."""
     direct = str(info.get("thumbnail") or "").strip()
     if direct:
@@ -270,7 +296,11 @@ def _thumbnail_url(info: dict[str, Any]) -> str:
         default=None,
     )
     if best is None:
-        return ""
+        return (
+            f"https://i.ytimg.com/vi/{youtube_id}/hqdefault.jpg"
+            if _YOUTUBE_VIDEO_ID.fullmatch(youtube_id)
+            else ""
+        )
     return _absolute_thumbnail_url(str(best["url"]).strip())
 
 
@@ -289,11 +319,17 @@ def _friendly_provider_error(error: Exception) -> str:
     message = str(error).strip()
     lowered = message.casefold()
     if "unsupported url" in lowered:
-        return "Only YouTube URLs are supported."
+        return f"Only {YOUTUBE_MUSIC_NAME} URLs are supported."
     if "timed out" in lowered or "timeout" in lowered:
-        return "YouTube took too long to respond. Check your connection and retry."
+        return (
+            f"{YOUTUBE_MUSIC_NAME} took too long to respond. "
+            "Check your connection and retry."
+        )
     if "unable to download" in lowered or "network" in lowered:
-        return "YouTube could not be reached. Check your connection and retry."
+        return (
+            f"{YOUTUBE_MUSIC_NAME} could not be reached. "
+            "Check your connection and retry."
+        )
     if "private" in lowered or "sign in" in lowered:
         return "This media is private or requires sign-in."
     if "failed to load cookies" in lowered or "cookies database" in lowered:
@@ -301,7 +337,9 @@ def _friendly_provider_error(error: Exception) -> str:
             "The uploaded cookie file could not be loaded. Upload a valid "
             "Netscape cookies.txt file in Settings, or remove it for anonymous access."
         )
-    return public_error_message(message or "YouTube could not be searched.")
+    return public_error_message(
+        message or f"{YOUTUBE_MUSIC_NAME} could not be searched."
+    )
 
 
 def _extract_info(target: str, options: dict[str, Any]) -> dict[str, Any] | None:

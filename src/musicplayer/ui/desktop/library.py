@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
+from musicplayer.application.models import TrackDetails
 from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _artwork,
@@ -19,8 +20,8 @@ if TYPE_CHECKING:
 
 
 def _library_view(app: MusicPlayerApp) -> ft.Control:
-    app.library_query = ft.TextField(
-        value=app.library_query_text,
+    app.library_page.query = ft.TextField(
+        value=app.library_page.query_text,
         hint_text="Find in your library",
         prefix_icon=ft.Icons.SEARCH_ROUNDED,
         border_radius=14,
@@ -29,10 +30,10 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
         fill_color=ft.Colors.SURFACE_CONTAINER_LOW,
         text_size=14,
         height=48,
-        on_change=app._library_query_changed,
+        on_change=app.library_page._library_query_changed,
     )
-    app.library_sort = ft.Dropdown(
-        value=app.library_sort_key,
+    app.library_page.sort = ft.Dropdown(
+        value=app.library_page.sort_key,
         options=[
             ft.DropdownOption(key="recent", text="Recently added"),
             ft.DropdownOption(key="oldest", text="Oldest added"),
@@ -44,13 +45,12 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
         fill_color=ft.Colors.SURFACE_CONTAINER_LOW,
         text_size=14,
         height=48,
-        on_select=app._library_sort_changed,
+        on_select=app.library_page._library_sort_changed,
     )
-    app.library_query.col = {"xs": 12, "md": 8}
-    app.library_sort.col = {"xs": 12, "md": 4}
-    app.library_list = ft.Column(spacing=4)
-    app.library_page._refresh_library_list(update=False)
-    has_visible_tracks = bool(app._visible_library_tracks())
+    app.library_page.query.col = {"xs": 12, "md": 8}
+    app.library_page.sort.col = {"xs": 12, "md": 4}
+    app.library_page.track_list = ft.Column(spacing=4)
+    has_visible_tracks = app.library_page._refresh_library_list(update=False)
     library_header = _page_header(
         "Library", "Your favorites, downloads, and local discoveries."
     )
@@ -61,7 +61,7 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
                 ft.TextButton(
                     "Add files",
                     icon=ft.Icons.LIBRARY_ADD_ROUNDED,
-                    on_click=app._pick_local_files,
+                    on_click=app.library_page._pick_local_files,
                 ),
                 ft.Button(
                     "Play all",
@@ -71,19 +71,21 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
                     icon=ft.Icons.PLAY_ARROW_ROUNDED,
                     height=44,
                     disabled=not has_visible_tracks,
-                    on_click=lambda _: app._play_visible_library(),
+                    on_click=lambda _: app.library_page._play_visible_library(),
                 ),
                 ft.IconButton(
                     ft.Icons.SHUFFLE_ROUNDED,
                     tooltip="Shuffle visible tracks",
                     disabled=not has_visible_tracks,
-                    on_click=lambda _: app._play_visible_library(shuffle=True),
+                    on_click=lambda _: app.library_page._play_visible_library(
+                        shuffle=True
+                    ),
                 ),
                 ft.IconButton(
                     ft.Icons.ADD_TO_QUEUE_ROUNDED,
                     tooltip="Add visible tracks to queue",
                     disabled=not has_visible_tracks,
-                    on_click=lambda _: app._queue_visible_library(),
+                    on_click=lambda _: app.library_page._queue_visible_library(),
                 ),
             ],
             spacing=6,
@@ -100,9 +102,11 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
                 "playlists", icon=ft.Icons.QUEUE_MUSIC_ROUNDED, label="Playlists"
             ),
         ],
-        selected=[app.library_mode],
+        selected=[app.library_page.mode],
         show_selected_icon=False,
-        on_change=lambda event: app._set_library_mode(event.control.selected),
+        on_change=lambda event: app.library_page._set_library_mode(
+            event.control.selected
+        ),
     )
     return ft.Column(
         [
@@ -113,9 +117,15 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
             ),
             library_sections,
             app.shared._responsive_grid(
-                [app.library_query, app.library_sort], spacing=12
+                [app.library_page.query, app.library_page.sort], spacing=12
             ),
-            ft.Column([app.library_list], scroll=ft.ScrollMode.AUTO, expand=True),
+            ft.Column(
+                [app.library_page.track_list],
+                scroll=ft.ScrollMode.AUTO,
+                scroll_interval=100,
+                on_scroll=app.library_page._library_scrolled,
+                expand=True,
+            ),
         ],
         spacing=20,
         expand=True,
@@ -127,9 +137,10 @@ def _library_track_row(
     track: Track,
     index: int,
     playlists: tuple[Playlist, ...] | None = None,
+    details: TrackDetails | None = None,
 ) -> ft.Control:
-    details = app.library.details(track.id)
-    menu_items = app._library_track_menu(track, index, playlists)
+    details = details or app.library.details(track.id)
+    menu_items = app.library_page._library_track_menu(track, index, playlists, details)
     leading: list[ft.Control] = []
     leading.append(
         ft.Text(

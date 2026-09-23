@@ -20,11 +20,10 @@ from musicplayer.core.downloader import (
 from musicplayer.core.downloader.receipts import read_receipt, receipt_path
 from musicplayer.core.library import MusicManager
 from musicplayer.core.library.models import Track
-from musicplayer.core.library.utils import source_key
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME, is_youtube_url, source_key
 from musicplayer.runtime_environment import public_error_message
 
 from .models import AppSettings, DownloadRecord, SearchResult, TrackDetails
-from .providers import is_youtube_url
 from .store import ApplicationStore
 from .thumbnails import ThumbnailCache
 from .yt_dlp_settings import yt_dlp_options
@@ -242,11 +241,11 @@ class DownloadCoordinator:
             if not source or source in seen:
                 continue
             if not is_youtube_url(source):
-                raise ValueError("Only YouTube URLs are supported.")
+                raise ValueError(f"Only {YOUTUBE_MUSIC_NAME} URLs are supported.")
             sources.append(source)
             seen.add(source)
         if not sources:
-            raise ValueError("At least one YouTube URL is required.")
+            raise ValueError(f"At least one {YOUTUBE_MUSIC_NAME} URL is required.")
 
         batch_id = str(uuid4())
         batch_created_at = time.time()
@@ -293,9 +292,9 @@ class DownloadCoordinator:
     ) -> tuple[DownloadTask | None, bool]:
         url = str(metadata.get("url") or "")
         if not url:
-            raise ValueError("A YouTube URL is required.")
+            raise ValueError(f"A {YOUTUBE_MUSIC_NAME} URL is required.")
         if not is_youtube_url(url):
-            raise ValueError("Only YouTube URLs are supported.")
+            raise ValueError(f"Only {YOUTUBE_MUSIC_NAME} URLs are supported.")
         if metadata.get("kind") != "playlist" and self.available_track(url):
             return None, False
         with self._lock:
@@ -307,9 +306,9 @@ class DownloadCoordinator:
     def _start(self, metadata: dict[str, object]) -> DownloadTask:
         url = str(metadata["url"])
         if not url:
-            raise ValueError("A YouTube URL is required.")
+            raise ValueError(f"A {YOUTUBE_MUSIC_NAME} URL is required.")
         if not is_youtube_url(url):
-            raise ValueError("Only YouTube URLs are supported.")
+            raise ValueError(f"Only {YOUTUBE_MUSIC_NAME} URLs are supported.")
 
         def progress_callback(progress: DownloadProgress) -> None:
             self._handle_progress(progress, metadata)
@@ -526,7 +525,7 @@ class DownloadCoordinator:
                 uploader=uploader,
                 duration=float(str(metadata.get("duration") or 0)),
                 thumbnail=thumbnail,
-                source_name=str(metadata.get("source") or "YouTube"),
+                source_name=str(metadata.get("source") or YOUTUBE_MUSIC_NAME),
             )
             existing = self.manager.find_track_by_source(
                 source
@@ -660,7 +659,7 @@ def _url_metadata(url: str, *, title: str) -> dict[str, object]:
         "title": title,
         "uploader": "",
         "thumbnail": "",
-        "source": "YouTube",
+        "source": YOUTUBE_MUSIC_NAME,
         "kind": "track",
         "duration": 0.0,
         "resolve_metadata": True,
@@ -676,7 +675,7 @@ def _record_from_metadata(
         title=str(metadata["title"]),
         uploader=str(metadata.get("uploader") or ""),
         thumbnail=str(metadata.get("thumbnail") or ""),
-        source=str(metadata.get("source") or "YouTube"),
+        source=str(metadata.get("source") or YOUTUBE_MUSIC_NAME),
         kind=str(metadata.get("kind") or "track"),
         created_at=float(str(metadata.get("created_at") or time.time())),
         batch_id=str(metadata.get("batch_id") or ""),
@@ -730,7 +729,7 @@ def _friendly_download_error(message: str) -> str:
             "Reinstall the application and retry."
         )
     if "unsupported url" in lowered:
-        return "Only YouTube URLs are supported."
+        return f"Only {YOUTUBE_MUSIC_NAME} URLs are supported."
     if "private" in lowered or "sign in" in lowered:
         return "This media is private or requires sign-in."
     if "failed to load cookies" in lowered or "cookies database" in lowered:

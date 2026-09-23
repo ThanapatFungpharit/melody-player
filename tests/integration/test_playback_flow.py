@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 import wave
-from io import BytesIO
 from pathlib import Path
 from threading import Event
 
@@ -12,7 +11,6 @@ from musicplayer.application.library_service import LibraryService
 from musicplayer.application.models import AppSettings
 from musicplayer.application.playback import PlaybackController
 from musicplayer.application.store import ApplicationStore
-from musicplayer.core.concurrency import LazyBoundedExecutor
 from musicplayer.core.downloader import Downloader
 from musicplayer.core.library import MusicManager
 
@@ -32,6 +30,8 @@ class ValidWaveDownloader(Downloader):
 class FlowAudioBackend:
     def __init__(self) -> None:
         self.source: str | bytes = ""
+        self.queue: list[dict[str, str]] = []
+        self.current_index = -1
         self.loaded = Event()
         self.played_at: list[int] = []
 
@@ -41,6 +41,29 @@ class FlowAudioBackend:
 
     def play(self, position_ms: int = 0) -> None:
         self.played_at.append(position_ms)
+
+    def set_queue(
+        self,
+        items: list[dict[str, str]],
+        current_index: int,
+        *,
+        repeat_mode: str,
+        shuffle: bool,
+    ) -> None:
+        self.queue = items
+        self.current_index = current_index
+        self.loaded.set()
+
+    def update_queue(
+        self,
+        items: list[dict[str, str]],
+        current_index: int,
+        *,
+        repeat_mode: str,
+        shuffle: bool,
+    ) -> None:
+        self.queue = items
+        self.current_index = current_index
 
     def pause(self) -> None:
         pass
@@ -52,6 +75,12 @@ class FlowAudioBackend:
         pass
 
     def set_volume(self, value: float) -> None:
+        pass
+
+    def cancel_load(self) -> None:
+        pass
+
+    def discard_source(self) -> None:
         pass
 
 
@@ -80,7 +109,6 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                 max_workers=1,
                 audio_extensions=frozenset({".wav"}),
             )
-            io_executor = LazyBoundedExecutor(max_workers=1, max_pending=1)
             try:
                 task = coordinator.start_url("https://youtu.be/clean-flow")
                 job = coordinator._downloader._jobs[task.id]
@@ -107,13 +135,14 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                     LibraryService(manager, store),
                     store,
                     backend,
-                    io_executor=io_executor,
                 )
                 playback.play_track(track_id)
                 self.assertTrue(backend.loaded.wait(timeout=5))
-                self.assertIsInstance(backend.source, bytes)
-                with wave.open(BytesIO(backend.source), "rb") as audio:  # ty: ignore[invalid-argument-type]
-                    self.assertEqual(audio.getnframes(), 2_000)
+                self.assertEqual(
+                    backend.queue[backend.current_index],
+                    {"track_id": track_id, "source": str(path)},
+                )
+                self.assertEqual(backend.source, "")
                 self.assertEqual(backend.played_at, [0])
                 self.assertEqual(playback.current_track_id, track_id)
                 playback.on_loaded()
@@ -121,7 +150,6 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                 self.assertEqual(store.track_details(track_id).play_count, 1)
             finally:
                 coordinator.shutdown()
-                io_executor.shutdown(wait=False, cancel_pending=True)
 
 
 if __name__ == "__main__":

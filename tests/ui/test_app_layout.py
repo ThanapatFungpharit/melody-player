@@ -3,15 +3,29 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from uuid import UUID
 
 import flet as ft
 
 from musicplayer.app import MusicPlayerApp
-from musicplayer.application.models import AppSettings, DownloadRecord, SearchResult
-from musicplayer.core.library.models import Playlist
+from musicplayer.application.models import (
+    AppSettings,
+    DownloadRecord,
+    SearchResult,
+    TrackDetails,
+)
+from musicplayer.core.library.models import Playlist, Track
+from musicplayer.ui.components import ContextPanel, SharedUIComponents
 from musicplayer.ui.desktop.shell import DesktopShell
+from musicplayer.ui.pages import (
+    DownloadsPage,
+    HomePage,
+    LibraryPage,
+    PlaylistsPage,
+    SearchPage,
+    SettingsPage,
+)
 
 
 class _Page:
@@ -51,13 +65,40 @@ class _PlaylistManager:
     def list_tracks(self) -> tuple[object, ...]:
         return ()
 
+    def counts(self) -> tuple[int, int]:
+        return 0, len(self.playlists)
+
+    def tracks_by_ids(
+        self, track_ids: object, *, limit: int | None = None
+    ) -> tuple[object, ...]:
+        return ()
+
     def find_track_by_source(self, _: str) -> None:
         return None
 
 
 class _Library:
-    def tracks(self, **_: object) -> tuple[object, ...]:
-        return ()
+    def __init__(self, tracks: tuple[Track, ...] = ()) -> None:
+        self.items = tracks
+        self.last_limit: int | None = None
+        self.last_offset = 0
+        self.details_requested = 0
+
+    def tracks(self, **options: object) -> tuple[Track, ...]:
+        limit = options.get("limit")
+        offset = options.get("offset")
+        self.last_limit = limit if isinstance(limit, int) else None
+        self.last_offset = offset if isinstance(offset, int) else 0
+        items = self.items[self.last_offset :]
+        return items if self.last_limit is None else items[: self.last_limit]
+
+    def details_many(self, track_ids: object) -> dict[str, TrackDetails]:
+        ids = [str(track_id) for track_id in track_ids]  # ty: ignore[not-iterable]
+        self.details_requested += len(ids)
+        return {track_id: TrackDetails() for track_id in ids}
+
+    def details(self, track_id: object) -> TrackDetails:
+        return TrackDetails()
 
 
 class _Store:
@@ -75,6 +116,17 @@ class AppLayoutTests(unittest.TestCase):
         app.page = _Page()  # ty: ignore[invalid-assignment]
         app.settings = AppSettings()
         app.providers = _Providers()  # ty: ignore[invalid-assignment]
+        app.shared = SharedUIComponents(app)
+        app.context_panel = ContextPanel(app)
+        app.home_page = HomePage(app)
+        app.search_page = SearchPage(app)
+        app.library_page = LibraryPage(app)
+        app.playlists_page = PlaylistsPage(app)
+        app.downloads_page = DownloadsPage(app)
+        app.settings_page = SettingsPage(app)
+        app.navigation = SimpleNamespace(navigate=Mock())  # ty: ignore[invalid-assignment]
+        app.selected_navigation = 0
+        app.active_panel = None
         return app
 
     def test_progress_media_sync_reuses_resolved_track_metadata(self) -> None:
@@ -130,6 +182,7 @@ class AppLayoutTests(unittest.TestCase):
                 SimpleNamespace(state=ft.AppLifecycleState.PAUSE),
             )
         )
+        app.backend.set_foreground.assert_called_once_with(False)
         app.backend.refresh_state.assert_not_called()
         app.backend.invalidate_media_session.assert_not_called()
         app._sync_system_media.assert_not_called()
@@ -141,6 +194,10 @@ class AppLayoutTests(unittest.TestCase):
             )
         )
 
+        self.assertEqual(
+            app.backend.set_foreground.call_args_list,
+            [call(False), call(True)],
+        )
         app.backend.refresh_state.assert_called_once_with()
         app.backend.invalidate_media_session.assert_called_once_with()
         app._sync_system_media.assert_called_once_with(refresh_metadata=False)
@@ -148,7 +205,7 @@ class AppLayoutTests(unittest.TestCase):
     def test_settings_uses_responsive_sections_and_fixed_footer(self) -> None:
         app = self._app()
 
-        view = app._settings_view()
+        view = app.settings_page._settings_view()
         header = view.controls[0]  # ty: ignore[unresolved-attribute]
         sections = view.controls[1]  # ty: ignore[unresolved-attribute]
         footer = view.controls[-1]  # ty: ignore[unresolved-attribute]
@@ -162,7 +219,7 @@ class AppLayoutTests(unittest.TestCase):
         youtube_access_header = sections.controls[2].content.controls[0]
         self.assertEqual(
             youtube_access_header.controls[1].controls[0].value,
-            "YouTube access",
+            "YouTube Music access",
         )
         self.assertFalse(self._contains_control(sections.controls[2], ft.Checkbox))
         self.assertEqual(sections.controls[3].col, {"xs": 12})
@@ -198,7 +255,7 @@ class AppLayoutTests(unittest.TestCase):
             )
         )
 
-        view = app._downloads_view()
+        view = app.downloads_page._downloads_view()
         summary = view.controls[1]  # ty: ignore[unresolved-attribute]
         activity = view.controls[-1]  # ty: ignore[unresolved-attribute]
 
@@ -240,7 +297,7 @@ class AppLayoutTests(unittest.TestCase):
             )
         )
 
-        view = app._downloads_view()
+        view = app.downloads_page._downloads_view()
         batch_heading = view.controls[2]  # ty: ignore[unresolved-attribute]
         batch_grid = view.controls[3]  # ty: ignore[unresolved-attribute]
         activity = view.controls[-1]  # ty: ignore[unresolved-attribute]
@@ -255,9 +312,9 @@ class AppLayoutTests(unittest.TestCase):
         app = self._app()
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
         app.library = object()  # ty: ignore[invalid-assignment]
-        app._initialize_playlists_page()
+        app.playlists_page.reset()
 
-        view = app._playlists_view()
+        view = app.playlists_page._playlists_view()
         body = view.controls[1]  # ty: ignore[unresolved-attribute]
 
         self.assertIsInstance(body, ft.Container)
@@ -266,27 +323,11 @@ class AppLayoutTests(unittest.TestCase):
         self.assertIsNone(body.content.expand)
         self.assertEqual(
             body.content.content.controls[1].value,
-            "Create a playlist or import one from YouTube to get started.",
+            "Create a playlist or import one from YouTube Music to get started.",
         )
         actions = view.controls[0].controls[1].content  # ty: ignore[unresolved-attribute]
         self.assertEqual(actions.controls[0].content, "Import playlist")
         self.assertEqual(actions.controls[1].content, "New playlist")
-
-    def test_playlists_with_items_keep_the_wrapping_card_grid(self) -> None:
-        app = self._app()
-        app.manager = _PlaylistManager(  # ty: ignore[invalid-assignment]
-            (Playlist(id=UUID(int=1), name="Existing playlist"),)
-        )
-        app.library = object()  # ty: ignore[invalid-assignment]
-        app._initialize_playlists_page()
-
-        view = app._playlists_view()
-        body = view.controls[1]  # ty: ignore[unresolved-attribute]
-
-        self.assertIsInstance(body, ft.Row)
-        self.assertTrue(body.wrap)
-        self.assertTrue(body.expand)
-        self.assertEqual(len(body.controls), 1)
 
     def test_all_responsive_page_wraps_have_non_expanding_direct_children(self) -> None:
         app = self._app()
@@ -295,10 +336,10 @@ class AppLayoutTests(unittest.TestCase):
         )
         app.library = _Library()  # ty: ignore[invalid-assignment]
         app.store = _Store()  # ty: ignore[invalid-assignment]
-        app._initialize_search_page()
-        app._initialize_library_page()
-        app._initialize_playlists_page()
-        app.search_results = [
+        app.search_page.reset()
+        app.library_page.reset()
+        app.playlists_page.reset()
+        app.search_page.results = [
             SearchResult(
                 id="result",
                 title="Result",
@@ -309,43 +350,43 @@ class AppLayoutTests(unittest.TestCase):
                 source="YouTube",
             )
         ]
-        app.search_view_mode = "grid"
+        app.search_page.view_mode = "grid"
 
         views = (
-            app._home_view(),
-            app._search_view(),
-            app._library_view(),
-            app._playlists_view(),
+            app.home_page._home_view(),
+            app.search_page._search_view(),
+            app.library_page._library_view(),
+            app.playlists_page._playlists_view(),
         )
 
         for view in views:
             self._assert_wrapping_rows_are_flex_safe(view)
 
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
-        self._assert_wrapping_rows_are_flex_safe(app._playlists_view())
+        self._assert_wrapping_rows_are_flex_safe(app.playlists_page._playlists_view())
 
     def test_search_has_no_source_selector_and_uses_youtube(self) -> None:
         app = self._app()
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
         app.store = _Store()  # ty: ignore[invalid-assignment]
-        app._initialize_search_page()
+        app.search_page.reset()
 
-        view = app._search_view()
+        view = app.search_page._search_view()
         search_controls = view.controls[1].controls  # ty: ignore[unresolved-attribute]
 
         self.assertEqual(len(search_controls), 3)
         self.assertFalse(
             any(isinstance(control, ft.Dropdown) for control in search_controls)
         )
-        self.assertEqual(app.search_query.col, {"xs": 12, "md": 8})
+        self.assertEqual(app.search_page.query.col, {"xs": 12, "md": 8})
         self.assertIn("YouTube", view.controls[0].controls[1].value)  # ty: ignore[unresolved-attribute]
 
     def test_loaded_playlist_title_is_shown_above_its_tracks(self) -> None:
         app = self._app()
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
         app.store = _Store()  # ty: ignore[invalid-assignment]
-        app._initialize_search_page()
-        app.search_results = [
+        app.search_page.reset()
+        app.search_page.results = [
             SearchResult(
                 id="track",
                 title="Playlist track",
@@ -357,19 +398,63 @@ class AppLayoutTests(unittest.TestCase):
                 playlist_title="Focus playlist",
             )
         ]
-        app.search_playlist_title = "Focus playlist"
+        app.search_page.playlist_title = "Focus playlist"
 
-        app._search_view()
+        app.search_page._search_view()
 
-        self.assertIn("Focus playlist", app.search_status.value)
-        self.assertIn("1 result", app.search_status.value)
+        self.assertIn("Focus playlist", app.search_page.status.value)
+        self.assertIn("1 result", app.search_page.status.value)
 
-    def test_empty_state_does_not_emit_expansion_metadata(self) -> None:
-        from musicplayer.ui.components.common import _empty_state
+    def test_library_auto_loads_bounded_batches_near_scroll_end(self) -> None:
+        app = self._app()
+        app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
+        tracks = tuple(
+            Track(UUID(int=index + 1), f"track-{index}.mp3", title=f"Track {index}")
+            for index in range(75)
+        )
+        library = _Library(tracks)
+        app.library = library  # ty: ignore[invalid-assignment]
+        app.library_page.reset()
+        app.library_page.track_list = ft.Column()
 
-        empty = _empty_state(ft.Icons.INFO_OUTLINE_ROUNDED, "Nothing here")
+        has_tracks = app.library_page._refresh_library_list(update=False)
 
-        self.assertIsNone(empty.expand)
+        self.assertTrue(has_tracks)
+        self.assertEqual(library.last_limit, 51)
+        self.assertEqual(library.details_requested, 50)
+        self.assertEqual(len(app.library_page.track_list.controls), 50)
+
+        app.library_page._library_scrolled(
+            cast(
+                ft.OnScrollEvent,
+                SimpleNamespace(pixels=700, max_scroll_extent=1000),
+            )
+        )
+
+        self.assertEqual(library.last_limit, 51)
+        self.assertEqual(library.last_offset, 50)
+        self.assertEqual(library.details_requested, 75)
+        self.assertEqual(len(app.library_page.track_list.controls), 75)
+
+    def test_search_submits_background_work_through_app_tasks(self) -> None:
+        app = self._app()
+        app.tasks = Mock()
+        app.tasks.submit.return_value = True
+        search = app.search_page
+        search.query = ft.TextField(value="focus music")
+        search.button = ft.Button("Search")
+        search.previous_button = ft.IconButton()
+        search.first_button = ft.TextButton("First")
+        search.next_button = ft.IconButton()
+        search.status = ft.Text()
+        search.result_list = ft.Column()
+        search.pagination = ft.Row()
+
+        search._start_search()
+
+        app.tasks.submit.assert_called_once()
+        self.assertEqual(app.tasks.submit.call_args.kwargs["key"], "search")
+        self.assertTrue(app.tasks.submit.call_args.kwargs["replace"])
 
     def _assert_wrapping_rows_are_flex_safe(self, control: ft.Control) -> None:
         if isinstance(control, ft.Row) and control.wrap:

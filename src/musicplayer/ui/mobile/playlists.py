@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME
 from musicplayer.ui.components.common import _empty_state, _track_credit, _track_title
 from musicplayer.ui.mobile.controls import (
     heading,
@@ -13,9 +14,13 @@ from musicplayer.ui.mobile.controls import (
 
 
 def _playlists_view(app) -> ft.Control:
-    if app.selected_playlist_id and app.manager.has_playlist(app.selected_playlist_id):
-        return _playlist_detail(app, app.manager.get_playlist(app.selected_playlist_id))
-    app.selected_playlist_id = None
+    if app.playlists_page.selected_playlist_id and app.manager.has_playlist(
+        app.playlists_page.selected_playlist_id
+    ):
+        return _playlist_detail(
+            app, app.manager.get_playlist(app.playlists_page.selected_playlist_id)
+        )
+    app.playlists_page.selected_playlist_id = None
     playlists = app.manager.list_playlists()
     return scroll_page(
         [
@@ -27,9 +32,11 @@ def _playlists_view(app) -> ft.Control:
                     "Playlist actions",
                     [
                         ft.PopupMenuItem(
-                            content="Import YouTube playlist",
+                            content=f"Import {YOUTUBE_MUSIC_NAME} playlist",
                             icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
-                            on_click=lambda _: app._import_playlist_dialog(),
+                            on_click=lambda _: (
+                                app.playlists_page._import_playlist_dialog()
+                            ),
                         )
                     ],
                 ),
@@ -38,7 +45,7 @@ def _playlists_view(app) -> ft.Control:
                 "New playlist",
                 icon=ft.Icons.ADD_ROUNDED,
                 height=48,
-                on_click=lambda _: app._create_playlist_dialog(),
+                on_click=lambda _: app.playlists_page._create_playlist_dialog(),
             ),
             *[_playlist_card(app, p) for p in playlists],
             *(
@@ -47,7 +54,7 @@ def _playlists_view(app) -> ft.Control:
                 else [
                     _empty_state(
                         ft.Icons.ALBUM_ROUNDED,
-                        "Create a playlist or import one from YouTube.",
+                        f"Create a playlist or import one from {YOUTUBE_MUSIC_NAME}.",
                     )
                 ]
             ),
@@ -79,13 +86,16 @@ def _playlist_detail(app, playlist) -> ft.Control:
     tracks = app.manager.playlist_tracks(playlist.id)
     others = tuple(p for p in app.manager.list_playlists() if p.id != playlist.id)
     ids = tuple(str(t.id) for t in tracks)
+    details = app.library.details_many(track.id for track in tracks)
     actions = [
         *(
             [
                 ft.PopupMenuItem(
                     content="Add tracks",
                     icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
-                    on_click=lambda _: app._bulk_add_tracks_dialog(playlist),
+                    on_click=lambda _: app.playlists_page._bulk_add_tracks_dialog(
+                        playlist
+                    ),
                 )
             ]
             if tracks
@@ -105,12 +115,12 @@ def _playlist_detail(app, playlist) -> ft.Control:
         ft.PopupMenuItem(
             content="Rename playlist",
             icon=ft.Icons.EDIT_ROUNDED,
-            on_click=lambda _: app._rename_playlist_dialog(playlist),
+            on_click=lambda _: app.playlists_page._rename_playlist_dialog(playlist),
         ),
         ft.PopupMenuItem(
             content="Delete playlist",
             icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
-            on_click=lambda _: app._delete_playlist_dialog(playlist),
+            on_click=lambda _: app.playlists_page._delete_playlist_dialog(playlist),
         ),
     ]
     return scroll_page(
@@ -120,7 +130,7 @@ def _playlist_detail(app, playlist) -> ft.Control:
                     icon_button(
                         ft.Icons.ARROW_BACK_ROUNDED,
                         "All playlists",
-                        lambda _: app._close_playlist(),
+                        lambda _: app.playlists_page._close_playlist(),
                     ),
                     ft.Text(
                         playlist.name,
@@ -156,7 +166,15 @@ def _playlist_detail(app, playlist) -> ft.Control:
                 ]
             ),
             *[
-                _playlist_track_row(app, playlist, track, i, others, ids)
+                _playlist_track_row(
+                    app,
+                    playlist,
+                    track,
+                    i,
+                    others,
+                    ids,
+                    details.get(str(track.id)),
+                )
                 for i, track in enumerate(tracks)
             ],
             *(
@@ -167,7 +185,9 @@ def _playlist_detail(app, playlist) -> ft.Control:
                         "Add tracks",
                         icon=ft.Icons.ADD_ROUNDED,
                         height=48,
-                        on_click=lambda _: app._bulk_add_tracks_dialog(playlist),
+                        on_click=lambda _: app.playlists_page._bulk_add_tracks_dialog(
+                            playlist
+                        ),
                     )
                 ]
             ),
@@ -176,18 +196,24 @@ def _playlist_detail(app, playlist) -> ft.Control:
 
 
 def _playlist_track_row(
-    app, playlist, track, index, other_playlists, playlist_track_ids
+    app,
+    playlist,
+    track,
+    index,
+    other_playlists,
+    playlist_track_ids,
+    details=None,
 ) -> ft.Control:
-    details = app.library.details(track.id)
-    menu = app._playlist_track_menu(
-        playlist, track, index, other_playlists, playlist_track_ids
+    details = details or app.library.details(track.id)
+    menu = app.playlists_page._playlist_track_menu(
+        playlist, track, index, other_playlists, playlist_track_ids, details
     )
     menu[0:0] = [
         ft.PopupMenuItem(
             content="Move up",
             icon=ft.Icons.ARROW_UPWARD_ROUNDED,
             disabled=index == 0,
-            on_click=lambda _: app._reorder_playlist(
+            on_click=lambda _: app.playlists_page._reorder_playlist(
                 str(playlist.id), index, index - 1
             ),
         ),
@@ -195,7 +221,7 @@ def _playlist_track_row(
             content="Move down",
             icon=ft.Icons.ARROW_DOWNWARD_ROUNDED,
             disabled=index == len(playlist_track_ids) - 1,
-            on_click=lambda _: app._reorder_playlist(
+            on_click=lambda _: app.playlists_page._reorder_playlist(
                 str(playlist.id), index, index + 2
             ),
         ),

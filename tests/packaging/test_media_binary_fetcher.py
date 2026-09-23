@@ -8,7 +8,15 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from tools.fetch_media_binaries import ARCHIVES, _extract_programs, fetch_bundle, main
+from tools.fetch_media_binaries import (
+    ARCHIVES,
+    Archive,
+    ReleaseAsset,
+    _extract_programs,
+    _resolve_archive,
+    fetch_bundle,
+    main,
+)
 
 
 class MediaBinaryFetcherTests(unittest.TestCase):
@@ -36,23 +44,74 @@ class MediaBinaryFetcherTests(unittest.TestCase):
         )
 
     def test_windows_archives_include_yt_dlp_audio_encoders(self) -> None:
-        for architecture in ("x86_64", "arm64"):
+        filenames = {
+            "x86_64": "ffmpeg-windows-amd64.zip",
+            "arm64": "ffmpeg-windows-arm64.zip",
+        }
+        for architecture, filename in filenames.items():
             archive = ARCHIVES[("windows", architecture)]
 
-            self.assertIn("BtbN/FFmpeg-Builds", archive.release_root)
-            self.assertIn("gpl", archive.filename)
-            self.assertEqual(len(archive.sha256), 64)
+            self.assertEqual(archive.repository, "binmgr/ffmpeg")
+            self.assertEqual(archive.filename, filename)
 
-    def test_android_release_manifest_is_pinned(self) -> None:
+    def test_latest_release_resolution_uses_stable_asset_name_and_digest(self) -> None:
+        archive = Archive("example/ffmpeg", "ffmpeg-windows-amd64.zip")
+        release = (
+            "v10.0.0",
+            (
+                ReleaseAsset(
+                    "ffmpeg-windows-amd64.zip",
+                    "https://downloads.example/ffmpeg-windows-amd64.zip",
+                    "a" * 64,
+                ),
+            ),
+        )
+
+        with mock.patch(
+            "tools.fetch_media_binaries._latest_release", return_value=release
+        ):
+            resolved = _resolve_archive(archive)
+
+        self.assertEqual(resolved.version, "v10.0.0")
+        self.assertEqual(resolved.sha256, "a" * 64)
+        self.assertEqual(
+            resolved.url, "https://downloads.example/ffmpeg-windows-amd64.zip"
+        )
+
+    def test_latest_release_resolution_accepts_android_versioned_asset(self) -> None:
+        archive = Archive(
+            "example/ffmpeg-android",
+            filename_suffix="-Static-android-arm64-v8a.zip",
+        )
+        release = (
+            "build-999",
+            (
+                ReleaseAsset(
+                    "ffmpeg-10.0-abcdef-Static-android-arm64-v8a.zip",
+                    "https://downloads.example/android-arm64.zip",
+                    "b" * 64,
+                ),
+            ),
+        )
+
+        with mock.patch(
+            "tools.fetch_media_binaries._latest_release", return_value=release
+        ):
+            resolved = _resolve_archive(archive)
+
+        self.assertEqual(
+            resolved.filename, "ffmpeg-10.0-abcdef-Static-android-arm64-v8a.zip"
+        )
+        self.assertEqual(resolved.version, "build-999")
+
+    def test_android_release_manifest_uses_version_independent_selectors(self) -> None:
         arm64 = ARCHIVES[("android", "arm64")]
         x86_64 = ARCHIVES[("android", "x86_64")]
 
-        self.assertEqual(arm64.version, "build-264")
-        self.assertEqual(x86_64.version, "build-264")
-        self.assertEqual(len(arm64.sha256), 64)
-        self.assertEqual(len(x86_64.sha256), 64)
-        self.assertIn("android-arm64-v8a", arm64.filename)
-        self.assertIn("android-x86_64", x86_64.filename)
+        self.assertEqual(arm64.repository, "rhythmcache/ffmpeg-android")
+        self.assertEqual(x86_64.repository, "rhythmcache/ffmpeg-android")
+        self.assertEqual(arm64.filename_suffix, "-Static-android-arm64-v8a.zip")
+        self.assertEqual(x86_64.filename_suffix, "-Static-android-x86_64.zip")
 
     def test_nested_android_archive_extracts_both_programs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

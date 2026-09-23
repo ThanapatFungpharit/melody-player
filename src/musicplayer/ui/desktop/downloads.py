@@ -30,22 +30,22 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
     finished = completed + issues
     summary = app.shared._responsive_grid(
         [
-            app._download_metric(
+            app.downloads_page._download_metric(
                 "Active", str(active), ft.Icons.DOWNLOADING_ROUNDED, ft.Colors.PRIMARY
             ),
-            app._download_metric(
+            app.downloads_page._download_metric(
                 "Completed",
                 str(completed),
                 ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
                 ft.Colors.GREEN_400,
             ),
-            app._download_metric(
+            app.downloads_page._download_metric(
                 "Needs attention",
                 str(issues),
                 ft.Icons.ERROR_OUTLINE_ROUNDED,
                 ft.Colors.ERROR,
             ),
-            app._download_metric(
+            app.downloads_page._download_metric(
                 "History",
                 str(len(records)),
                 ft.Icons.HISTORY_ROUNDED,
@@ -55,7 +55,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
     )
     if records:
         body: ft.Control = app.shared._responsive_grid(
-            [app._download_row(record) for record in records],
+            [app.downloads_page._download_row(record) for record in records],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )
@@ -77,7 +77,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
                 icon=ft.Icons.CLEANING_SERVICES_ROUNDED,
                 height=46,
                 disabled=finished == 0,
-                on_click=lambda _: app._clear_downloads(),
+                on_click=lambda _: app.downloads_page._clear_downloads(),
             ),
         ),
         summary,
@@ -88,7 +88,7 @@ def _downloads_view(app: MusicPlayerApp) -> ft.Control:
                 ft.Text("Recent batches", size=18, weight=ft.FontWeight.BOLD),
                 app.shared._responsive_grid(
                     [
-                        app._batch_overview(items)
+                        app.downloads_page._batch_overview(items)
                         for items in list(batch_groups.values())[:3]
                     ]
                 ),
@@ -225,7 +225,9 @@ def _download_row(app: MusicPlayerApp, record: DownloadRecord) -> ft.Control:
                 tooltip="Cancel",
                 width=44,
                 height=44,
-                on_click=lambda _, item=record.id: app._cancel_download(item),
+                on_click=lambda _, item=record.id: app.downloads_page._cancel_download(
+                    item
+                ),
             )
         )
     elif record.status in {"failed", "cancelled"}:
@@ -234,7 +236,9 @@ def _download_row(app: MusicPlayerApp, record: DownloadRecord) -> ft.Control:
                 "Retry",
                 icon=ft.Icons.REFRESH_ROUNDED,
                 height=44,
-                on_click=lambda _, item=record.id: app._retry_download(item),
+                on_click=lambda _, item=record.id: app.downloads_page._retry_download(
+                    item
+                ),
             )
         )
     elif completed and playable_ids:

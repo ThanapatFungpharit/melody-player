@@ -17,7 +17,7 @@ else:
         validate_tag,
     )
 
-RELEASE_PYTHON_VERSION = "3.14t"
+RELEASE_PYTHON_VERSION = "3.14"
 TARGET_PRESENTATIONS = {
     "windows": "desktop",
     "linux": "desktop",

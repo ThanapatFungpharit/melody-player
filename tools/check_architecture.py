@@ -88,10 +88,13 @@ def violations(root: Path = ROOT) -> list[str]:
                         (
                             "musicplayer.core.library.models",
                             "musicplayer.core.concurrency",
+                            "musicplayer.core.media",
                         )
                     )
                 ):
-                    problems.add(f"{module} bypasses application contracts: {target}")
+                    problems.add(
+                        f"{module} imports a non-domain core implementation: {target}"
+                    )
                 for presentation, opposite in (
                     ("mobile", "desktop"),
                     ("desktop", "mobile"),

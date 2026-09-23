@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from musicplayer.app import AppResources
+from musicplayer.app import AppServices
 from musicplayer.application.library_service import LibraryService
 from musicplayer.application.models import AppSettings, DownloadRecord
 from musicplayer.application.store import ApplicationStore
@@ -40,8 +40,15 @@ class StartupTests(unittest.TestCase):
             audio.write_bytes(b"audio")
             manager = MusicManager(root / "library.mmdb", music)
             track_id = manager.add_track(audio, source="https://youtu.be/song")
+            other_audio = music / "other.mp3"
+            other_audio.write_bytes(b"other audio")
+            manager.add_track(other_audio, source="https://youtu.be/other")
             store = ApplicationStore(root / "state.json")
             store.save_settings(AppSettings(download_directory=str(music)))
+            store.set(
+                "playback",
+                {"queue": [str(track_id)], "current_index": 0, "position_ms": 0},
+            )
             store.save_downloads(
                 [
                     DownloadRecord(
@@ -55,7 +62,7 @@ class StartupTests(unittest.TestCase):
             )
 
             with (
-                patch("musicplayer.app._application_data_directory", return_value=root),
+                patch("musicplayer.app.application_data_directory", return_value=root),
                 patch.object(
                     LibraryService,
                     "reconcile",
@@ -67,7 +74,7 @@ class StartupTests(unittest.TestCase):
                     side_effect=AssertionError("startup hashing is forbidden"),
                 ),
             ):
-                resources = AppResources.load()
+                resources = AppServices.load()
 
             self.assertEqual(resources.available_track_ids, {str(track_id)})
             self.assertEqual(resources.downloads.list()[0].status, "completed")

@@ -183,7 +183,7 @@ class DesktopShell:
         if self.app.active_panel == name:
             return
         self.app.active_panel = name
-        self.panel.content = self.app._panel_view(name)
+        self.panel.content = self.app.context_panel._panel_view(name)
         self.panel.visible = True
         self._refresh_navigation()
         self.resize(
@@ -200,7 +200,7 @@ class DesktopShell:
             self.app.page.update()
 
     def refresh_panel(self) -> None:
-        self.panel.content = self.app._panel_view(self.app.active_panel)
+        self.panel.content = self.app.context_panel._panel_view(self.app.active_panel)
         self.app.page.update()
 
     def refresh_downloads(self) -> None:
@@ -244,7 +244,7 @@ class DesktopShell:
             app.context_panel._close_context_panel()
         elif modifier and key == "l":
             app.navigation.navigate(1)
-            app.page.run_task(app.search_query.focus)
+            app.page.run_task(app.search_page.query.focus)
         elif modifier and key == "q":
             app.context_panel._open_queue_panel()
         elif modifier and key == "d":

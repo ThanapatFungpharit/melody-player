@@ -7,11 +7,38 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import Future
 from functools import partial, wraps
-from typing import Any
+from typing import Any, Protocol
 
 from musicplayer.core.concurrency import LazyBoundedExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _action_argument_key(value: Any) -> object:
+    """Return a hashable value that distinguishes independent UI actions."""
+    if isinstance(value, dict):
+        return frozenset(
+            (
+                _action_argument_key(key),
+                _action_argument_key(item),
+            )
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_action_argument_key(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_action_argument_key(item) for item in value)
+    try:
+        hash(value)
+    except TypeError:
+        # Event/control objects are meaningful by identity and generally do
+        # not expose a stable value representation.
+        return (type(value), id(value))
+    return value
+
+
+class _TaskOwner(Protocol):
+    tasks: PageTasks
 
 
 class PageTasks:
@@ -46,7 +73,11 @@ class PageTasks:
         self, callback: Callable[..., Any], args: tuple[Any, ...]
     ) -> None:
         if not self.closed:
-            callback(*args)
+            try:
+                callback(*args)
+            except Exception as error:
+                logger.exception("UI callback failed")
+                self.on_error(str(error))
 
     def submit(
         self,
@@ -104,7 +135,11 @@ class PageTasks:
                 (failed or self.on_error)(str(error))
         else:
             if not self.closed:
-                done(value)
+                try:
+                    done(value)
+                except Exception as error:
+                    logger.exception("Background completion callback failed")
+                    (failed or self.on_error)(str(error))
         finally:
             if self._jobs.get(key) is current:
                 self._jobs.pop(key, None)
@@ -128,7 +163,9 @@ class PageTasks:
     def start(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         key = (
             "action",
-            getattr(operation, "__qualname__", type(operation).__qualname__),
+            _action_argument_key(operation),
+            _action_argument_key(args),
+            _action_argument_key(kwargs),
         )
         if self.closed or key in self._jobs:
             return
@@ -164,28 +201,32 @@ class PageTasks:
 
 
 def page_action(function):
-    """Keep sync UI bindings while the action explicitly awaits blocking steps."""
+    """Schedule a controller action on its owning page task group."""
 
     @wraps(function)
-    def start(app, *args, **kwargs):
-        app.tasks.start(function, app, *args, **kwargs)
+    def start(controller, *args, **kwargs):
+        owner = controller.app
+        owner.tasks.start(function, controller, *args, **kwargs)
 
     return start
 
 
 def run_io(
-    app: Any, operation: Callable[[], Any], done: Callable[[Any], None], **options: Any
+    app: _TaskOwner,
+    operation: Callable[[], Any],
+    done: Callable[[Any], None],
+    **options: Any,
 ) -> bool:
     """The single I/O boundary used by presentation actions."""
     return app.tasks.submit(operation, done, **options)
 
 
-def ui_callback(app: Any, callback: Callable[..., Any], *args: Any) -> None:
+def ui_callback(app: _TaskOwner, callback: Callable[..., Any], *args: Any) -> None:
     app.tasks.dispatch(callback, *args)
 
 
 def call_io(
-    app: Any,
+    app: _TaskOwner,
     operation: Callable[..., Any],
     *args: Any,
     done: Callable[[Any], None] | None = None,

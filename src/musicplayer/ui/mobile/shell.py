@@ -81,12 +81,16 @@ class MobileShell:
     def select(self, index: int) -> None:
         self.bottom_nav.selected_index = index
         self.root_view.can_pop = (
-            not (self.app.selected_playlist_id and index == 3) and index == 0
+            not (self.app.playlists_page.selected_playlist_id and index == 3)
+            and index == 0
         )
 
     async def _confirm_back(self, event) -> None:
-        if self.app.selected_playlist_id and self.app.selected_navigation == 3:
-            self.app._close_playlist()
+        if (
+            self.app.playlists_page.selected_playlist_id
+            and self.app.selected_navigation == 3
+        ):
+            self.app.playlists_page._close_playlist()
         elif self.app.selected_navigation != 0:
             self.app.navigation.navigate(0)
         await event.control.confirm_pop(False)
@@ -101,7 +105,7 @@ class MobileShell:
         content = (
             self.app.player.now_playing()
             if name == "player"
-            else self.app._panel_view(name)
+            else self.app.context_panel._panel_view(name)
         )
         body = ft.Container(content, padding=16, expand=True)
         view = ft.View(
@@ -128,7 +132,7 @@ class MobileShell:
         if self.panel_history:
             name, _, body = self.panel_history[-1]
             if name != "player":
-                body.content = self.app._panel_view(name)
+                body.content = self.app.context_panel._panel_view(name)
             self.app.page.update()
 
     def refresh_downloads(self) -> None:

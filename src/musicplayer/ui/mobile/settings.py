@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import flet as ft
 
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME
 from musicplayer.ui.mobile.controls import heading, icon_button, scroll_page
 
 
 def _settings_view(app) -> ft.Control:
     # Field validation, cookie upload, reset confirmation and saving are shared.
-    appearance = app._build_appearance_settings()
-    download = app._build_download_settings()
-    youtube = app._build_youtube_settings()
+    appearance = app.settings_page._build_appearance_settings()
+    download = app.settings_page._build_download_settings()
+    youtube = app.settings_page._build_youtube_settings()
     data = ft.Column(
         [
             ft.Text(
@@ -21,8 +22,8 @@ def _settings_view(app) -> ft.Control:
                     label,
                     icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
                     height=48,
-                    on_click=lambda _, selected=action: app._confirm_data_action(
-                        selected
+                    on_click=lambda _, selected=action: (
+                        app.settings_page._confirm_data_action(selected)
                     ),
                 )
                 for label, action in (
@@ -36,8 +37,12 @@ def _settings_view(app) -> ft.Control:
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         spacing=12,
     )
-    app.settings_path.read_only = True
-    app.settings_path.helper_text = "Managed music folder on this device"
+    app.settings_page.path.read_only = True
+    app.settings_page.path.helper_text = (
+        "Completed tracks are saved in the public Music/Melody folder"
+        if app._is_android_platform()
+        else "Managed music folder on this device"
+    )
     return scroll_page(
         [
             heading(
@@ -56,7 +61,9 @@ def _settings_view(app) -> ft.Control:
                 maintain_state=True,
             ),
             ft.ExpansionTile(
-                title=ft.Text("YouTube access"), controls=[youtube], maintain_state=True
+                title=ft.Text(f"{YOUTUBE_MUSIC_NAME} access"),
+                controls=[youtube],
+                maintain_state=True,
             ),
             ft.ExpansionTile(
                 title=ft.Text("Data management"), controls=[data], maintain_state=True
@@ -65,10 +72,12 @@ def _settings_view(app) -> ft.Control:
                 "Save settings",
                 icon=ft.Icons.SAVE_ROUNDED,
                 height=52,
-                on_click=lambda _: app._save_settings(),
+                on_click=lambda _: app.settings_page._save_settings(),
             ),
             ft.TextButton(
-                "Cancel changes", height=48, on_click=lambda _: app._cancel_settings()
+                "Cancel changes",
+                height=48,
+                on_click=lambda _: app.settings_page._cancel_settings(),
             ),
         ]
     )

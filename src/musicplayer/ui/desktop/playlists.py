@@ -4,7 +4,9 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
+from musicplayer.application.models import TrackDetails
 from musicplayer.core.library.models import Playlist, Track
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME
 from musicplayer.ui.components.common import (
     _artwork,
     _empty_state,
@@ -28,9 +30,13 @@ if TYPE_CHECKING:
 
 
 def _playlists_view(app: MusicPlayerApp) -> ft.Control:
-    if app.selected_playlist_id and app.manager.has_playlist(app.selected_playlist_id):
-        return app._playlist_detail(app.manager.get_playlist(app.selected_playlist_id))
-    app.selected_playlist_id = None
+    if app.playlists_page.selected_playlist_id and app.manager.has_playlist(
+        app.playlists_page.selected_playlist_id
+    ):
+        return app.playlists_page._playlist_detail(
+            app.manager.get_playlist(app.playlists_page.selected_playlist_id)
+        )
+    app.playlists_page.selected_playlist_id = None
     playlists = app.manager.list_playlists()
     if playlists:
         body: ft.Control = ft.Row(
@@ -46,7 +52,7 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
         body = ft.Container(
             _empty_state(
                 ft.Icons.QUEUE_MUSIC_ROUNDED,
-                "Create a playlist or import one from YouTube to get started.",
+                f"Create a playlist or import one from {YOUTUBE_MUSIC_NAME} to get started.",
             ),
             alignment=ft.Alignment.CENTER,
             expand=True,
@@ -61,7 +67,7 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
                 ft.OutlinedButton(
                     "Import playlist",
                     icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
-                    on_click=lambda _: app._import_playlist_dialog(),
+                    on_click=lambda _: app.playlists_page._import_playlist_dialog(),
                 ),
                 ft.Button(
                     "New playlist",
@@ -69,7 +75,7 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
                     color=ft.Colors.ON_PRIMARY,
                     elevation=0,
                     icon=ft.Icons.ADD_ROUNDED,
-                    on_click=lambda _: app._create_playlist_dialog(),
+                    on_click=lambda _: app.playlists_page._create_playlist_dialog(),
                 ),
             ],
             spacing=8,
@@ -99,11 +105,12 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
     other_playlists = tuple(
         item for item in app.manager.list_playlists() if item.id != playlist.id
     )
+    details = app.library.details_many(track.id for track in tracks)
     bulk_add_button: ft.Control
     bulk_add_button = ft.OutlinedButton(
         "Add to playlist",
         icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
-        on_click=lambda _: app._bulk_add_tracks_dialog(playlist),
+        on_click=lambda _: app.playlists_page._bulk_add_tracks_dialog(playlist),
     )
     play_button = ft.Button(
         "Play",
@@ -118,15 +125,20 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
     if tracks:
         rows = ft.ReorderableListView(
             controls=[
-                app._playlist_track_row(
-                    playlist, track, index, other_playlists, track_ids
+                app.playlists_page._playlist_track_row(
+                    playlist,
+                    track,
+                    index,
+                    other_playlists,
+                    track_ids,
+                    details.get(str(track.id)),
                 )
                 for index, track in enumerate(tracks)
             ],
             show_default_drag_handles=False,
             mouse_cursor=ft.MouseCursor.GRAB,
-            on_reorder=lambda event, pid=str(playlist.id): app._playlist_reordered(
-                pid, event
+            on_reorder=lambda event, pid=str(playlist.id): (
+                app.playlists_page._playlist_reordered(pid, event)
             ),
             expand=True,
         )
@@ -143,7 +155,7 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                     ft.IconButton(
                         ft.Icons.ARROW_BACK_ROUNDED,
                         tooltip="All playlists",
-                        on_click=lambda _: app._close_playlist(),
+                        on_click=lambda _: app.playlists_page._close_playlist(),
                     ),
                     ft.Column(
                         [
@@ -184,15 +196,15 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                             ft.PopupMenuItem(
                                 content="Rename playlist",
                                 icon=ft.Icons.EDIT_ROUNDED,
-                                on_click=lambda _: app._rename_playlist_dialog(
-                                    playlist
+                                on_click=lambda _: (
+                                    app.playlists_page._rename_playlist_dialog(playlist)
                                 ),
                             ),
                             ft.PopupMenuItem(
                                 content="Delete playlist",
                                 icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
-                                on_click=lambda _: app._delete_playlist_dialog(
-                                    playlist
+                                on_click=lambda _: (
+                                    app.playlists_page._delete_playlist_dialog(playlist)
                                 ),
                             ),
                         ],
@@ -214,10 +226,11 @@ def _playlist_track_row(
     index: int,
     other_playlists: tuple[Playlist, ...],
     playlist_track_ids: tuple[str, ...],
+    details: TrackDetails | None = None,
 ) -> ft.Control:
-    details = app.library.details(track.id)
-    menu = app._playlist_track_menu(
-        playlist, track, index, other_playlists, playlist_track_ids
+    details = details or app.library.details(track.id)
+    menu = app.playlists_page._playlist_track_menu(
+        playlist, track, index, other_playlists, playlist_track_ids, details
     )
     leading: list[ft.Control] = []
     leading.extend(

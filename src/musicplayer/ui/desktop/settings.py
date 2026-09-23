@@ -9,11 +9,11 @@ if TYPE_CHECKING:
 
 
 def _settings_view(app: MusicPlayerApp) -> ft.Control:
-    download = app._build_download_settings()
-    appearance = app._build_appearance_settings()
-    youtube_access = app._build_youtube_settings()
-    data_management = app._build_data_management_settings()
-    footer = app._build_settings_footer()
+    download = app.settings_page._build_download_settings()
+    appearance = app.settings_page._build_appearance_settings()
+    youtube_access = app.settings_page._build_youtube_settings()
+    data_management = app.settings_page._build_data_management_settings()
+    footer = app.settings_page._build_settings_footer()
     for section in (appearance, download, youtube_access, data_management):
         section.bgcolor = ft.Colors.SURFACE_CONTAINER_LOW
         section.border = None

@@ -5,7 +5,11 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from musicplayer.core.media import MediaIdentity
+from musicplayer.core.media import (
+    YOUTUBE_MUSIC_NAME,
+    YOUTUBE_PROVIDER_ID,
+    MediaIdentity,
+)
 from musicplayer.platform_runtime import default_music_directory
 
 
@@ -26,7 +30,9 @@ class AppSettings:
     theme: str = "dark"
     audio_format: str = "mp3"
     audio_quality: str = "best"
-    concurrent_downloads: int = 4
+    # Audio extraction launches external encoder processes; two concurrent
+    # jobs keep downloads responsive without overwhelming low-core devices.
+    concurrent_downloads: int = 2
     cookie_file: str = ""
     resume_session: bool = True
     notifications: bool = True
@@ -86,7 +92,7 @@ class SearchResult:
     thumbnail: str
     url: str
     source: str
-    provider_id: str = "youtube"
+    provider_id: str = YOUTUBE_PROVIDER_ID
     kind: str = "track"
     playlist_title: str = ""
     entry_count: int = 0
@@ -111,7 +117,7 @@ class DownloadRecord:
     title: str
     uploader: str = ""
     thumbnail: str = ""
-    source: str = "YouTube"
+    source: str = YOUTUBE_MUSIC_NAME
     kind: str = "track"
     status: str = "queued"
     progress: float = 0.0

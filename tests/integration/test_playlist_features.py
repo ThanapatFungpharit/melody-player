@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -15,7 +17,8 @@ from musicplayer.application.providers import RemotePlaylist
 from musicplayer.core.concurrency import WorkerQueueFull
 from musicplayer.core.downloader import DownloadTask
 from musicplayer.core.library import MusicManager
-from musicplayer.core.library.utils import source_key
+from musicplayer.core.media import source_key
+from musicplayer.ui.pages.playlists import PlaylistsPage, _PlaylistImportSession
 
 
 class _Page:
@@ -67,6 +70,13 @@ class _Downloads:
 
 
 class _InlineTasks:
+    def start(self, operation, *args, **kwargs) -> None:
+        asyncio.run(operation(*args, **kwargs))
+
+    def submit(self, operation, done, **kwargs) -> bool:
+        done(operation())
+        return True
+
     async def io(self, operation, *args, **kwargs):
         return operation(*args, **kwargs)
 
@@ -86,7 +96,9 @@ class _ParallelDownloads:
     def is_source_active(self, url: str) -> bool:
         return source_key(url) in self.active
 
-    def request(self, result: SearchResult) -> DownloadTask:
+    def request(self, result: SearchResult) -> DownloadTask | None:
+        if self.manager.find_track_by_source(result.url) is not None:
+            return None
         if len(self.active) >= self.capacity:
             raise WorkerQueueFull("test download queue is full")
         task = DownloadTask(UUID(int=len(self.started) + 1))
@@ -112,8 +124,11 @@ class _ParallelDownloads:
         )
         return task
 
-    def request_with_ownership(self, result: SearchResult) -> tuple[DownloadTask, bool]:
-        return self.request(result), True
+    def request_with_ownership(
+        self, result: SearchResult
+    ) -> tuple[DownloadTask | None, bool]:
+        task = self.request(result)
+        return task, task is not None
 
     def get(self, task_id: str) -> DownloadRecord | None:
         record = self.records.get(task_id)
@@ -136,12 +151,15 @@ class PlaylistFeatureTests(unittest.TestCase):
         self.app.page = _Page()  # ty: ignore[invalid-assignment]
         self.app.manager = self.manager
         self.app.library = _Library()  # ty: ignore[invalid-assignment]
-        self.app.downloads = _Downloads()  # ty: ignore[invalid-assignment]
+        self.app.downloads = _ParallelDownloads(self.manager, self.music)  # ty: ignore[invalid-assignment]
         self.app.selected_navigation = 3
-        self.app.navigate = Mock()
+        self.app.navigation = SimpleNamespace(  # ty: ignore[invalid-assignment]
+            navigate=Mock()
+        )
+        self.app.tasks = _InlineTasks()  # ty: ignore[invalid-assignment]
         self.app._show_message = Mock()
         self.app._show_error = Mock()
-        self.app._initialize_playlists_page()
+        self.app.playlists_page = PlaylistsPage(self.app)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -170,7 +188,9 @@ class PlaylistFeatureTests(unittest.TestCase):
         playlist_id = self.manager.create_playlist("Road trip")
         self.manager.add_to_playlist(playlist_id, first)
 
-        self.app._bulk_add_tracks_dialog(self.manager.get_playlist(playlist_id))
+        self.app.playlists_page._bulk_add_tracks_dialog(
+            self.manager.get_playlist(playlist_id)
+        )
 
         dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
         select_all = dialog.content.controls[1]
@@ -196,13 +216,15 @@ class PlaylistFeatureTests(unittest.TestCase):
         self.assertEqual(self.app.page.pop_count, 1)  # ty: ignore[unresolved-attribute]
         self.app._show_message.assert_called_once_with("Added 2 tracks to “Road trip”.")  # ty: ignore[unresolved-attribute]
 
-        self.app._bulk_add_tracks_dialog(self.manager.get_playlist(playlist_id))
+        self.app.playlists_page._bulk_add_tracks_dialog(
+            self.manager.get_playlist(playlist_id)
+        )
         repeated_dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
         self.assertTrue(repeated_dialog.content.controls[1].disabled)
         self.assertTrue(repeated_dialog.actions[-1].disabled)
 
     def test_import_dialog_explains_deduplication_and_validates_the_url(self) -> None:
-        self.app._import_playlist_dialog()
+        self.app.playlists_page._import_playlist_dialog()
 
         dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
         explanation = dialog.content.controls[0]
@@ -213,7 +235,7 @@ class PlaylistFeatureTests(unittest.TestCase):
         field.value = "https://www.youtube.com/watch?v=single-video"
         dialog.actions[-1].on_click(None)
 
-        self.assertEqual(field.error, "Paste a complete YouTube playlist URL.")
+        self.assertEqual(field.error, "Paste a complete YouTube Music playlist URL.")
         self.assertEqual(self.app.page.pop_count, 0)  # ty: ignore[unresolved-attribute]
 
     def test_playlist_import_reuses_local_tracks_and_downloads_only_missing(
@@ -232,42 +254,27 @@ class PlaylistFeatureTests(unittest.TestCase):
             ),
         )
 
-        self.app._begin_playlist_import(remote)
+        self.app.playlists_page._begin_playlist_import(remote)
 
-        playlist_id = self.app.selected_playlist_id
+        playlist_id = self.app.playlists_page.selected_playlist_id
         self.assertIsNotNone(playlist_id)
-        self.assertEqual(
-            [str(track.id) for track in self.manager.playlist_tracks(playlist_id)],  # ty: ignore[invalid-argument-type]
-            [existing],
-        )
-        self.assertEqual([item.id for item in self.app.downloads.started], ["missing"])  # ty: ignore[unresolved-attribute]
-        self.assertIsNotNone(self.app.playlist_import_session)
-
-        downloaded_path = self.music / "missing.mp3"
-        downloaded_path.write_bytes(b"new audio")
-        downloaded = str(
-            self.manager.add_track(
-                downloaded_path,
-                source=missing.url,
-                title=missing.title,
-            )
-        )
-        self.app.downloads.complete(missing.url)  # ty: ignore[unresolved-attribute]
-        self.app._continue_playlist_import()
-
-        self.assertIsNone(self.app.playlist_import_session)
+        downloaded_track = self.manager.find_track_by_source(missing.url)
+        assert downloaded_track is not None
+        downloaded = str(downloaded_track.id)
         self.assertEqual(
             [str(track.id) for track in self.manager.playlist_tracks(playlist_id)],  # ty: ignore[invalid-argument-type]
             [existing, downloaded],
         )
+        self.assertEqual(self.app.downloads.started, ["missing"])  # ty: ignore[unresolved-attribute]
+        self.assertIsNone(self.app.playlists_page.playlist_import_session)
         self.assertEqual(len(self.manager.list_tracks()), 2)
         self.assertEqual(len(list(self.music.glob("*.mp3"))), 2)
         self.app._show_error.assert_not_called()  # ty: ignore[unresolved-attribute]
 
         # Reimporting creates another playlist that references the same records;
         # it does not schedule downloads or create duplicate library entries.
-        self.app._begin_playlist_import(remote)
-        repeated_id = self.app.selected_playlist_id
+        self.app.playlists_page._begin_playlist_import(remote)
+        repeated_id = self.app.playlists_page.selected_playlist_id
         self.assertEqual(len(self.app.downloads.started), 1)  # ty: ignore[unresolved-attribute]
         self.assertEqual(len(self.manager.list_tracks()), 2)
         self.assertEqual(
@@ -278,7 +285,7 @@ class PlaylistFeatureTests(unittest.TestCase):
     def test_playlist_import_keeps_multiple_downloads_in_flight(self) -> None:
         downloads = _ParallelDownloads(self.manager, self.music, capacity=2)
         self.app.downloads = downloads  # ty: ignore[invalid-assignment]
-        self.app.tasks = _InlineTasks()
+        self.app.tasks = _InlineTasks()  # ty: ignore[invalid-assignment]
         remote = RemotePlaylist(
             "Parallel mix",
             tuple(
@@ -291,7 +298,7 @@ class PlaylistFeatureTests(unittest.TestCase):
             ),
         )
 
-        asyncio.run(self.app._import_playlist(remote, 0))
+        asyncio.run(self.app.playlists_page._import_playlist(remote, 0))
 
         self.assertEqual(downloads.started, ["one", "two", "three"])
         self.assertEqual(downloads.max_active, 2)
@@ -299,7 +306,7 @@ class PlaylistFeatureTests(unittest.TestCase):
             [
                 track.title
                 for track in self.manager.playlist_tracks(
-                    self.app.selected_playlist_id  # ty: ignore[invalid-argument-type]
+                    self.app.playlists_page.selected_playlist_id  # ty: ignore[invalid-argument-type]
                 )
             ],
             ["First", "Second", "Third"],
@@ -314,14 +321,24 @@ class PlaylistFeatureTests(unittest.TestCase):
         existing = self._add_track("content-match.mp3")
         result = self._result("same-content", "Same audio")
 
-        self.app._begin_playlist_import(RemotePlaylist("Content match", (result,)))
-        playlist_id = self.app.selected_playlist_id
-        self.assertEqual(len(self.app.downloads.started), 1)  # ty: ignore[unresolved-attribute]
-        self.app.downloads.complete(result.url)  # ty: ignore[unresolved-attribute]
+        downloads = _ParallelDownloads(self.manager, self.music)
+        task = DownloadTask(UUID(int=1))
+        downloads.request_with_ownership = Mock(return_value=(task, True))
+        downloads.records[str(task.id)] = DownloadRecord(
+            id=str(task.id),
+            url=result.url,
+            title=result.title,
+            status="completed",
+            progress=1.0,
+            track_ids=[existing],
+        )
+        self.app.downloads = downloads  # ty: ignore[invalid-assignment]
+        self.app.playlists_page._begin_playlist_import(
+            RemotePlaylist("Content match", (result,))
+        )
+        playlist_id = self.app.playlists_page.selected_playlist_id
 
-        self.app._continue_playlist_import(result.url, (existing,))
-
-        self.assertIsNone(self.app.playlist_import_session)
+        self.assertIsNone(self.app.playlists_page.playlist_import_session)
         self.assertEqual(
             [str(track.id) for track in self.manager.playlist_tracks(playlist_id)],  # ty: ignore[invalid-argument-type]
             [existing],
@@ -332,15 +349,25 @@ class PlaylistFeatureTests(unittest.TestCase):
         self,
     ) -> None:
         result = self._result("still-downloading", "Pending song")
-        self.app._begin_playlist_import(RemotePlaylist("Temporary", (result,)))
-        playlist_id = self.app.selected_playlist_id
-        playlist = self.manager.get_playlist(playlist_id)  # ty: ignore[invalid-argument-type]
+        downloads = _Downloads()
+        self.app.downloads = downloads  # ty: ignore[invalid-assignment]
+        playlist_id = str(self.manager.create_playlist("Temporary"))
+        task = downloads.start(result)
+        self.app.playlists_page.playlist_import_session = _PlaylistImportSession(
+            playlist_id,
+            "Temporary",
+            deque(),
+            (source_key(result.url),),
+            active_downloads={source_key(result.url): (str(task.id), True)},
+        )
+        self.app.playlists_page.selected_playlist_id = playlist_id
+        playlist = self.manager.get_playlist(playlist_id)
 
-        self.app._delete_playlist_dialog(playlist)
+        self.app.playlists_page._delete_playlist_dialog(playlist)
         self.app.page.dialogs[-1].actions[-1].on_click(None)  # ty: ignore[unresolved-attribute]
 
-        self.assertFalse(self.manager.has_playlist(playlist_id))  # ty: ignore[invalid-argument-type]
-        self.assertIsNone(self.app.playlist_import_session)
+        self.assertFalse(self.manager.has_playlist(playlist_id))
+        self.assertIsNone(self.app.playlists_page.playlist_import_session)
         self.assertFalse(self.app.downloads.is_source_active(result.url))
         self.assertEqual(
             self.app.downloads.cancelled,  # ty: ignore[unresolved-attribute]

@@ -13,7 +13,7 @@ class MediaSessionActionEvent(ft.Event["BackgroundAudioSession"]):
 
 @ft.control("BackgroundAudioSession")
 class BackgroundAudioSession(ft.Service):
-    """Native media-session bridge used by Melody's existing audio player."""
+    """System media-session companion to this package's managed player."""
 
     on_action: ft.EventHandler[MediaSessionActionEvent] | None = None
 

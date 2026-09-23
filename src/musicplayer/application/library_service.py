@@ -31,6 +31,9 @@ class LibraryService:
     def details(self, track_id: UUID | str) -> TrackDetails:
         return self.store.track_details(str(track_id))
 
+    def details_many(self, track_ids: Iterable[UUID | str]) -> dict[str, TrackDetails]:
+        return self.store.track_details_many(str(track_id) for track_id in track_ids)
+
     def reconcile(self) -> LibraryReconciliation:
         """Repair stale secondary metadata and report ambiguous media safely.
 
@@ -176,8 +179,19 @@ class LibraryService:
             )
         return destination
 
-    def tracks(self, *, query: str = "", sort: str = "recent") -> tuple[Track, ...]:
-        matching_tracks = self.manager.search_tracks(query)
+    def tracks(
+        self,
+        *,
+        query: str = "",
+        sort: str = "recent",
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[Track, ...]:
+        matching_tracks = self.manager.search_tracks(
+            query,
+            offset=offset if sort == "recent" else 0,
+            limit=limit if sort == "recent" else None,
+        )
         if sort == "recent":
             return matching_tracks
         tracks = list(matching_tracks)
@@ -187,7 +201,9 @@ class LibraryService:
             )
         if sort == "oldest":
             tracks.sort(key=lambda item: item.added_at)
-        return tuple(tracks)
+        start = max(0, offset)
+        end = None if limit is None else start + max(0, limit)
+        return tuple(tracks[start:end])
 
     def playlists(self) -> tuple[Playlist, ...]:
         return self.manager.list_playlists()

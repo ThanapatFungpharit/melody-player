@@ -35,7 +35,11 @@ class PlaybackPersistence:
         with self._lock:
             if self._closed:
                 return
-            self._plays[track_id] = self._plays.get(track_id, 0) + 1
+            # Reinserting a repeated key records its latest occurrence while
+            # retaining the exact coalesced play count. ``ApplicationStore``
+            # reverses this oldest-to-newest order when it builds recents.
+            count = self._plays.pop(track_id, 0)
+            self._plays[track_id] = count + 1
             self._start_locked()
 
     def _start_locked(self) -> None:

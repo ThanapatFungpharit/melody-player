@@ -3,6 +3,7 @@ import "package:flutter/widgets.dart";
 
 import "background_audio_session.dart";
 import "managed_audio.dart";
+import "shared_audio_storage.dart";
 
 class Extension extends FletExtension {
   @override
@@ -15,6 +16,7 @@ class Extension extends FletExtension {
       "BackgroundAudioSession" => BackgroundAudioSessionService(
         control: control,
       ),
+      "SharedAudioStorage" => SharedAudioStorageService(control: control),
       _ => null,
     };
   }

@@ -3,10 +3,6 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from musicplayer.core.media import source_key
-
-__all__ = ["source_key"]
-
 from .config import U32
 
 logger = logging.getLogger(__name__)

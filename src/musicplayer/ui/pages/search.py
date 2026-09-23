@@ -10,8 +10,8 @@ from musicplayer.application.downloads import (
     extract_download_urls,
 )
 from musicplayer.application.models import SearchResult
-from musicplayer.application.providers import YOUTUBE_PROVIDER_ID
 from musicplayer.core.library.models import Playlist
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME, YOUTUBE_PROVIDER_ID
 from musicplayer.ui.components.common import (
     _empty_state,
     _format_duration,
@@ -23,50 +23,61 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from musicplayer.app import MusicPlayerApp
 
-    _Base = object
-else:
-    _Base = object
-
 
 class SearchPage:
+    query: ft.TextField
+    button: ft.Button
+    batch_download_button: ft.Button
+    status: ft.Text
+    view_selector: ft.SegmentedButton
+    previous_button: ft.IconButton
+    first_button: ft.TextButton
+    next_button: ft.IconButton
+    page_number_label: ft.Text
+    pagination: ft.Row
+    result_list: ft.Column
+
     def __init__(self, app: MusicPlayerApp):
         self.app = app
+        self.reset()
 
     """Search page UI and provider-search workflow."""
 
     SEARCH_PAGE_SIZE = 24
 
-    def _initialize_search_page(self) -> None:
-        self.app._search_local_tracks = {}
-        self.app.search_draft = ""
-        self.app.search_results: list[SearchResult] = []
-        self.app.search_busy = False
-        self.app.search_page = 1
-        self.app.search_has_next = False
-        self.app.search_query_text = ""
-        self.app.search_playlist_title = ""
-        self.app.search_view_mode = "list"
+    def reset(self) -> None:
+        self.local_tracks = {}
+        self.draft = ""
+        self.results: list[SearchResult] = []
+        self.busy = False
+        self.page_number = 1
+        self.has_next = False
+        self.query_text = ""
+        self.playlist_title = ""
+        self.view_mode = "list"
 
     def _search_view(self) -> ft.Control:
-        return self.app.views._search_view(self)
+        return self.app.views._search_view(self.app)
 
     def _start_search(self) -> None:
-        query = self.app.search_query.value.strip()
+        query = self.query.value.strip()
         if not query:
-            self.app._show_error("Enter a search term or YouTube URL.")
+            self.app._show_error(f"Enter a search term or {YOUTUBE_MUSIC_NAME} URL.")
             return
         urls = extract_download_urls(query)
         if len(urls) > 1:
-            self.app.search_query_text = query
-            self.app._start_url_batch(urls)
+            self.query_text = query
+            self._start_url_batch(urls)
             return
-        self.app.search_query_text = query
-        self.app._begin_search(query, page=1, remember=True)
+        self.query_text = query
+        self._begin_search(query, page=1, remember=True)
 
     def _batch_download_dialog(self) -> None:
         urls_field = ft.TextField(
-            label="YouTube URLs",
-            hint_text="Paste one YouTube video or playlist URL per line",
+            label=f"{YOUTUBE_MUSIC_NAME} URLs",
+            hint_text=(
+                f"Paste one {YOUTUBE_MUSIC_NAME} track or playlist URL per line"
+            ),
             multiline=True,
             min_lines=7,
             max_lines=12,
@@ -77,7 +88,9 @@ class SearchPage:
         async def start_batch(_: object) -> None:
             urls = extract_download_urls(urls_field.value or "")
             if len(urls) < 2:
-                validation.value = "Paste at least two complete YouTube URLs."
+                validation.value = (
+                    f"Paste at least two complete {YOUTUBE_MUSIC_NAME} URLs."
+                )
                 self.app.page.update(validation)
                 return
             try:
@@ -87,7 +100,7 @@ class SearchPage:
                 self.app.page.update(validation)
                 return
             self.app.page.pop_dialog()
-            self.app._show_message(self.app._batch_download_message(batch))
+            self.app._show_message(self._batch_download_message(batch))
             self.app.context_panel._open_downloads_panel()
 
         self.app.page.show_dialog(
@@ -97,7 +110,8 @@ class SearchPage:
                 content=ft.Column(
                     [
                         ft.Text(
-                            "Add multiple YouTube URLs. Melody will queue them together and show progress for each song.",
+                            f"Add multiple {YOUTUBE_MUSIC_NAME} URLs. Melody will "
+                            "queue them together and show progress for each song.",
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
                         urls_field,
@@ -128,7 +142,7 @@ class SearchPage:
         except (ValueError, OSError, RuntimeError) as error:
             self.app._show_error(str(error))
             return
-        self.app._show_message(self.app._batch_download_message(batch))
+        self.app._show_message(self._batch_download_message(batch))
         self.app.context_panel._open_downloads_panel()
 
     @staticmethod
@@ -144,14 +158,14 @@ class SearchPage:
         return "All requested songs are already in the library or downloading."
 
     def _load_search_page(self, page: int) -> None:
-        if self.app.search_busy or page < 1:
+        if self.busy or page < 1:
             return
-        if page > self.app.search_page and not self.app.search_has_next:
+        if page > self.page_number and not self.has_next:
             return
-        if not self.app.search_query_text:
+        if not self.query_text:
             return
-        self.app._begin_search(
-            self.app.search_query_text,
+        self._begin_search(
+            self.query_text,
             page=page,
             remember=False,
         )
@@ -163,46 +177,46 @@ class SearchPage:
         page: int,
         remember: bool,
     ) -> None:
-        self.app.search_busy = True
-        self.app.search_button.disabled = True
-        self.app.search_previous_button.disabled = True
-        self.app.search_first_button.disabled = True
-        self.app.search_next_button.disabled = True
-        self.app.search_status.value = f"Searching page {page}…"
-        self.app.search_list.controls = [
+        self.busy = True
+        self.button.disabled = True
+        self.previous_button.disabled = True
+        self.first_button.disabled = True
+        self.next_button.disabled = True
+        self.status.value = f"Searching page {page}…"
+        self.result_list.controls = [
             ft.Container(ft.ProgressRing(), alignment=ft.Alignment.CENTER, padding=40)
         ]
         self.app.page.update(
-            self.app.search_button,
-            self.app.search_status,
-            self.app.search_list,
-            self.app.search_pagination,
+            self.button,
+            self.status,
+            self.result_list,
+            self.pagination,
         )
         if not run_io(
-            self,
-            partial(self.app._fetch_search, query, page, remember),
-            partial(self.app._finish_search, page),
+            self.app,
+            partial(self._fetch_search, query, page, remember),
+            partial(self._finish_search, page),
             key="search",
             replace=True,
-            failed=self.app._search_failed,
+            failed=self._search_failed,
         ):
-            self.app.search_busy = False
-            self.app.search_button.disabled = False
-            self.app.search_status.value = "Background workers are busy. Retry shortly."
-            self.app._update_search_navigation(update_status=False)
+            self.busy = False
+            self.button.disabled = False
+            self.status.value = "Background workers are busy. Retry shortly."
+            self._update_search_navigation(update_status=False)
             self.app.page.update(
-                self.app.search_button,
-                self.app.search_status,
-                self.app.search_list,
-                self.app.search_pagination,
+                self.button,
+                self.status,
+                self.result_list,
+                self.pagination,
             )
 
     def _fetch_search(self, query: str, page: int, remember: bool):
-        offset = (page - 1) * self.app.SEARCH_PAGE_SIZE
+        offset = (page - 1) * self.SEARCH_PAGE_SIZE
         fetched = self.app.providers.search(
             YOUTUBE_PROVIDER_ID,
             query,
-            limit=self.app.SEARCH_PAGE_SIZE + 1,
+            limit=self.SEARCH_PAGE_SIZE + 1,
             offset=offset,
         )
         local = {
@@ -215,102 +229,86 @@ class SearchPage:
         return fetched, local
 
     def _finish_search(self, page: int, value) -> None:
-        fetched, self.app._search_local_tracks = value
-        self.app.search_results = fetched[: self.app.SEARCH_PAGE_SIZE]
-        self.app.search_page = page
-        self.app.search_has_next = len(fetched) > self.app.SEARCH_PAGE_SIZE
-        self.app.search_playlist_title = next(
-            (
-                item.playlist_title
-                for item in self.app.search_results
-                if item.playlist_title
-            ),
+        fetched, self.local_tracks = value
+        self.results = fetched[: self.SEARCH_PAGE_SIZE]
+        self.page_number = page
+        self.has_next = len(fetched) > self.SEARCH_PAGE_SIZE
+        self.playlist_title = next(
+            (item.playlist_title for item in self.results if item.playlist_title),
             "",
         )
-        self.app.search_busy = False
-        self.app.search_button.disabled = False
-        self.app._render_search_results(update=False)
-        self.app._update_search_navigation()
+        self.busy = False
+        self.button.disabled = False
+        self._render_search_results(update=False)
+        self._update_search_navigation()
         self.app.page.update(
-            self.app.search_button,
-            self.app.search_status,
-            self.app.search_list,
-            self.app.search_pagination,
+            self.button,
+            self.status,
+            self.result_list,
+            self.pagination,
         )
 
     def _search_failed(self, message: str) -> None:
-        self.app.search_busy = False
-        self.app.search_button.disabled = False
-        self.app.search_results = []
-        self.app.search_has_next = False
-        self.app.search_status.value = message
-        self.app.search_list.controls = [
-            _empty_state(ft.Icons.CLOUD_OFF_ROUNDED, message)
-        ]
-        self.app._update_search_navigation(update_status=False)
+        self.busy = False
+        self.button.disabled = False
+        self.results = []
+        self.has_next = False
+        self.status.value = message
+        self.result_list.controls = [_empty_state(ft.Icons.CLOUD_OFF_ROUNDED, message)]
+        self._update_search_navigation(update_status=False)
         self.app.page.update(
-            self.app.search_button,
-            self.app.search_status,
-            self.app.search_list,
-            self.app.search_pagination,
+            self.button,
+            self.status,
+            self.result_list,
+            self.pagination,
         )
 
     def _render_search_results(self, *, update: bool = True) -> None:
-        if not self.app.search_results:
-            self.app.search_list.controls = [
+        if not self.results:
+            self.result_list.controls = [
                 _empty_state(
                     ft.Icons.SEARCH_OFF_ROUNDED, "No matching music was found."
                 )
             ]
         else:
-            self.app.search_list.controls = self.app.views._search_results(self)
+            self.result_list.controls = self.app.views._search_results(self.app)
         if update:
-            self.app.page.update(self.app.search_list)
+            self.app.page.update(self.result_list)
 
     def _set_search_view(self, selected: list[str]) -> None:
-        self.app.search_view_mode = selected[0] if selected else "list"
-        self.app._render_search_results()
+        self.view_mode = selected[0] if selected else "list"
+        self._render_search_results()
 
     def _update_search_navigation(self, *, update_status: bool = True) -> None:
-        result_count = len(self.app.search_results)
+        result_count = len(self.results)
         result_word = "result" if result_count == 1 else "results"
         if update_status:
             if result_count:
-                playlist = (
-                    f"{self.app.search_playlist_title} • "
-                    if self.app.search_playlist_title
-                    else ""
+                playlist = f"{self.playlist_title} • " if self.playlist_title else ""
+                self.status.value = (
+                    f"{playlist}Page {self.page_number} • {result_count} {result_word}"
                 )
-                self.app.search_status.value = f"{playlist}Page {self.app.search_page} • {result_count} {result_word}"
             else:
-                self.app.search_status.value = "No matching music was found."
-        self.app.search_page_label.value = f"Page {self.app.search_page}"
-        self.app.search_pagination.visible = (
-            bool(self.app.search_results) or self.app.search_page > 1
-        )
-        self.app.search_first_button.disabled = (
-            self.app.search_busy or self.app.search_page <= 1
-        )
-        self.app.search_previous_button.disabled = (
-            self.app.search_busy or self.app.search_page <= 1
-        )
-        self.app.search_next_button.disabled = (
-            self.app.search_busy or not self.app.search_has_next
-        )
+                self.status.value = "No matching music was found."
+        self.page_number_label.value = f"Page {self.page_number}"
+        self.pagination.visible = bool(self.results) or self.page_number > 1
+        self.first_button.disabled = self.busy or self.page_number <= 1
+        self.previous_button.disabled = self.busy or self.page_number <= 1
+        self.next_button.disabled = self.busy or not self.has_next
 
     def _search_result_row(
         self, result: SearchResult, playlists: tuple[Playlist, ...]
     ) -> ft.Control:
-        return self.app.views._search_result_row(self, result, playlists)
+        return self.app.views._search_result_row(self.app, result, playlists)
 
     def _search_result_card(
         self, result: SearchResult, playlists: tuple[Playlist, ...]
     ) -> ft.Control:
-        return self.app.views._search_result_card(self, result, playlists)
+        return self.app.views._search_result_card(self.app, result, playlists)
 
     def _available_search_track(self, result: SearchResult):
         """Read the result-page cache; rendering must never hash audio files."""
-        return self.app._search_local_tracks.get(result.url)
+        return self.local_tracks.get(result.url)
 
     def _search_result_menu(
         self,
@@ -326,7 +324,7 @@ class SearchPage:
                 ft.PopupMenuItem(
                     content=("Download playlist" if result.is_playlist else "Download"),
                     icon=ft.Icons.DOWNLOAD_ROUNDED,
-                    on_click=lambda _, item=result: self.app._download_result(item),
+                    on_click=lambda _, item=result: self._download_result(item),
                 )
             )
         known_track = local_track or (
@@ -342,21 +340,21 @@ class SearchPage:
                 ft.PopupMenuItem(
                     content="Play next",
                     icon=ft.Icons.QUEUE_PLAY_NEXT_ROUNDED,
-                    on_click=lambda _, item=result: self.app._act_on_search_result(
+                    on_click=lambda _, item=result: self._act_on_search_result(
                         item, "next"
                     ),
                 ),
                 ft.PopupMenuItem(
                     content="Add to queue",
                     icon=ft.Icons.ADD_TO_QUEUE_ROUNDED,
-                    on_click=lambda _, item=result: self.app._act_on_search_result(
+                    on_click=lambda _, item=result: self._act_on_search_result(
                         item, "queue"
                     ),
                 ),
                 ft.PopupMenuItem(
                     content="Remove favorite" if favorite else "Favorite",
                     icon=ft.Icons.FAVORITE_BORDER_ROUNDED,
-                    on_click=lambda _, item=result: self.app._act_on_search_result(
+                    on_click=lambda _, item=result: self._act_on_search_result(
                         item, "favorite"
                     ),
                 ),
@@ -367,7 +365,7 @@ class SearchPage:
                 content=f"Add to {playlist.name}",
                 icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
                 on_click=lambda _, item=result, pid=str(playlist.id): (
-                    self.app._act_on_search_result(item, "playlist", pid)
+                    self._act_on_search_result(item, "playlist", pid)
                 ),
             )
             for playlist in playlists
@@ -376,7 +374,7 @@ class SearchPage:
             ft.PopupMenuItem(
                 content="View details",
                 icon=ft.Icons.INFO_OUTLINE_ROUNDED,
-                on_click=lambda _, item=result: self.app._search_result_details(item),
+                on_click=lambda _, item=result: self._search_result_details(item),
             )
         )
         return menu_items
@@ -404,9 +402,9 @@ class SearchPage:
                 and self.app.playback.is_current_request(request_generation)
             )
             if existing:
-                self.app._search_local_tracks[result.url] = existing
+                self.local_tracks[result.url] = existing
                 if after and relevant:
-                    self.app._apply_track_action([str(existing.id)], after, playlist_id)
+                    self._apply_track_action([str(existing.id)], after, playlist_id)
                 elif not after:
                     self.app._show_message("This track is already in your library.")
                 return
@@ -432,7 +430,7 @@ class SearchPage:
                 self.app._show_error(message)
 
         run_io(
-            self,
+            self.app,
             prepare,
             finish,
             key=("download", result.url, after),
@@ -450,11 +448,11 @@ class SearchPage:
             existing = self.app.manager.find_track_by_source(result.url)
         if existing:
             if action == "favorite":
-                self.app._toggle_favorite(str(existing.id))
+                self.app.library_page._toggle_favorite(str(existing.id))
             else:
-                self.app._apply_track_action([str(existing.id)], action, playlist_id)
+                self._apply_track_action([str(existing.id)], action, playlist_id)
             return
-        self.app._download_result(result, after=action, playlist_id=playlist_id)
+        self._download_result(result, after=action, playlist_id=playlist_id)
 
     def _apply_track_action(
         self, track_ids: list[str], action: str, playlist_id: str | None = None
@@ -472,14 +470,14 @@ class SearchPage:
             message = "Added to the queue."
         elif action == "playlist" and playlist_id:
             run_io(
-                self,
+                self.app,
                 lambda: self.app.manager.add_tracks_to_playlist(playlist_id, available),
                 lambda _: self.app._show_message("Added to playlist."),
             )
             return
         elif action == "favorite":
             run_io(
-                self,
+                self.app,
                 lambda: self.app.library.favorite_tracks(available),
                 lambda _: self.app._show_message("Added to favorites."),
             )
@@ -547,9 +545,7 @@ class SearchPage:
             return
         generation = self.app.playback.begin_pending_track(result.title)
         if not result.is_playlist:
-            self.app._download_result(
-                result, after="play", request_generation=generation
-            )
+            self._download_result(result, after="play", request_generation=generation)
             return
 
         def finish(stream):
@@ -569,7 +565,7 @@ class SearchPage:
                 self.app.playback.on_backend_error(message)
 
         run_io(
-            self,
+            self.app,
             lambda: self.app.providers.get(result.provider_id).resolve_stream(
                 result.url
             ),
@@ -580,4 +576,4 @@ class SearchPage:
         )
 
     def _search_draft_changed(self, event) -> None:
-        self.app.search_draft = event.control.value or ""
+        self.draft = event.control.value or ""

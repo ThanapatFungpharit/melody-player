@@ -11,7 +11,7 @@ from musicplayer.core.downloader.errors import (
     DownloadErrorKind,
     classify_download_error,
 )
-from musicplayer.core.media import source_key
+from musicplayer.core.media import source_key, youtube_music_radio_url
 from tools.production_build import platform_flet_arguments
 from tools.release_version import build_number, release_version, validate_tag
 
@@ -34,8 +34,7 @@ class ContractTests(unittest.TestCase):
         )
         self.assertNotIn("version", project["project"])
         self.assertEqual(release_version(), __version__)
-        family = {requirements[name] for name in ("flet", "flet-audio")}
-        self.assertEqual(len(family), 1)
+        self.assertNotIn("flet-audio", requirements)
         self.assertEqual(
             Requirement(plugin["project"]["dependencies"][0]).specifier,
             Requirement("flet" + requirements["flet"]).specifier,
@@ -48,7 +47,8 @@ class ContractTests(unittest.TestCase):
         locked = {
             package["name"]: package.get("version") for package in lock["package"]
         }
-        for name in ("flet", "flet-audio", "flet-desktop", "flet-cli"):
+        self.assertNotIn("flet-audio", locked)
+        for name in ("flet", "flet-desktop", "flet-cli"):
             self.assertEqual("==" + locked[name], requirements["flet"])
         self.assertEqual("==" + locked["yt-dlp"], requirements["yt-dlp"])
 
@@ -79,6 +79,14 @@ class ContractTests(unittest.TestCase):
             "https://youtube-nocookie.com/embed/abc123",
         ):
             self.assertEqual(source_key(url), "youtube:abc123")
+
+    def test_youtube_music_radio_url_is_seeded_by_track_identity(self):
+        self.assertEqual(
+            youtube_music_radio_url("https://youtu.be/abc123?si=share"),
+            "https://music.youtube.com/watch?v=abc123&list=RDAMVMabc123&start_radio=1",
+        )
+        with self.assertRaisesRegex(ValueError, "YouTube track URL"):
+            youtube_music_radio_url("https://example.test/track")
         self.assertNotEqual(
             source_key("https://youtube.com.evil.test/watch?v=abc123"), "youtube:abc123"
         )

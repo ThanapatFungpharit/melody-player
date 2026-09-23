@@ -8,16 +8,15 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from musicplayer.application.contracts import (
-    WorkerQueueFull,
+from musicplayer.application.models import SearchResult, TrackDetails
+from musicplayer.application.providers import RemotePlaylist
+from musicplayer.core.concurrency import WorkerQueueFull
+from musicplayer.core.library.models import Playlist, Track
+from musicplayer.core.media import (
+    YOUTUBE_MUSIC_NAME,
+    is_youtube_playlist_url,
     source_key,
 )
-from musicplayer.application.models import SearchResult
-from musicplayer.application.providers import (
-    RemotePlaylist,
-    is_youtube_playlist_url,
-)
-from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components.common import (
     _track_credit,
     _track_title,
@@ -25,11 +24,7 @@ from musicplayer.ui.components.common import (
 from musicplayer.ui.tasks import page_action
 
 if TYPE_CHECKING:
-    from musicplayer.ui._app_protocol import AppProtocol
-
-    _PlaylistBase = AppProtocol
-else:
-    _PlaylistBase = object
+    from musicplayer.app import MusicPlayerApp
 
 
 @dataclass
@@ -39,9 +34,6 @@ class _PlaylistImportSession:
     pending: deque[tuple[str, SearchResult]]
     order: tuple[str, ...]
     resolved: dict[str, str] = field(default_factory=dict)
-    waiting_key: str | None = None
-    waiting_owned: bool = False
-    waiting_task_id: str | None = None
     active_downloads: dict[str, tuple[str, bool]] = field(default_factory=dict)
     reused: int = 0
     downloaded: int = 0
@@ -52,10 +44,14 @@ class _PlaylistImportSession:
         return len(self.order)
 
 
-class PlaylistsPage(_PlaylistBase):
+class PlaylistsPage:
     """Playlists page UI and playlist-management workflows."""
 
-    def _initialize_playlists_page(self) -> None:
+    def __init__(self, app: MusicPlayerApp) -> None:
+        self.app = app
+        self.reset()
+
+    def reset(self) -> None:
         self.selected_playlist_id: str | None = None
         self.playlist_import_session: _PlaylistImportSession | None = None
         self.playlist_import_loading = False
@@ -65,14 +61,14 @@ class PlaylistsPage(_PlaylistBase):
         self._import_wakeup = asyncio.Event()
 
     def _playlists_view(self) -> ft.Control:
-        return self.views._playlists_view(self)
+        return self.app.views._playlists_view(self.app)
 
     def _open_playlist(self, playlist_id: str) -> None:
         self.selected_playlist_id = playlist_id
-        self.navigate(3)
+        self.app.navigation.navigate(3)
 
     def _playlist_detail(self, playlist: Playlist) -> ft.Control:
-        return self.views._playlist_detail(self, playlist)
+        return self.app.views._playlist_detail(self.app, playlist)
 
     def _playlist_track_row(
         self,
@@ -81,42 +77,51 @@ class PlaylistsPage(_PlaylistBase):
         index: int,
         other_playlists: tuple[Playlist, ...],
         playlist_track_ids: tuple[str, ...],
+        details: TrackDetails | None = None,
     ) -> ft.Control:
-        return self.views._playlist_track_row(
-            self, playlist, track, index, other_playlists, playlist_track_ids
+        return self.app.views._playlist_track_row(
+            self.app,
+            playlist,
+            track,
+            index,
+            other_playlists,
+            playlist_track_ids,
+            details,
         )
 
     def _close_playlist(self) -> None:
         self.selected_playlist_id = None
-        self.navigate(3)
+        self.app.navigation.navigate(3)
 
     def _play_playlist(self, playlist: Playlist, *, shuffle: bool = False) -> None:
         ids = [str(track_id) for track_id in playlist.track_ids]
-        self.playback.play_tracks(ids, shuffle=True if shuffle else None)
+        self.app.playback.play_tracks(ids, shuffle=True if shuffle else None)
 
     def _create_playlist_dialog(self) -> None:
         field = ft.TextField(label="Playlist name", autofocus=True)
 
         async def create(_: Any) -> None:
             try:
-                playlist_id = await self.tasks.io(
-                    self.manager.create_playlist, field.value
+                playlist_id = await self.app.tasks.io(
+                    self.app.manager.create_playlist, field.value
                 )
             except ValueError as error:
-                self._show_error(str(error))
+                self.app._show_error(str(error))
                 return
-            self.page.pop_dialog()
+            self.app.page.pop_dialog()
             self.selected_playlist_id = str(playlist_id)
-            self.navigate(3)
+            self.app.navigation.navigate(3)
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
                 title=ft.Text("New playlist"),
                 content=field,
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     ft.Button("Create", on_click=create),
                 ],
             )
@@ -124,34 +129,34 @@ class PlaylistsPage(_PlaylistBase):
 
     def _import_playlist_dialog(self) -> None:
         if self.playlist_import_loading or self.playlist_import_session is not None:
-            self._show_error("A playlist import is already in progress.")
+            self.app._show_error("A playlist import is already in progress.")
             return
 
         field = ft.TextField(
-            label="YouTube playlist URL",
-            hint_text="https://www.youtube.com/playlist?list=…",
+            label=f"{YOUTUBE_MUSIC_NAME} playlist URL",
+            hint_text="https://music.youtube.com/playlist?list=…",
             autofocus=True,
-            width=min(560, max(160, float(self.page.width or 360) - 80)),
+            width=min(560, max(160, float(self.app.page.width or 360) - 80)),
         )
 
         def begin(_: Any) -> None:
             url = (field.value or "").strip()
             if not is_youtube_playlist_url(url):
-                field.error = "Paste a complete YouTube playlist URL."
-                self.page.update(field)
+                field.error = f"Paste a complete {YOUTUBE_MUSIC_NAME} playlist URL."
+                self.app.page.update(field)
                 return
             self.playlist_import_loading = True
             import_button.disabled = True
             self._load_playlist_import(url)
-            self.page.pop_dialog()
-            self._show_message("Loading the YouTube playlist…")
+            self.app.page.pop_dialog()
+            self.app._show_message(f"Loading the {YOUTUBE_MUSIC_NAME} playlist…")
 
         import_button = ft.Button(
             "Import playlist",
             icon=ft.Icons.DOWNLOAD_ROUNDED,
             on_click=begin,
         )
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
@@ -159,7 +164,7 @@ class PlaylistsPage(_PlaylistBase):
                 content=ft.Column(
                     [
                         ft.Text(
-                            "Paste a YouTube playlist link. Melody will reuse tracks "
+                            f"Paste a {YOUTUBE_MUSIC_NAME} playlist link. Melody will reuse tracks "
                             "already in your library and download only the missing ones."
                         ),
                         field,
@@ -168,7 +173,9 @@ class PlaylistsPage(_PlaylistBase):
                     tight=True,
                 ),
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     import_button,
                 ],
             )
@@ -178,7 +185,7 @@ class PlaylistsPage(_PlaylistBase):
     async def _load_playlist_import(self, url: str) -> None:
         generation = self._playlist_import_generation
         try:
-            remote = await self.tasks.io(self.providers.load_playlist, url)
+            remote = await self.app.tasks.io(self.app.providers.load_playlist, url)
             if generation == self._playlist_import_generation:
                 await self._import_playlist(remote, generation)
         finally:
@@ -190,18 +197,14 @@ class PlaylistsPage(_PlaylistBase):
 
     async def _import_playlist(self, remote: RemotePlaylist, generation: int) -> None:
         if self.playlist_import_session is not None:
-            self._show_error("A playlist import is already in progress.")
-            return
-        # Lightweight page fixtures and older integrations provide only the
-        # original ``start`` API. Preserve that handoff while the production
-        # coordinator uses cancellable request/get semantics below.
-        if not hasattr(self.downloads, "request"):
-            await self._legacy_import_playlist(remote)
+            self.app._show_error("A playlist import is already in progress.")
             return
         self.playlist_import_loading = True
-        name = remote.title.strip() or "Imported YouTube playlist"
+        name = remote.title.strip() or f"Imported {YOUTUBE_MUSIC_NAME} playlist"
         unique = {source_key(item.url): item for item in remote.tracks if item.url}
-        playlist_id = str(await self.tasks.io(self.manager.create_playlist, name))
+        playlist_id = str(
+            await self.app.tasks.io(self.app.manager.create_playlist, name)
+        )
         if generation != self._playlist_import_generation:
             return
         session = _PlaylistImportSession(
@@ -209,7 +212,7 @@ class PlaylistsPage(_PlaylistBase):
         )
         self.playlist_import_session = session
         self.selected_playlist_id = playlist_id
-        self._show_message(f"Importing {session.total} tracks into “{name}”…")
+        self.app._show_message(f"Importing {session.total} tracks into “{name}”…")
         try:
             while (
                 session.pending or session.active_downloads
@@ -224,13 +227,15 @@ class PlaylistsPage(_PlaylistBase):
                 while session.pending and self.playlist_import_session is session:
                     key, result = session.pending[0]
                     try:
-                        if hasattr(self.downloads, "request_with_ownership"):
-                            task, owned = await self.tasks.io(
-                                self.downloads.request_with_ownership, result
+                        if hasattr(self.app.downloads, "request_with_ownership"):
+                            task, owned = await self.app.tasks.io(
+                                self.app.downloads.request_with_ownership, result
                             )
                         else:
-                            was_active = self.downloads.is_source_active(result.url)
-                            task = await self.tasks.io(self.downloads.request, result)
+                            was_active = self.app.downloads.is_source_active(result.url)
+                            task = await self.app.tasks.io(
+                                self.app.downloads.request, result
+                            )
                             owned = task is not None and not was_active
                     except WorkerQueueFull:
                         queue_full = True
@@ -241,11 +246,13 @@ class PlaylistsPage(_PlaylistBase):
                         continue
                     if self.playlist_import_session is not session:
                         if task is not None and owned:
-                            await self.tasks.io(self.downloads.cancel, str(task.id))
+                            await self.app.tasks.io(
+                                self.app.downloads.cancel, str(task.id)
+                            )
                         return
                     if task is None:
-                        existing = await self.tasks.io(
-                            self.downloads.available_track, result.url
+                        existing = await self.app.tasks.io(
+                            self.app.downloads.available_track, result.url
                         )
                         if existing is not None:
                             session.resolved[key] = str(existing.id)
@@ -273,7 +280,7 @@ class PlaylistsPage(_PlaylistBase):
                 self._import_wakeup.clear()
                 terminal_seen = False
                 for key, (task_id, _) in tuple(session.active_downloads.items()):
-                    record = self.downloads.get(task_id)
+                    record = self.app.downloads.get(task_id)
                     if record is None or record.status not in {
                         "completed",
                         "failed",
@@ -295,14 +302,14 @@ class PlaylistsPage(_PlaylistBase):
                         for item in session.order
                         if item in session.resolved
                     ]
-                    await self.tasks.io(
-                        self.manager.merge_tracks_into_playlist, playlist_id, order
+                    await self.app.tasks.io(
+                        self.app.manager.merge_tracks_into_playlist, playlist_id, order
                     )
                     if (
                         self.playlist_import_session is session
-                        and self.selected_navigation == 3
+                        and self.app.selected_navigation == 3
                     ):
-                        self.navigate(3)
+                        self.app.navigation.navigate(3)
 
                 if not session.pending and not session.active_downloads:
                     break
@@ -325,84 +332,8 @@ class PlaylistsPage(_PlaylistBase):
             if self.playlist_import_session is session:
                 self.playlist_import_session = None
 
-    async def _legacy_import_playlist(self, remote: RemotePlaylist) -> None:
-        unique: list[tuple[str, SearchResult]] = []
-        seen: set[str] = set()
-        for result in remote.tracks:
-            key = source_key(result.url)
-            if result.url and key and key not in seen:
-                seen.add(key)
-                unique.append((key, result))
-        name = remote.title.strip() or "Imported YouTube playlist"
-        playlist_id = str(await self.tasks.io(self.manager.create_playlist, name))
-        session = _PlaylistImportSession(
-            playlist_id, name, deque(unique), tuple(key for key, _ in unique)
-        )
-        self.playlist_import_session = session
-        self.selected_playlist_id = playlist_id
-        self._legacy_advance(session)
-
-    def _legacy_advance(self, session: _PlaylistImportSession) -> None:
-        while session.pending:
-            key, result = session.pending[0]
-            existing = self.manager.find_track_by_source(result.url)
-            if existing is not None:
-                session.resolved[key] = str(existing.id)
-                session.reused += 1
-                session.pending.popleft()
-                continue
-            if session.waiting_key == key:
-                return
-            task = self.downloads.start(result)
-            session.waiting_key = key
-            session.waiting_owned = True
-            session.waiting_task_id = str(task.id)
-            break
-        self.manager.merge_tracks_into_playlist(
-            session.playlist_id,
-            [session.resolved[key] for key in session.order if key in session.resolved],
-        )
-        if not session.pending:
-            self._finish_playlist_import(session)
-
-    def _continue_playlist_import(
-        self, completed_url: str = "", completed_track_ids: tuple[str, ...] = ()
-    ) -> None:
-        session = self.playlist_import_session
-        if session is not None and not hasattr(self.downloads, "request"):
-            key, result = session.pending[0] if session.pending else ("", None)
-            if completed_url:
-                key = source_key(completed_url)
-                result = next(
-                    (item for item_key, item in session.pending if item_key == key),
-                    result,
-                )
-            completed_id = next(
-                (
-                    track_id
-                    for track_id in completed_track_ids
-                    if self.manager.has_track(track_id)
-                ),
-                None,
-            )
-            if completed_id and result is not None:
-                session.resolved[key] = completed_id
-                session.downloaded += 1
-                session.pending.popleft()
-                session.waiting_key = session.waiting_task_id = None
-                session.waiting_owned = False
-                self._legacy_advance(session)
-                return
-            if result is not None:
-                existing = self.manager.find_track_by_source(result.url)
-                if existing is not None:
-                    session.resolved[key] = str(existing.id)
-                    session.downloaded += 1
-                    session.pending.popleft()
-                    session.waiting_key = session.waiting_task_id = None
-                    session.waiting_owned = False
-                    self._legacy_advance(session)
-            return
+    def notify_download_changed(self) -> None:
+        """Wake the importer so it can inspect coordinator-owned records."""
         self._import_wakeup.set()
 
     def _cancel_playlist_import_retry(self) -> None:
@@ -426,15 +357,13 @@ class PlaylistsPage(_PlaylistBase):
             owned_task_ids = [
                 task_id for task_id, owned in session.active_downloads.values() if owned
             ]
-            if session.waiting_owned and session.waiting_task_id:
-                owned_task_ids.append(session.waiting_task_id)
             if owned_task_ids:
 
                 def cancel_owned_downloads() -> None:
                     for task_id in owned_task_ids:
-                        self.downloads.cancel(task_id)
+                        self.app.downloads.cancel(task_id)
 
-                self.tasks.submit(cancel_owned_downloads, lambda _: None)
+                self.app.tasks.submit(cancel_owned_downloads, lambda _: None)
         return session is not None
 
     def _finish_playlist_import(self, session: _PlaylistImportSession) -> None:
@@ -443,39 +372,41 @@ class PlaylistsPage(_PlaylistBase):
         self.playlist_import_session = None
         self._cancel_playlist_import_retry()
         imported = session.total - session.failed
-        if self.selected_navigation == 3:
-            self.navigate(3)
+        if self.app.selected_navigation == 3:
+            self.app.navigation.navigate(3)
         summary = (
             f"Imported {imported} of {session.total} tracks into “{session.name}”: "
             f"reused {session.reused}, downloaded {session.downloaded}."
         )
         if session.failed:
-            self._show_error(f"{summary} {session.failed} could not be downloaded.")
+            self.app._show_error(f"{summary} {session.failed} could not be downloaded.")
         else:
-            self._show_message(summary)
+            self.app._show_message(summary)
 
     def _rename_playlist_dialog(self, playlist: Playlist) -> None:
         field = ft.TextField(label="Playlist name", value=playlist.name, autofocus=True)
 
         async def save(_: Any) -> None:
             try:
-                await self.tasks.io(
-                    self.manager.rename_playlist, playlist.id, field.value
+                await self.app.tasks.io(
+                    self.app.manager.rename_playlist, playlist.id, field.value
                 )
             except ValueError as error:
-                self._show_error(str(error))
+                self.app._show_error(str(error))
                 return
-            self.page.pop_dialog()
-            self.navigate(3)
+            self.app.page.pop_dialog()
+            self.app.navigation.navigate(3)
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
                 title=ft.Text("Rename playlist"),
                 content=field,
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     ft.Button("Save", on_click=save),
                 ],
             )
@@ -484,15 +415,15 @@ class PlaylistsPage(_PlaylistBase):
     def _delete_playlist_dialog(self, playlist: Playlist) -> None:
         def confirm(_: Any) -> None:
             async def commit() -> None:
-                await self.tasks.io(self.manager.delete_playlist, playlist.id)
+                await self.app.tasks.io(self.app.manager.delete_playlist, playlist.id)
                 self._abandon_playlist_import(str(playlist.id))
-                self.page.pop_dialog()
+                self.app.page.pop_dialog()
                 self.selected_playlist_id = None
-                self.navigate(3)
+                self.app.navigation.navigate(3)
 
-            self.tasks.start(lambda: commit())
+            self.app.tasks.start(lambda: commit())
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
@@ -501,7 +432,9 @@ class PlaylistsPage(_PlaylistBase):
                     f"Delete “{playlist.name}”? Your downloaded tracks will stay in the library."
                 ),
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     ft.Button("Delete", on_click=confirm),
                 ],
             )
@@ -509,21 +442,21 @@ class PlaylistsPage(_PlaylistBase):
 
     @page_action
     async def _add_to_playlist(self, playlist_id: str, track_id: str) -> None:
-        await self.tasks.io(self.manager.add_to_playlist, playlist_id, track_id)
-        self._show_message("Added to playlist.")
+        await self.app.tasks.io(self.app.manager.add_to_playlist, playlist_id, track_id)
+        self.app._show_message("Added to playlist.")
 
     def _bulk_add_tracks_dialog(self, playlist: Playlist) -> None:
         member_ids = {str(track_id) for track_id in playlist.track_ids}
         candidates = [
             track
-            for track in self.manager.list_tracks()
+            for track in self.app.manager.list_tracks()
             if str(track.id) not in member_ids
         ]
         checkboxes = [
             ft.Checkbox(
                 label=(
                     f"{_track_title(track)} — "
-                    f"{_track_credit(self.library.details(track.id))}"
+                    f"{_track_credit(self.app.library.details(track.id))}"
                 ),
                 value=False,
             )
@@ -545,7 +478,7 @@ class PlaylistsPage(_PlaylistBase):
                 if selected
                 else "No tracks selected"
             )
-            self.page.update(select_all, selection, add_button, *checkboxes)
+            self.app.page.update(select_all, selection, add_button, *checkboxes)
 
         def toggle_all(_: Any) -> None:
             checked = bool(select_all.value)
@@ -564,19 +497,19 @@ class PlaylistsPage(_PlaylistBase):
 
             async def commit() -> None:
                 try:
-                    added = await self.tasks.io(
-                        self.manager.add_tracks_to_playlist, playlist.id, track_ids
+                    added = await self.app.tasks.io(
+                        self.app.manager.add_tracks_to_playlist, playlist.id, track_ids
                     )
                 except (KeyError, ValueError) as error:
-                    self._show_error(str(error))
+                    self.app._show_error(str(error))
                     return
-                self.page.pop_dialog()
-                self.navigate(3)
-                self._show_message(
+                self.app.page.pop_dialog()
+                self.app.navigation.navigate(3)
+                self.app._show_message(
                     f"Added {added} track{'s' if added != 1 else ''} to “{playlist.name}”."
                 )
 
-            self.tasks.start(lambda: commit())
+            self.app.tasks.start(lambda: commit())
 
         select_all.on_change = toggle_all
         for checkbox in checkboxes:
@@ -594,7 +527,7 @@ class PlaylistsPage(_PlaylistBase):
             track_list = ft.Column(
                 cast(list[ft.Control], checkboxes),
                 spacing=2,
-                height=min(340, max(96, float(self.page.height or 640) * 0.35)),
+                height=min(340, max(96, float(self.app.page.height or 640) * 0.35)),
                 scroll=ft.ScrollMode.AUTO,
             )
         else:
@@ -610,7 +543,7 @@ class PlaylistsPage(_PlaylistBase):
                 alignment=ft.Alignment.CENTER,
             )
 
-        self.page.show_dialog(
+        self.app.page.show_dialog(
             ft.AlertDialog(
                 scrollable=True,
                 modal=True,
@@ -627,10 +560,12 @@ class PlaylistsPage(_PlaylistBase):
                     ],
                     spacing=10,
                     tight=True,
-                    width=min(560, max(160, float(self.page.width or 360) - 80)),
+                    width=min(560, max(160, float(self.app.page.width or 360) - 80)),
                 ),
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda _: self.page.pop_dialog()),
+                    ft.TextButton(
+                        "Cancel", on_click=lambda _: self.app.page.pop_dialog()
+                    ),
                     add_button,
                 ],
             )
@@ -638,8 +573,10 @@ class PlaylistsPage(_PlaylistBase):
 
     @page_action
     async def _remove_from_playlist(self, playlist_id: str, track_id: str) -> None:
-        await self.tasks.io(self.manager.remove_from_playlist, playlist_id, track_id)
-        self.navigate(3)
+        await self.app.tasks.io(
+            self.app.manager.remove_from_playlist, playlist_id, track_id
+        )
+        self.app.navigation.navigate(3)
 
     @page_action
     async def _reorder_playlist(
@@ -647,20 +584,22 @@ class PlaylistsPage(_PlaylistBase):
     ) -> None:
         if old_index is None or new_index is None:
             return
-        playlist = self.manager.get_playlist(playlist_id)
+        playlist = self.app.manager.get_playlist(playlist_id)
         ordered = [str(track_id) for track_id in playlist.track_ids]
         item = ordered.pop(old_index)
         if new_index > old_index:
             new_index -= 1
         ordered.insert(max(0, min(new_index, len(ordered))), item)
         try:
-            await self.tasks.io(self.manager.reorder_playlist, playlist_id, ordered)
+            await self.app.tasks.io(
+                self.app.manager.reorder_playlist, playlist_id, ordered
+            )
         except Exception:
             # The visible list moves optimistically. Rebuild from the durable
             # manager order before the page-action boundary reports the error.
-            self.navigate(3)
+            self.app.navigation.navigate(3)
             raise
-        self.navigate(3)
+        self.app.navigation.navigate(3)
 
     def _playlist_reordered(self, playlist_id: str, event: ft.OnReorderEvent) -> None:
         """Move the rendered row immediately, then persist off the UI loop."""
@@ -679,7 +618,7 @@ class PlaylistsPage(_PlaylistBase):
         target = max(0, min(new_index, len(view.controls) - 1))
         row = view.controls.pop(old_index)
         view.controls.insert(target, row)
-        self.page.update(view)
+        self.app.page.update(view)
         self._reorder_playlist(playlist_id, old_index, event.new_index)
 
     @page_action
@@ -687,14 +626,14 @@ class PlaylistsPage(_PlaylistBase):
         self, source: str, target: str, track_id: str, *, move: bool
     ) -> None:
         if move:
-            await self.tasks.io(
-                self.manager.move_track_between_playlists, source, target, track_id
+            await self.app.tasks.io(
+                self.app.manager.move_track_between_playlists, source, target, track_id
             )
         else:
-            await self.tasks.io(
-                self.manager.copy_playlist_track, source, target, track_id
+            await self.app.tasks.io(
+                self.app.manager.copy_playlist_track, source, target, track_id
             )
-        self.navigate(3)
+        self.app.navigation.navigate(3)
 
     def _playlist_track_menu(
         self,
@@ -703,28 +642,33 @@ class PlaylistsPage(_PlaylistBase):
         index: int,
         other_playlists: tuple[Playlist, ...],
         playlist_track_ids: tuple[str, ...],
+        details: TrackDetails | None = None,
     ) -> list[ft.PopupMenuItem]:
-        details = self.library.details(track.id)
+        details = details or self.app.library.details(track.id)
         menu: list[ft.PopupMenuItem] = [
             ft.PopupMenuItem(
                 content="Play next",
                 icon=ft.Icons.QUEUE_PLAY_NEXT_ROUNDED,
-                on_click=lambda _, tid=str(track.id): self.playback.add_next(tid),
+                on_click=lambda _, tid=str(track.id): self.app.playback.add_next(tid),
             ),
             ft.PopupMenuItem(
                 content="Add to queue",
                 icon=ft.Icons.ADD_TO_QUEUE_ROUNDED,
-                on_click=lambda _, tid=str(track.id): self.playback.add_last(tid),
+                on_click=lambda _, tid=str(track.id): self.app.playback.add_last(tid),
             ),
             ft.PopupMenuItem(
                 content="Favorite" if not details.favorite else "Remove favorite",
                 icon=ft.Icons.FAVORITE_BORDER_ROUNDED,
-                on_click=lambda _, tid=str(track.id): self._toggle_favorite(tid),
+                on_click=lambda _, tid=str(track.id): (
+                    self.app.library_page._toggle_favorite(tid)
+                ),
             ),
             ft.PopupMenuItem(
                 content="View details",
                 icon=ft.Icons.INFO_OUTLINE_ROUNDED,
-                on_click=lambda _, item=track: self._track_details_dialog(item),
+                on_click=lambda _, item=track: (
+                    self.app.library_page._track_details_dialog(item)
+                ),
             ),
         ]
         for target in other_playlists:

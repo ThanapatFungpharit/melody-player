@@ -47,7 +47,9 @@ class PlaybackBindings:
             ft.Icons.SKIP_NEXT_ROUNDED, "Next track", lambda _: app.playback.next()
         )
         self.favorite = self.button(
-            ft.Icons.FAVORITE_BORDER_ROUNDED, "Favorite", app._toggle_current_favorite
+            ft.Icons.FAVORITE_BORDER_ROUNDED,
+            "Favorite",
+            app.library_page._toggle_current_favorite,
         )
         self.shuffle = self.button(
             ft.Icons.SHUFFLE_ROUNDED,
@@ -194,22 +196,25 @@ class PlaybackBindings:
 class PlayerBar:
     """Application event bridge with no platform layout decisions."""
 
+    def __init__(self, app: MusicPlayerApp) -> None:
+        self.app = app
+
     def _refresh_player(self) -> None:
-        if "player" not in self.__dict__:
+        if "player" not in self.app.__dict__:
             return
-        self.player.refresh()
-        self.page.update(*self.player.state_controls())
+        self.app.player.refresh()
+        self.app.page.update(*self.app.player.state_controls())
 
     def _refresh_player_progress(self) -> None:
-        if "player" not in self.__dict__:
+        if "player" not in self.app.__dict__:
             return
-        self.player.refresh("progress")
-        self.page.update(*self.player.progress_controls())
+        self.app.player.refresh("progress")
+        self.app.page.update(*self.app.player.progress_controls())
 
     def _refresh_player_volume(self) -> None:
-        if "player" not in self.__dict__:
+        if "player" not in self.app.__dict__:
             return
-        self.player.refresh("volume")
-        controls = self.player.volume_controls()
+        self.app.player.refresh("volume")
+        controls = self.app.player.volume_controls()
         if controls:
-            self.page.update(*controls)
+            self.app.page.update(*controls)

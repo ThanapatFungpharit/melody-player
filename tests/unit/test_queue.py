@@ -28,9 +28,14 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_repeat_track_and_playlist(self) -> None:
         queue = PlaybackQueue(["a", "b"], current_index=1, repeat=RepeatMode.TRACK)
+        self.assertEqual(queue.next_index(automatic=True), 1)
         self.assertEqual(queue.next(automatic=True), "b")
         queue.repeat = RepeatMode.PLAYLIST
+        self.assertEqual(queue.next_index(automatic=True), 0)
         self.assertEqual(queue.next(automatic=True), "a")
+        queue.repeat = RepeatMode.OFF
+        queue.current_index = 1
+        self.assertIsNone(queue.next_index(automatic=True))
 
     def test_round_trip(self) -> None:
         original = PlaybackQueue(["a", "b"], 1, True, RepeatMode.PLAYLIST)

@@ -30,8 +30,8 @@ them throughout the TOML file.
 
 | Component | Tested baseline in this checkout |
 | --- | --- |
-| Flet / Flet Audio / Flet Desktop / Flet CLI | 0.86.5, exact Python pins |
-| Local flet-background-audio Python/Dart package | 0.2.0 |
+| Flet / Flet Desktop / Flet CLI | 0.86.5, exact Python pins |
+| Local flet-background-audio Python/Dart package | 0.6.0 |
 | Bridge Dart Flet | 0.86.5, exact |
 | Bridge audioplayers / flutter_media_session | 6.6.0 / 3.0.3, exact |
 | Bundled yt-dlp fallback | 2026.8.19, exact |
@@ -40,19 +40,21 @@ them throughout the TOML file.
 The background-audio package is owned and maintained in this repository. It is
 an application dependency resolved from `packages/flet_background_audio` through
 `tool.uv.sources` and Flet's dev-package mapping. It is not an independently
-supported public distribution. Its `0.2.0` version describes the Python/Dart
+supported public distribution. Its `0.6.0` version describes the Python/Dart
 bridge protocol, not Melody's application version; keep both package manifests
 in agreement when the bridge protocol changes. The Dart package is marked
 `publish_to: none`.
 
-Update the Flet family together. A bridge protocol change requires compatible
+Update the Flet family together. Melody does not depend on the stock
+`flet-audio` Python package: all decoder and transport RPCs belong to the local
+audio package. A bridge protocol change requires compatible
 Python and Dart changes in one review and a bridge version bump. Change Melody's
 exact bridge dependency in the same review. Before accepting a compatibility
 change, run headless tests, compiled desktop/mobile smoke tests, and native
 play/pause/seek/queue/system-controls/lifecycle checks on supported targets.
 
 `uv.lock` freezes the Python resolution; CI uses `uv sync --locked` so stale
-metadata fails validation. CI explicitly uses free-threaded CPython 3.14t on every run, so the source-tree `.python-version` cannot silently override its matrix. Native builds also involve Flet's packaging resolver,
+metadata fails validation. CI explicitly uses CPython 3.14t on every run, so the source-tree `.python-version` cannot silently override its matrix. Native builds also involve Flet's packaging resolver,
 Flutter, SDKs, and transitive Dart/native packages. Those artifacts are not
 claimed to be bitwise reproducible until their full target-specific inputs and
 locks are captured. Signing variables are required before the Android build;
@@ -71,7 +73,7 @@ change and extractor/download regression tests.
 Normal application launch selects the immutable bundled pin and does not run the
 runtime updater. This removes PyPI metadata reads, wheel downloads, wheel hashing,
 subprocess import probes, runtime locks, and updater-state fsyncs from startup.
-Provider imports remain lazy at the first YouTube feature. Source-checkout
+Provider imports remain lazy at the first YouTube Music feature. Source-checkout
 media-tool preparation is registered without starting and joined only by the
 first download, so local playback remains offline-first. When the explicit
 updater facility is invoked, it holds a session lock for the process lifetime. A

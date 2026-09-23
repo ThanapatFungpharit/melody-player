@@ -40,6 +40,37 @@ class MusicManagerTests(unittest.TestCase):
             [track.id for track in reloaded.playlist_tracks(playlist)], [second, first]
         )
 
+    def test_bounded_reads_copy_only_the_requested_library_slice(self) -> None:
+        first = self.add_track("first-match.mp3")
+        second = self.add_track("other.mp3")
+        newest = self.add_track("newest-match.mp3")
+
+        self.assertEqual(
+            [track.id for track in self.manager.list_tracks(limit=2)],
+            [newest, second],
+        )
+        self.assertEqual(
+            [track.id for track in self.manager.search_tracks("match", limit=1)],
+            [newest],
+        )
+        self.assertEqual(
+            [
+                track.id
+                for track in self.manager.search_tracks("match", offset=1, limit=1)
+            ],
+            [first],
+        )
+        self.assertEqual(
+            [
+                track.id
+                for track in self.manager.tracks_by_ids(
+                    (str(first), "not-a-track-id", str(newest)), limit=1
+                )
+            ],
+            [newest],
+        )
+        self.assertEqual(self.manager.list_tracks(limit=0), ())
+
     def test_source_duplicate_normalizes_youtube_urls(self) -> None:
         track_id = self.add_track(
             "song.mp3", "https://www.youtube.com/watch?v=abc123&utm_source=test"
@@ -226,6 +257,43 @@ class MusicManagerTests(unittest.TestCase):
         self.assertTrue(self.manager.track_path(track_id).samefile(replacement))
         self.assertIsNone(self.manager.check_track_integrity(track_id))
         self.assertEqual(self.manager.playlist_tracks(playlist_id)[0].id, track_id)
+
+    def test_track_can_move_to_an_explicit_public_music_root(self) -> None:
+        track_id = self.add_track("private.mp3")
+        public = self.root / "public" / "Music" / "Melody"
+        public.mkdir(parents=True)
+        published = public / "published.mp3"
+        published.write_bytes(b"published audio")
+        manager = MusicManager(
+            self.root / "library.mmdb",
+            self.music,
+            additional_music_folders=(public,),
+        )
+
+        manager.replace_track_file(track_id, published)
+
+        self.assertEqual(manager.track_path(track_id), published.resolve())
+        reloaded = MusicManager(
+            self.root / "library.mmdb",
+            self.music,
+            additional_music_folders=(public,),
+        )
+        self.assertEqual(reloaded.track_path(track_id), published.resolve())
+
+    def test_track_rejects_an_absolute_path_outside_managed_roots(self) -> None:
+        track_id = self.add_track("private.mp3")
+        public = self.root / "public" / "Music" / "Melody"
+        public.mkdir(parents=True)
+        outside = self.root / "outside.mp3"
+        outside.write_bytes(b"outside audio")
+        manager = MusicManager(
+            self.root / "library.mmdb",
+            self.music,
+            additional_music_folders=(public,),
+        )
+
+        with self.assertRaisesRegex(ValueError, "configured music folder"):
+            manager.replace_track_file(track_id, outside)
 
     def test_integrity_check_reports_a_registered_file_that_becomes_empty(
         self,

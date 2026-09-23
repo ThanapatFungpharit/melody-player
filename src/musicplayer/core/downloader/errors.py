@@ -6,6 +6,8 @@ import errno
 from dataclasses import dataclass
 from enum import Enum
 
+from musicplayer.core.media import YOUTUBE_MUSIC_NAME
+
 
 class DownloadErrorKind(str, Enum):
     NETWORK = "network"
@@ -81,7 +83,7 @@ def classify_download_error(error: Exception | str) -> DownloadFailure:
     if any(word in message for word in ("unsupported url", "unsupported scheme")):
         return DownloadFailure(
             DownloadErrorKind.UNSUPPORTED,
-            "This URL is unsupported. Use a YouTube media URL.",
+            f"This URL is unsupported. Use a {YOUTUBE_MUSIC_NAME} media URL.",
             "change_url",
         )
     if any(

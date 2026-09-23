@@ -9,7 +9,7 @@ from musicplayer.application.playback import PlaybackController
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.downloader import Downloader, DownloadStatus
 from musicplayer.core.library import MusicManager
-from tests.unit.test_playback import DeferredExecutor, FakeAudioBackend
+from tests.unit.test_playback import FakeAudioBackend
 
 
 class StateConcurrencyTests(unittest.TestCase):
@@ -68,13 +68,11 @@ class StateConcurrencyTests(unittest.TestCase):
             file = root / "song.mp3"
             file.write_bytes(b"audio")
             track_id = manager.add_track(file)
-            executor = DeferredExecutor()
             controller = PlaybackController(
                 manager,
                 LibraryService(manager, store),
                 store,
                 FakeAudioBackend(),
-                io_executor=executor,
             )
             controller.play_track(str(track_id))
             controller.on_playing(False)

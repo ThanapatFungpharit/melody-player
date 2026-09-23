@@ -71,12 +71,13 @@ def make_app(page, directory: Path, *, mobile=True, populated=True) -> MusicPlay
         store.set("playback", {"queue": ids, "current_index": 0})
     backend = Mock()
     with (
-        patch("musicplayer.app._application_data_directory", return_value=directory),
-        patch("musicplayer.app.FletAudioBackend", return_value=backend),
+        patch("musicplayer.app.application_data_directory", return_value=directory),
+        patch("musicplayer.app.ManagedAudioBackend", return_value=backend),
         patch.object(MusicPlayerApp, "_is_mobile_platform", return_value=mobile),
+        patch.object(MusicPlayerApp, "_is_android_platform", return_value=False),
     ):
         app = MusicPlayerApp(page)
-    app.search_results = [
+    app.search_page.results = [
         SearchResult(
             id="preview",
             title="A search result with a long title to check truncation",
@@ -116,7 +117,7 @@ def make_app(page, directory: Path, *, mobile=True, populated=True) -> MusicPlay
     )
     app.downloads.list = Mock(return_value=tuple(records))
     app.downloads.active_count = Mock(return_value=1 if populated else 0)
-    app._refresh_download_badge()
+    app.context_panel._refresh_download_badge()
     return app
 
 

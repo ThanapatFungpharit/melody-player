@@ -97,7 +97,7 @@ def prepare_development_media_binaries(
         return None
 
     platform_name = current_platform()
-    if platform_name == "android":
+    if platform_name in {"android", "ios"}:
         return None
     architecture = current_architecture()
     binary_root = root / "src" / "musicplayer" / "bin"

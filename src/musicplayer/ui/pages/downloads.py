@@ -10,30 +10,26 @@ from musicplayer.ui.tasks import page_action
 if TYPE_CHECKING:
     from musicplayer.app import MusicPlayerApp
 
-    _Base = object
-else:
-    _Base = object
-
 
 class DownloadsPage:
+    """Downloads page UI and download-history actions."""
+
     def __init__(self, app: MusicPlayerApp):
         self.app = app
 
-    """Downloads page UI and download-history actions."""
-
     def _downloads_view(self) -> ft.Control:
-        return self.app.views._downloads_view(self)
+        return self.app.views._downloads_view(self.app)
 
     def _batch_overview(self, records: list[DownloadRecord]) -> ft.Control:
-        return self.app.views._batch_overview(self, records)
+        return self.app.views._batch_overview(self.app, records)
 
     def _download_metric(
         self, label: str, value: str, icon: Any, color: Any
     ) -> ft.Control:
-        return self.app.views._download_metric(self, label, value, icon, color)
+        return self.app.views._download_metric(self.app, label, value, icon, color)
 
     def _download_row(self, record: DownloadRecord) -> ft.Control:
-        return self.app.views._download_row(self, record)
+        return self.app.views._download_row(self.app, record)
 
     @page_action
     async def _cancel_download(self, record_id: str) -> None:

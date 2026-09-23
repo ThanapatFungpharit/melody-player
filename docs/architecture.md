@@ -12,17 +12,23 @@ flowchart TD
     UI --> Application
     Application --> Core[Core capabilities and storage primitives]
     Application --> Platform[Platform paths and media-tool configuration]
-    UI --> Audio[Flet audio adapter]
-    Audio --> Native[Native player and background-audio bridge]
+    UI --> Audio[Background-audio adapter]
+    Audio --> Native[flet_background_audio player and media session]
 ```
 
 ## Dependency rules
 
-- `app.py` constructs and connects services. It is the composition root, not a
-  second implementation of playback, download, or library behavior.
-- `ui/` calls application services and reads application contracts. Track and
-  playlist values are re-exported through `application/contracts.py`; they are
-  the original core dataclasses, not copies with a second schema.
+- `app.py` constructs and connects services and UI controllers. It owns page
+  lifecycle integration, but no feature workflow or presentation state.
+- `ui/pages/` contains composed feature controllers. Search, library, playlist,
+  download, and settings state belongs to its controller rather than the app
+  root. Desktop and mobile view builders receive the root only to reach those
+  explicit owners and shared application services.
+- `ui/components/` contains navigation, utility-panel, player, and shared-view
+  collaborators. `MusicPlayerApp` does not inherit from them and does not
+  forward their APIs. Immutable library models and media identities may be read
+  directly by the UI; mutable capability access goes through application
+  services.
 - `application/` owns use cases that cross capabilities: download-to-library
   registration, history, queue policy, and playback intent. It must not import
   Flet or a presentation. `downloads.py` coordinates jobs; it does not extract,
@@ -37,6 +43,9 @@ flowchart TD
 - Desktop and mobile implementations cannot import one another. Shared pages
   contain shared presentation behavior; gestures, shell structure, insets, and
   platform-specific controls belong in the corresponding presentation.
+- UI actions run through one page-owned `PageTasks` instance. The action
+  decorator accepts a feature controller and schedules it through that
+  controller's owning app, so controllers do not own executors or event loops.
 - Type-only imports inside `TYPE_CHECKING` do not create runtime dependencies.
 
 `tools/check_architecture.py` runs in the unit suite. It checks absolute and
@@ -48,8 +57,8 @@ arbitrary computed dynamic import; add such imports only with focused tests.
 
 | State | Authority | Other participants |
 | --- | --- | --- |
-| Requested transport, queue, current selection, progress | `PlaybackController` | UI sends commands; backend reports observations |
-| Actual native decoder/device state | Native audio player | Adapter forwards observations to the controller |
+| Durable queue mirror, requested transport, current selection | `PlaybackController` | UI sends commands; native snapshots are persisted |
+| Live queue, automatic transitions, decoder/device state | Native playback engine | Adapter forwards track, timeline, and state observations to the controller |
 | Track UUIDs, file references, hashes, playlists | `MusicManager` | Application services coordinate registration and deletion |
 | Settings, enriched track details, history, session queue | `ApplicationStore` | Writes commit atomically; failure restores in-memory values |
 | Worker execution, cancellation, staged download files | `Downloader` | Coordinator acknowledges successful handoff |
@@ -60,32 +69,40 @@ arbitrary computed dynamic import; add such imports only with focused tests.
 
 ### Playback and concurrency
 
-The controller is the sole Python transport-state owner. Its `playing` property
-is read-only to callers. It represents requested playback while a load or native
-command is pending, and is reconciled by native state/error events. It is not
-proof that the device has emitted sound. Consumers needing a consistent view
-can read the immutable `PlaybackSnapshot`.
+The controller owns durable Python playback intent and mirrors the native
+engine's live queue selection. Its `playing` property is read-only to callers.
+It represents requested playback while a load or native command is pending and
+is reconciled by native state/error events. It is not proof that the device has
+emitted sound. Consumers needing a consistent view can read the immutable
+`PlaybackSnapshot`.
 
-Commands, queue mutations, and native callbacks share the controller's reentrant
-lock. Background source resolution and one predicted-next preload use the same
-lock with independent generation counters. Switching a source, editing the
-queue, or handling an error cancels or invalidates obsolete work. The adapter
-mounts one native service for the page lifetime; it prepares a candidate decoder
-beside the active one and swaps only after readiness. Events from the retiring
-decoder are ignored during both Python and native preparation, and completion is
-handled once per generation. Transport RPCs have their own lock, so Pause remains
-responsive while a candidate source is preparing. Callbacks must enqueue UI work
-or return promptly; do not wait for another thread that needs the controller
-lock.
+Commands, queue mutations, and player callbacks share the controller's reentrant
+lock. The controller always gives the complete library path queue to the managed
+player. There is no capability probe, Python byte-loading fallback, playback
+worker, or Python preload cache. The player owns path validation, candidate
+preparation, successor preloading, decoder swaps, and generation-scoped events.
+The adapter mounts one managed player service for the page lifetime. Events from
+the retiring decoder are ignored, and completion is handled once per generation.
+Transport RPCs have their own lock, so Pause remains responsive while a candidate
+source is preparing. Callbacks must enqueue UI work or return promptly; do not
+wait for another thread that needs the controller lock.
 
-The backend owns transport mechanics, RPC ordering, and native session updates;
-it must not advance the queue or maintain a competing application queue.
-System media controls call the same controller commands as the visible UI.
+The backend owns transport mechanics and RPC ordering. The native engine owns a
+runtime copy of the queue, advances it on completion, preloads its predicted
+successor, and emits a generation-scoped track-change event that Python mirrors
+and persists. Python must not independently advance a native completion event.
+Visible UI queue mutations replace or update the native queue atomically. System
+media controls operate that engine directly; only an action that cannot be
+satisfied by the installed native queue falls back to Python application policy.
 Returning from background queries the native player and reconciles observations.
 Suspending a page is not a request to stop playback. Pause preserves the active
 media session and exposes Play. On Android, a non-empty resumable queue keeps
 the foreground media service attached while paused; only explicit Stop discards
 the decoder, releases keep-alive resources, and deactivates system controls.
+The native decoder emits position updates once per second in the foreground and
+once per five seconds while the UI is hidden. Media-session synchronization
+skips unchanged metadata and action sets, leaving only the lightweight playback
+timeline correction on background progress ticks.
 
 Android release builds patch the generated launcher activity to `singleTask`
 and disable document launching. Launcher and notification intents therefore
@@ -135,9 +152,13 @@ queue and history; full content integrity remains an explicit operation.
 
 A library UUID is the durable identity of a saved record. Remote identity is
 provider plus stable media ID, represented by `MediaIdentity`; these two
-identities have different jobs. YouTube watch, short, shortened, live, and embed
+identities have different jobs. YouTube Music and YouTube watch, short, shortened, live, and embed
 URLs normalize to `youtube:<media-id>`. Titles and filenames never determine
 remote equality. Local files use a content hash for duplicate detection.
+The provider ID, display name, accepted hosts, playlist validation, and canonical
+YouTube Music URL builders live together in `core.media`; provider, download,
+desktop, and mobile modules consume that shared contract instead of maintaining
+independent copies.
 SearchResult exposes remote identity; queue and playlist entries contain library
 UUIDs; core Track and application TrackDetails remain the authoritative models
 for their respective fields. Free-form yt-dlp dictionaries stop at provider and
@@ -149,7 +170,7 @@ metadata mapping; it is not a second public track model.
 | Preview stream | Ephemeral URL; does not create a permanent library track |
 | Download staging | Core-owned `.melody-download-*` temporary directory; normal failure/cancellation cleans it |
 | Completed, unregistered download | Checksum-bearing `.melody-download-<task UUID>.json` receipt owns the handoff |
-| Managed library audio | Referenced by `MusicManager`; application deletion checks remaining references |
+| Managed library audio | Referenced by `MusicManager`; desktop files use the selected music folder, while Android files are published through MediaStore to public `Music/Melody` and private staging is removed after an atomic metadata handoff |
 | Imported local original | Owned by the user; Melody copies it and never deletes the original |
 | Copied import staging | `.melody-import-*.tmp`; atomic rename exposes only complete files |
 | Uploaded cookies | Private application storage; explicit upload/remove only |

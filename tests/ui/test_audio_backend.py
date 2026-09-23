@@ -8,13 +8,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from flet.controls.control_event import get_event_field_type
-
-from musicplayer.app import MusicPlayerApp
-from musicplayer.ui.audio_backend import (
-    FletAudioBackend,
+from flet_background_audio import (
     ManagedAudio,
     ManagedAudioDurationChangeEvent,
+    ManagedAudioTrackChangeEvent,
 )
+
+from musicplayer.app import MusicPlayerApp
+from musicplayer.ui.audio_backend import ManagedAudioBackend
 
 
 class FakePage:
@@ -23,6 +24,7 @@ class FakePage:
         self.scheduled: list[tuple[Any, tuple[Any, ...]]] = []
         self.futures: list[Future[Any]] = []
         self.update_count = 0
+        self.web = False
 
     def update(self, *_: Any) -> None:
         self.update_count += 1
@@ -34,7 +36,7 @@ class FakePage:
         return future
 
 
-class FletAudioBackendTests(unittest.TestCase):
+class ManagedAudioBackendTests(unittest.TestCase):
     def test_custom_duration_event_annotation_resolves_in_flet(self) -> None:
         """Native duration events must be deserializable in packaged runtimes."""
         audio = ManagedAudio()
@@ -43,10 +45,72 @@ class FletAudioBackendTests(unittest.TestCase):
             get_event_field_type(audio, "on_duration_change"),
             ManagedAudioDurationChangeEvent,
         )
+        self.assertIs(
+            get_event_field_type(audio, "on_track_change"),
+            ManagedAudioTrackChangeEvent,
+        )
+
+    def test_native_queue_is_installed_as_one_generation_scoped_operation(self):
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        items = [
+            {"track_id": "one", "source": "one.mp3"},
+            {"track_id": "two", "source": "two.mp3"},
+        ]
+
+        backend.set_queue(
+            items,
+            1,
+            repeat_mode="playlist",
+            shuffle=True,
+        )
+        backend.play(250)
+
+        self.assertEqual(len(page.scheduled), 2)  # set_queue RPC + watchdog
+        operation, args, generation = page.scheduled[0][1]
+        self.assertEqual(operation.__self__, backend.audio)
+        self.assertEqual(args, (items, 1, 1, "playlist", True))
+        self.assertEqual(generation, 1)
+        self.assertEqual(backend._pending_play_position, 250)
+
+    def test_native_track_change_adopts_generation_before_followup_events(self):
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        changed: list[tuple[str, int]] = []
+        stopped: list[bool] = []
+        backend.bind(
+            on_position=lambda _: None,
+            on_duration=lambda _: None,
+            on_playing=lambda _: None,
+            on_completed=lambda: None,
+            on_track_changed=lambda track_id, index: changed.append((track_id, index)),
+            on_stopped=lambda: stopped.append(True),
+        )
+
+        backend._track_changed(
+            cast(
+                ManagedAudioTrackChangeEvent,
+                SimpleNamespace(track_id="next", index=1, generation=1),
+            )
+        )
+
+        self.assertEqual(backend._generation, 1)
+        self.assertFalse(backend._loaded)
+        self.assertEqual(changed, [("next", 1)])
+        self.assertEqual(len(page.scheduled), 1)  # native transition watchdog
+
+        backend._state_changed(
+            cast(
+                Any,
+                SimpleNamespace(state="stopped", generation=1),
+            ),
+            1,
+        )
+        self.assertEqual(stopped, [True])
 
     def test_phone_gain_uses_system_volume_while_desktop_keeps_precise_gain(self):
         for mobile, expected in ((True, 1.0), (False, 0.25)):
-            backend = FletAudioBackend(FakePage(), use_device_volume=mobile)  # ty: ignore[invalid-argument-type]
+            backend = ManagedAudioBackend(FakePage(), use_device_volume=mobile)  # ty: ignore[invalid-argument-type]
             backend.set_volume(0.25)
             self.assertEqual(backend._volume, expected)
             backend.set_volume(0)
@@ -56,7 +120,7 @@ class FletAudioBackendTests(unittest.TestCase):
 
     def test_play_waits_for_loaded_event_and_operations_use_page_loop(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
         backend.load(b"audio bytes")
         backend.play(1250)
@@ -82,7 +146,7 @@ class FletAudioBackendTests(unittest.TestCase):
 
     def test_track_switch_keeps_services_mounted_and_avoids_page_update(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         mounted_services = tuple(page.services)
 
         backend.load(b"first")
@@ -91,15 +155,71 @@ class FletAudioBackendTests(unittest.TestCase):
         backend.pause()
 
         self.assertEqual(tuple(page.services), mounted_services)
-        self.assertEqual(len(page.services), 2)
+        self.assertEqual(len(page.services), 3)
         self.assertEqual(page.update_count, 0)
         self.assertIs(
-            page.scheduled[-1][0].__func__, FletAudioBackend._run_transport_operation
+            page.scheduled[-1][0].__func__, ManagedAudioBackend._run_transport_operation
         )
+
+    def test_web_uses_package_owned_audio_without_platform_services(self) -> None:
+        page = FakePage()
+        page.web = True
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+
+        self.assertEqual(page.services, [backend.audio])
+        backend.load(b"web audio")
+        backend.play(1_250)
+
+        self.assertEqual(len(page.services), 1)
+        self.assertIs(type(backend.audio), ManagedAudio)
+        self.assertEqual(page.update_count, 0)
+        self.assertEqual(len(page.scheduled), 2)  # load RPC and watchdog
+
+        loaded = backend.audio.on_loaded
+        assert loaded is not None
+        cast(Any, loaded)(SimpleNamespace(generation=1))
+
+        self.assertTrue(page.futures[1].cancelled())
+        self.assertEqual(len(page.scheduled), 3)
+        self.assertIs(
+            page.scheduled[-1][0].__func__,
+            ManagedAudioBackend._run_transport_operation,
+        )
+
+    def test_web_skips_platform_media_session_and_storage_services(self) -> None:
+        page = FakePage()
+        page.web = True
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+
+        backend.sync_media_session(title="Web track", playing=True)
+
+        self.assertEqual(page.services, [backend.audio])
+        self.assertEqual(page.scheduled, [])
+
+    def test_failed_service_reports_once_without_recursive_cleanup_rpc(self) -> None:
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        errors: list[str] = []
+        backend.bind(
+            on_position=lambda _: None,
+            on_duration=lambda _: None,
+            on_playing=lambda _: None,
+            on_completed=lambda: None,
+            on_error=errors.append,
+        )
+
+        async def fail() -> None:
+            raise RuntimeError("method listener missing")
+
+        asyncio.run(backend._run_operation(fail, (), backend._generation))
+        backend.discard_source()
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(page.scheduled, [])
 
     def test_obsolete_native_generation_events_are_rejected(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         positions: list[int] = []
         backend.bind(
             on_position=positions.append,
@@ -118,9 +238,46 @@ class FletAudioBackendTests(unittest.TestCase):
         cast(Any, position_handler)(SimpleNamespace(position=2_000, generation=2))
         self.assertEqual(positions, [2_000])
 
+    def test_lifecycle_updates_native_progress_frequency_only_on_change(self) -> None:
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+
+        backend.set_foreground(False)
+        backend.set_foreground(False)
+        backend.set_foreground(True)
+
+        self.assertEqual(len(page.scheduled), 2)
+        self.assertIs(
+            page.scheduled[0][0].__func__, ManagedAudioBackend._set_foreground
+        )
+        self.assertEqual(page.scheduled[0][1], (False, 1))
+        self.assertEqual(page.scheduled[1][1], (True, 2))
+
+    def test_replayed_source_can_complete_again_without_reloading(self) -> None:
+        backend = ManagedAudioBackend(FakePage())  # ty: ignore[invalid-argument-type]
+        completed: list[bool] = []
+        playing: list[bool] = []
+        backend.bind(
+            on_position=lambda _: None,
+            on_duration=lambda _: None,
+            on_playing=playing.append,
+            on_completed=lambda: completed.append(True),
+        )
+        completion = SimpleNamespace(state="completed", generation=0)
+
+        backend._state_changed(cast(Any, completion), 0)
+        backend._state_changed(cast(Any, completion), 0)  # duplicate native event
+        backend._state_changed(  # native replay confirmation
+            cast(Any, SimpleNamespace(state="playing", generation=0)), 0
+        )
+        backend._state_changed(cast(Any, completion), 0)
+
+        self.assertEqual(completed, [True, True])
+        self.assertEqual(playing, [True])
+
     def test_media_session_updates_are_throttled_to_five_seconds(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
         backend.sync_media_session(
             title="Track",
@@ -162,7 +319,7 @@ class FletAudioBackendTests(unittest.TestCase):
                 pass
 
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         backend.media_session = FailingSession()  # ty: ignore[invalid-assignment]
 
         backend.sync_media_session(title="Track", playing=True)
@@ -186,7 +343,7 @@ class FletAudioBackendTests(unittest.TestCase):
                 pass
 
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         backend.media_session = WorkingSession()  # ty: ignore[invalid-assignment]
 
         backend.sync_media_session(title="Track", playing=False)
@@ -245,16 +402,14 @@ class FletAudioBackendTests(unittest.TestCase):
         self.assertFalse(session_backend.payloads[-1]["keep_alive"])
 
     def test_refresh_state_publishes_native_position_and_duration(self) -> None:
-        class NativeAudio:
-            async def get_current_position(self) -> SimpleNamespace:
-                return SimpleNamespace(in_milliseconds=12_345)
-
-            async def get_duration(self) -> SimpleNamespace:
-                return SimpleNamespace(in_milliseconds=180_000)
-
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
-        backend.audio = NativeAudio()  # ty: ignore[invalid-assignment]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        assert isinstance(backend.audio, ManagedAudio)
+
+        async def get_playback_state() -> dict[str, int]:
+            return {"position_ms": 12_345, "duration_ms": 180_000}
+
+        backend.audio.get_playback_state = get_playback_state  # ty: ignore[invalid-assignment]
         backend._loaded = True
         positions: list[int] = []
         durations: list[int] = []
@@ -272,7 +427,7 @@ class FletAudioBackendTests(unittest.TestCase):
 
     def test_native_media_action_is_forwarded_to_controller_callback(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         received: list[tuple[str, int | None]] = []
         backend.bind(
             on_position=lambda _: None,
@@ -294,7 +449,7 @@ class FletAudioBackendTests(unittest.TestCase):
 
     def test_every_audio_failure_is_forwarded_for_state_repair(self) -> None:
         page = FakePage()
-        backend = FletAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         errors: list[str] = []
         backend.bind(
             on_position=lambda _: None,

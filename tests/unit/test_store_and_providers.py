@@ -44,6 +44,20 @@ class StoreTests(unittest.TestCase):
                 restored.settings.cookie_file, str(Path(directory) / "cookies.txt")
             )
 
+    def test_track_details_many_returns_one_isolated_render_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.json")
+            store.save_track_details(
+                "favorite", TrackDetails(uploader="Channel", favorite=True)
+            )
+
+            details = store.track_details_many(["favorite", "missing"])
+            details["favorite"].uploader = "Changed by caller"
+
+            self.assertTrue(details["favorite"].favorite)
+            self.assertEqual(details["missing"], TrackDetails())
+            self.assertEqual(store.track_details("favorite").uploader, "Channel")
+
     def test_legacy_artist_credit_migrates_to_uploader_without_album(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -386,6 +400,7 @@ class ProviderMappingTests(unittest.TestCase):
         provider = YtDlpProvider()
         operations = (
             lambda: provider.search("music"),
+            lambda: provider.recommendations("https://youtu.be/seed123"),
             lambda: provider.load_playlist("https://www.youtube.com/playlist?list=one"),
             lambda: provider.resolve_stream("https://youtu.be/one"),
         )
@@ -396,7 +411,7 @@ class ProviderMappingTests(unittest.TestCase):
                     "musicplayer.application.providers.YoutubeDL",
                     side_effect=TimeoutError("timed out"),
                 ),
-                self.assertRaisesRegex(ProviderError, "YouTube took too long"),
+                self.assertRaisesRegex(ProviderError, "YouTube Music took too long"),
             ):
                 operation()
 
@@ -406,18 +421,20 @@ class ProviderMappingTests(unittest.TestCase):
             with self.assertRaisesRegex(ProviderError, "playable audio stream"):
                 YtDlpProvider().resolve_stream("https://youtu.be/one")
 
-    def test_default_registry_exposes_only_youtube(self) -> None:
+    def test_default_registry_exposes_only_youtube_music(self) -> None:
         registry = ProviderRegistry()
 
-        self.assertEqual(registry.get("youtube").name, "YouTube")
+        self.assertEqual(registry.get("youtube").name, "YouTube Music")
+        self.assertTrue(is_youtube_url("https://music.youtube.com/watch?v=video"))
         self.assertTrue(is_youtube_url("https://www.youtube.com/watch?v=video"))
+        self.assertTrue(is_youtube_url("https://www.youtube-nocookie.com/embed/video"))
         self.assertTrue(is_youtube_url("https://youtu.be/video"))
         self.assertFalse(is_youtube_url("https://youtube.com.example.test/video"))
 
         with self.assertRaisesRegex(ProviderError, "not available"):
             registry.get("web")
 
-        with self.assertRaisesRegex(ProviderError, "YouTube URL"):
+        with self.assertRaisesRegex(ProviderError, "YouTube Music URL"):
             registry.search("youtube", "https://example.test/video")
 
     def test_uploaded_cookie_file_is_passed_to_yt_dlp_search(self) -> None:
@@ -447,6 +464,46 @@ class ProviderMappingTests(unittest.TestCase):
         extractor.extract_info.assert_called_once_with(
             "ytsearch49:focus music", download=False
         )
+
+    def test_recommendations_use_a_youtube_music_radio_mix(self) -> None:
+        provider = YtDlpProvider()
+        with patch("yt_dlp.YoutubeDL") as youtube_dl:
+            extractor = youtube_dl.return_value.__enter__.return_value
+            extractor.extract_info.return_value = {
+                "_type": "playlist",
+                "entries": [
+                    {"id": "seed123", "title": "Seed", "url": "seed123"},
+                    {
+                        "id": "related1",
+                        "title": "First recommendation",
+                        "url": "related1",
+                    },
+                    {
+                        "id": "related1",
+                        "title": "Duplicate recommendation",
+                        "url": "related1",
+                    },
+                    {
+                        "id": "related2",
+                        "title": "Second recommendation",
+                        "url": "related2",
+                    },
+                ],
+            }
+
+            results = provider.recommendations(
+                "https://music.youtube.com/watch?v=seed123", limit=2
+            )
+
+        options = youtube_dl.call_args.args[0]
+        self.assertEqual(options["playliststart"], 1)
+        self.assertEqual(options["playlistend"], 3)
+        extractor.extract_info.assert_called_once_with(
+            "https://music.youtube.com/watch?"
+            "v=seed123&list=RDAMVMseed123&start_radio=1",
+            download=False,
+        )
+        self.assertEqual([result.id for result in results], ["related1", "related2"])
 
     def test_playlist_url_offset_requests_the_next_track_window(self) -> None:
         provider = YtDlpProvider()
@@ -543,7 +600,7 @@ class ProviderMappingTests(unittest.TestCase):
         result = _results_from_info(info, "YouTube", limit=10)[0]
         self.assertEqual(result.title, "A song")
         self.assertEqual(result.uploader, "A publisher channel")
-        self.assertEqual(result.url, "https://www.youtube.com/watch?v=video-id")
+        self.assertEqual(result.url, "https://music.youtube.com/watch?v=video-id")
         self.assertEqual(result.thumbnail, "https://i.ytimg.test/large.jpg")
         self.assertFalse(result.is_playlist)
 
@@ -596,8 +653,8 @@ class ProviderMappingTests(unittest.TestCase):
         self.assertEqual(
             [result.url for result in results],
             [
-                "https://www.youtube.com/watch?v=one",
-                "https://www.youtube.com/watch?v=two",
+                "https://music.youtube.com/watch?v=one",
+                "https://music.youtube.com/watch?v=two",
             ],
         )
         self.assertTrue(all(not result.is_playlist for result in results))

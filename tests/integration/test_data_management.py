@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from musicplayer.app import MusicPlayerApp
 from musicplayer.application.models import AppSettings, TrackDetails
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.library import MusicManager
+from musicplayer.ui.pages.settings import SettingsPage
 
 
 class _Page:
@@ -43,6 +45,14 @@ class _Playback:
         self.applied_settings = settings
 
 
+class _InlineTasks:
+    def start(self, operation, *args, **kwargs) -> None:
+        asyncio.run(operation(*args, **kwargs))
+
+    async def io(self, operation, *args, **kwargs):
+        return operation(*args, **kwargs)
+
+
 class DataManagementUiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -60,10 +70,12 @@ class DataManagementUiTests(unittest.TestCase):
         self.app.store = self.store
         self.app.settings = self.store.settings
         self.app.playback = _Playback()  # ty: ignore[invalid-assignment]
-        self.app.selected_playlist_id = None
+        self.app.tasks = _InlineTasks()  # ty: ignore[invalid-assignment]
+        self.app.playlists_page = Mock(selected_playlist_id=None)
         self.app.active_panel = None
         self.app._show_message = Mock()
         self.app._show_error = Mock()
+        self.app.settings_page = SettingsPage(self.app)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -86,7 +98,7 @@ class DataManagementUiTests(unittest.TestCase):
         }
 
         for action, expected_title in expected_titles.items():
-            self.app._confirm_data_action(action)
+            self.app.settings_page._confirm_data_action(action)
             dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
 
             self.assertIsInstance(dialog, ft.AlertDialog)
@@ -112,7 +124,7 @@ class DataManagementUiTests(unittest.TestCase):
         self.store.set("search_history", ["keep search"])
         self.store.set("downloads", [{"id": "keep download"}])
 
-        self.app._confirm_data_action("settings")
+        self.app.settings_page._confirm_data_action("settings")
         self.app.page.dialogs[-1].actions[-1].on_click(None)  # ty: ignore[unresolved-attribute]
 
         self.assertEqual(self.app.settings, AppSettings())
@@ -129,7 +141,7 @@ class DataManagementUiTests(unittest.TestCase):
         external_cookie.write_text("user-owned cookie", encoding="utf-8")
         self.app.settings.cookie_file = str(external_cookie)
         self.store.save_settings(self.app.settings)
-        self.app._confirm_data_action("settings")
+        self.app.settings_page._confirm_data_action("settings")
         self.app.page.dialogs[-1].actions[-1].on_click(None)  # ty: ignore[unresolved-attribute]
 
         self.assertTrue(external_cookie.exists())
@@ -146,7 +158,7 @@ class DataManagementUiTests(unittest.TestCase):
         self.app.settings.theme = "light"
         self.store.save_settings(self.app.settings)
 
-        self.app._confirm_data_action("everything")
+        self.app.settings_page._confirm_data_action("everything")
         dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
         self.assertEqual(dialog.actions[-1].bgcolor, ft.Colors.ERROR)
         dialog.actions[-1].on_click(None)

@@ -33,7 +33,7 @@ from musicplayer.core.downloader import (
     DownloadTask,
 )
 from musicplayer.core.library import MusicManager
-from musicplayer.core.library.utils import source_key
+from musicplayer.core.media import source_key
 from musicplayer.platform_runtime import current_architecture, current_platform
 
 

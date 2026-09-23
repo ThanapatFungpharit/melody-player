@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING
 import flet as ft
 
 if TYPE_CHECKING:
-    _Base = object
-else:
-    _Base = object
+    from musicplayer.app import MusicPlayerApp
 
 NAVIGATION = (
     ("Home", ft.Icons.HOME_ROUNDED, ft.Icons.HOME_OUTLINED),
@@ -20,20 +18,23 @@ NAVIGATION = (
 
 
 class NavigationShell:
+    def __init__(self, app: MusicPlayerApp) -> None:
+        self.app = app
+
     def _build_shell(self) -> None:
-        self.shell.build()
-        self.navigate(self.selected_navigation)
-        self._refresh_player()
-        self._refresh_download_badge()
+        self.app.shell.build()
+        self.navigate(self.app.selected_navigation)
+        self.app.player_bar._refresh_player()
+        self.app.context_panel._refresh_download_badge()
 
     def navigate(self, index: int) -> None:
-        self.selected_navigation = max(0, min(index, len(NAVIGATION) - 1))
+        self.app.selected_navigation = max(0, min(index, len(NAVIGATION) - 1))
         builders = (
-            self._home_view,
-            self._search_view,
-            self._library_view,
-            self._playlists_view,
+            self.app.home_page._home_view,
+            self.app.search_page._search_view,
+            self.app.library_page._library_view,
+            self.app.playlists_page._playlists_view,
         )
-        self.content.content = builders[self.selected_navigation]()
-        self.shell.select(self.selected_navigation)
-        self.page.update()
+        self.app.content.content = builders[self.app.selected_navigation]()
+        self.app.shell.select(self.app.selected_navigation)
+        self.app.page.update()

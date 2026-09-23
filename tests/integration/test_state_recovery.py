@@ -70,7 +70,9 @@ class StateRecoveryTests(unittest.TestCase):
             )
             coordinator.shutdown()
             self.assertEqual(len(manager.list_tracks()), 1)
-            self.assertEqual(store.track_details(str(track_id)).source_name, "YouTube")
+            self.assertEqual(
+                store.track_details(str(track_id)).source_name, "YouTube Music"
+            )
             self.assertFalse(receipt_path(root, task_id).exists())
 
     def test_completed_bytes_are_registered_after_process_interruption(self):

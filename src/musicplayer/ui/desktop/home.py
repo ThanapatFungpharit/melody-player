@@ -19,11 +19,11 @@ if TYPE_CHECKING:
 
 
 def _home_view(app: MusicPlayerApp) -> ft.Control:
-    tracks, recent, favorites = app.home_page._home_collections()
+    track_count, recent, favorites = app.home_page._home_collections()
     intro = heading(_time_greeting(), "Your music, ready when you are.")
     intro.col = {"xs": 12, "md": 9}
     count = ft.Container(
-        pill(f"{len(tracks)} tracks", ft.Icons.LIBRARY_MUSIC_ROUNDED),
+        pill(f"{track_count} tracks", ft.Icons.LIBRARY_MUSIC_ROUNDED),
         alignment=ft.Alignment.CENTER_RIGHT,
         col={"xs": 12, "md": 3},
     )
@@ -46,7 +46,7 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
                         ),
                         ft.Text(
                             "An old favorite or something new. Just press play."
-                            if tracks
+                            if track_count
                             else "Make room for your favorites. Add music to get started.",
                             size=13,
                             color=ft.Colors.ON_PRIMARY_CONTAINER,
@@ -56,37 +56,35 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
                                 [
                                     ft.Button(
                                         "Shuffle your library"
-                                        if tracks
+                                        if track_count
                                         else "Find your music",
                                         icon=ft.Icons.SHUFFLE_ROUNDED
-                                        if tracks
+                                        if track_count
                                         else ft.Icons.SEARCH_ROUNDED,
                                         height=44,
                                         bgcolor=ft.Colors.PRIMARY,
                                         color=ft.Colors.ON_PRIMARY,
                                         elevation=0,
                                         on_click=lambda _: (
-                                            app.shared._play_collection(
-                                                tracks, shuffle=True
-                                            )
-                                            if tracks
+                                            app.home_page._play_library(shuffle=True)
+                                            if track_count
                                             else app.navigation.navigate(1)
                                         ),
                                     ),
                                     ft.TextButton(
                                         "Play all",
                                         icon=ft.Icons.PLAY_ARROW_ROUNDED,
-                                        disabled=not tracks,
-                                        on_click=lambda _: app.shared._play_collection(
-                                            tracks
+                                        disabled=not track_count,
+                                        on_click=lambda _: (
+                                            app.home_page._play_library()
                                         ),
                                     ),
                                     ft.IconButton(
                                         ft.Icons.ADD_TO_QUEUE_ROUNDED,
                                         tooltip="Add library to queue",
-                                        disabled=not tracks,
-                                        on_click=lambda _: app.shared._queue_collection(
-                                            tracks
+                                        disabled=not track_count,
+                                        on_click=lambda _: (
+                                            app.home_page._queue_library()
                                         ),
                                     ),
                                 ],
@@ -131,6 +129,7 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
             "Recently played", recent, "Play a track to start your listening history."
         )
     )
+    sections.extend(_recommendation_shelf(app))
     sections.extend(
         app.home_page._track_shelf(
             "Favorites", favorites, "Favorite a track to keep it close."
@@ -143,6 +142,65 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
         expand=True,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
+
+
+def _recommendation_shelf(app: MusicPlayerApp) -> list[ft.Control]:
+    home = app.home_page
+    header = ft.Row(
+        [
+            ft.Column(
+                [
+                    ft.Text(
+                        "Recommended for you",
+                        size=20,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Text(
+                        "A related mix selected by YouTube Music",
+                        size=12,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                ],
+                spacing=2,
+                expand=True,
+            ),
+            ft.IconButton(
+                ft.Icons.REFRESH_ROUNDED,
+                tooltip="Refresh recommendations",
+                disabled=home.recommendations_loading,
+                on_click=lambda _: home._reload_recommendations(),
+            ),
+        ]
+    )
+    if home.recommendations_loading:
+        body = ft.Container(
+            ft.Row(
+                [
+                    ft.ProgressRing(width=22, height=22, stroke_width=3),
+                    ft.Text("Building your YouTube Music mix…"),
+                ],
+                spacing=12,
+            ),
+            padding=20,
+        )
+    elif home.recommendations_error:
+        body = _empty_state(ft.Icons.CLOUD_OFF_ROUNDED, home.recommendations_error)
+    elif home.recommendations:
+        playlists = app.manager.list_playlists()
+        body = ft.Row(
+            [
+                app.search_page._search_result_card(result, playlists)
+                for result in home.recommendations
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=16,
+        )
+    else:
+        body = _empty_state(
+            ft.Icons.AUTO_AWESOME_ROUNDED,
+            "Play a downloaded YouTube Music track to get recommendations.",
+        )
+    return [header, body]
 
 
 def _track_shelf(

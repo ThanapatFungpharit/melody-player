@@ -31,6 +31,7 @@ _PLATFORM_NAMES = {
     "darwin": "macos",
     "macos": "macos",
     "android": "android",
+    "ios": "ios",
 }
 _ARCHITECTURE_NAMES = {
     "amd64": "x86_64",
@@ -48,6 +49,7 @@ _PLATFORM_ARCHITECTURES = {
     "linux": frozenset({"x86_64", "arm64"}),
     "macos": frozenset({"x86_64", "arm64"}),
     "android": frozenset({"x86_64", "arm64", "arm"}),
+    "ios": frozenset({"x86_64", "arm64"}),
 }
 
 
@@ -70,7 +72,7 @@ def current_platform(
     except KeyError:
         raise UnsupportedPlatformError(
             f"Unsupported platform: {detected!r}. "
-            "Melody supports Windows, Linux, macOS, and Android."
+            "Melody supports Windows, Linux, macOS, Android, and iOS."
         ) from None
 
 
@@ -89,6 +91,10 @@ def current_architecture(
             or platform.machine()
         )
     key = detected.strip().casefold()
+    # ``uname`` on physical Apple mobile devices can expose a hardware model
+    # such as ``iPhone15,4`` instead of the underlying ARM architecture.
+    if key.startswith(("iphone", "ipad", "ipod")):
+        return "arm64"
     try:
         return _ARCHITECTURE_NAMES[key]
     except KeyError:
@@ -207,7 +213,7 @@ def application_data_directory(
         result = root / "MelodyPlayer"
     elif normalized_platform == "macos":
         result = home_directory / "Library" / "Application Support" / "MelodyPlayer"
-    elif normalized_platform == "android":
+    elif normalized_platform in {"android", "ios"}:
         app_data = environment.get("FLET_APP_STORAGE_DATA")
         result = Path(app_data) if app_data else home_directory / ".melody"
     else:
@@ -229,7 +235,7 @@ def default_music_directory(
     """Return the default writable directory for downloaded audio."""
     environment = os.environ if environ is None else environ
     normalized_platform = current_platform(platform_name, environ=environment)
-    if normalized_platform == "android":
+    if normalized_platform in {"android", "ios"}:
         return (
             application_data_directory(
                 platform_name=normalized_platform,
@@ -241,6 +247,30 @@ def default_music_directory(
         )
     home_directory = Path(home) if home is not None else Path.home()
     return home_directory / "Music" / "Melody"
+
+
+def public_music_directory(
+    *,
+    platform_name: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    home: str | Path | None = None,
+) -> Path:
+    """Return the user-visible folder where completed tracks should live.
+
+    Android downloads are prepared in private app storage so an interrupted
+    yt-dlp job can be recovered safely.  Completed audio is then contributed
+    to MediaStore and moved to this public folder by the native bridge.
+    """
+    environment = os.environ if environ is None else environ
+    normalized_platform = current_platform(platform_name, environ=environment)
+    if normalized_platform == "android":
+        external_root = Path(environment.get("EXTERNAL_STORAGE", "/storage/emulated/0"))
+        return external_root / "Music" / "Melody"
+    return default_music_directory(
+        platform_name=normalized_platform,
+        environ=environment,
+        home=home,
+    )
 
 
 def _validate_media_bundle(bundle: MediaBinaryBundle) -> None:
@@ -265,5 +295,6 @@ __all__ = [
     "current_platform",
     "default_music_directory",
     "media_binary_bundle",
+    "public_music_directory",
     "yt_dlp_binary_options",
 ]

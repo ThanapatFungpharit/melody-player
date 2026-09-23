@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import flet as ft
 
@@ -55,6 +55,15 @@ class NavigationTests(unittest.TestCase):
         asyncio.run(desktop._page_resized(SimpleNamespace(width=720, height=700)))
         self.assertIsInstance(desktop.player, DesktopPlayer)
 
+    def test_browser_disconnect_uses_idempotent_app_shutdown(self):
+        app = self.app(mobile=False)
+
+        self.assertEqual(app.page.on_disconnect, app._close)
+        app._close(None)
+        app._close(None)
+
+        app.backend.close.assert_called_once()
+
     def test_mobile_navigation_uses_all_edge_safe_areas(self):
         app = self.app()
         controls = list(walk(app.page.views[0]))
@@ -83,7 +92,7 @@ class NavigationTests(unittest.TestCase):
         app = self.app()
         before = app.playback.queue.to_dict(position_ms=app.playback.position_ms)
         app.shell.open_panel("player")
-        app._open_queue_panel()
+        app.context_panel._open_queue_panel()
         self.assertEqual(len(app.page.views), 3)
         app.page.on_view_pop(None)
         self.assertEqual(app.active_panel, "player")
@@ -95,41 +104,54 @@ class NavigationTests(unittest.TestCase):
 
     def test_phone_back_returns_from_playlist_and_then_to_home(self):
         app = self.app()
-        app._open_playlist(str(app.manager.list_playlists()[0].id))
+        app.playlists_page._open_playlist(str(app.manager.list_playlists()[0].id))
         event = SimpleNamespace(control=SimpleNamespace(confirm_pop=AsyncMock()))
         asyncio.run(app.shell._confirm_back(event))
-        self.assertIsNone(app.selected_playlist_id)
+        self.assertIsNone(app.playlists_page.selected_playlist_id)
         self.assertEqual(app.selected_navigation, 3)
         asyncio.run(app.shell._confirm_back(event))
         self.assertEqual(app.selected_navigation, 0)
 
     def test_desktop_queue_docks_and_settings_uses_workspace(self):
         app = self.app(mobile=False, width=1540)
-        app._open_queue_panel()
+        app.context_panel._open_queue_panel()
         self.assertTrue(app.content.visible)
         self.assertEqual(app.shell.panel.width, 430)
-        app._open_settings_panel()
+        app.context_panel._open_settings_panel()
         self.assertFalse(app.content.visible)
         self.assertTrue(app.shell.panel.expand)
-        app._close_context_panel()
+        app.context_panel._close_context_panel()
         self.assertTrue(app.content.visible)
 
     def test_search_and_library_drafts_survive_navigation(self):
         for mobile in (True, False):
             app = self.app(mobile=mobile, width=390 if mobile else 1540)
-            app.navigate(1)
-            app.search_query.value = "Unsubmitted search"
-            app._search_draft_changed(SimpleNamespace(control=app.search_query))
-            app.navigate(2)
-            app.library_query.value = "Ocean"
-            app._library_query_changed(SimpleNamespace(control=app.library_query))
-            app._set_library_sort("title")
-            app.navigate(0)
-            app.navigate(1)
-            self.assertEqual(app.search_query.value, "Unsubmitted search")
-            app.navigate(2)
-            self.assertEqual(app.library_query.value, "Ocean")
-            self.assertEqual(app.library_sort_key, "title")
+            app.navigation.navigate(1)
+            app.search_page.query.value = "Unsubmitted search"
+            app.search_page._search_draft_changed(
+                SimpleNamespace(control=app.search_page.query)
+            )
+            app.navigation.navigate(2)
+            app.library_page.query.value = "Ocean"
+            app.library_page._library_query_changed(
+                SimpleNamespace(control=app.library_page.query)
+            )
+            app.library_page._set_library_sort("title")
+            app.navigation.navigate(0)
+            app.navigation.navigate(1)
+            self.assertEqual(app.search_page.query.value, "Unsubmitted search")
+            app.navigation.navigate(2)
+            self.assertEqual(app.library_page.query.value, "Ocean")
+            self.assertEqual(app.library_page.sort_key, "title")
+
+    def test_desktop_search_shortcut_focuses_composed_search_field(self):
+        app = self.app(mobile=False, width=1540)
+        app.page.run_task = Mock()
+
+        app.shell.keyboard(SimpleNamespace(key="L", ctrl=True, meta=False))
+
+        self.assertEqual(app.selected_navigation, 1)
+        app.page.run_task.assert_called_once_with(app.search_page.query.focus)
 
     def test_desktop_sidebar_actions_preserve_queue_and_restore_navigation(self):
         app = self.app(mobile=False, width=1540)
@@ -158,14 +180,14 @@ class NavigationTests(unittest.TestCase):
     def test_desktop_resize_keeps_settings_and_seek_drafts(self):
         app = self.app(mobile=False, width=1540)
         app.shell.utility_buttons["settings"].on_click(None)
-        field = app.settings_path
+        field = app.settings_page.path
         field.value = "An unsaved music folder"
         app.player.seeking = True
         app.player.seek.value = 45000
         for width in (1040, 1540):
             app.page.width = width
             asyncio.run(app._page_resized(SimpleNamespace(width=width, height=700)))
-            self.assertIs(app.settings_path, field)
+            self.assertIs(app.settings_page.path, field)
             self.assertEqual(field.value, "An unsaved music folder")
             self.assertEqual(app.player.seek.value, 45000)
             self.assertFalse(app.content.visible)
@@ -176,7 +198,7 @@ class NavigationTests(unittest.TestCase):
 
     def test_desktop_custom_handles_keep_queue_and_playlist_reordering(self):
         app = self.app(mobile=False, width=1540)
-        app._open_queue_panel()
+        app.context_panel._open_queue_panel()
         queue_view = next(
             c for c in walk(app.shell.panel) if isinstance(c, ft.ReorderableListView)
         )
@@ -193,7 +215,7 @@ class NavigationTests(unittest.TestCase):
         app.shell.close_panel()
         playlist = app.manager.list_playlists()[0]
         before = list(playlist.track_ids)
-        app._open_playlist(str(playlist.id))
+        app.playlists_page._open_playlist(str(playlist.id))
         playlist_view = next(
             c for c in walk(app.content) if isinstance(c, ft.ReorderableListView)
         )
@@ -219,14 +241,14 @@ class NavigationTests(unittest.TestCase):
 
     def test_orientation_keeps_settings_draft_and_cookie_selection(self):
         app = self.app()
-        app._open_settings_panel()
-        field = app.settings_theme
+        app.context_panel._open_settings_panel()
+        field = app.settings_page.theme
         field.value = "light"
-        app._pending_cookie_name = "cookies.txt"
+        app.settings_page.pending_cookie_name = "cookies.txt"
         asyncio.run(app._page_resized(SimpleNamespace(width=844, height=390)))
-        self.assertIs(app.settings_theme, field)
+        self.assertIs(app.settings_page.theme, field)
         self.assertEqual(field.value, "light")
-        self.assertEqual(app._pending_cookie_name, "cookies.txt")
+        self.assertEqual(app.settings_page.pending_cookie_name, "cookies.txt")
 
     def test_mobile_player_actions_share_playback_state_without_volume_slider(self):
         app = self.app()
@@ -260,7 +282,7 @@ class NavigationTests(unittest.TestCase):
             "musicplayer.application.queue.random.shuffle",
             side_effect=lambda items: items.reverse(),
         ):
-            app._play_collection(tracks, shuffle=True)
+            app.shared._play_collection(tracks, shuffle=True)
 
         self.assertEqual(app.playback.queue.items, list(reversed(ordered_ids)))
         self.assertEqual(app.playback.current_track_id, ordered_ids[-1])
@@ -313,11 +335,14 @@ class NavigationTests(unittest.TestCase):
 
     def test_mobile_search_ignores_desktop_grid_preference(self):
         app = self.app()
-        app.search_view_mode = "grid"
-        app.navigate(1)
-        self.assertEqual(len(app.search_list.controls), 1)
+        app.search_page.view_mode = "grid"
+        app.navigation.navigate(1)
+        self.assertEqual(len(app.search_page.result_list.controls), 1)
         self.assertFalse(
-            any(isinstance(c, ft.PopupMenuButton) for c in walk(app.search_list))
+            any(
+                isinstance(c, ft.PopupMenuButton)
+                for c in walk(app.search_page.result_list)
+            )
         )
 
     def test_all_screens_build_for_phone_orientations_and_desktop(self):
@@ -334,7 +359,7 @@ class NavigationTests(unittest.TestCase):
                         mobile=mobile, width=width, height=height, populated=populated
                     )
                     for index in range(4):
-                        app.navigate(index)
+                        app.navigation.navigate(index)
                         controls = list(walk(app.content.content))
                         if mobile:
                             self.assertFalse(
@@ -351,7 +376,7 @@ class NavigationTests(unittest.TestCase):
                                     self.assertGreaterEqual(c.height or 0, 48)
                     for panel in ("queue", "downloads", "settings"):
                         app.shell.open_panel(panel)
-                        app._close_context_panel()
+                        app.context_panel._close_context_panel()
 
 
 if __name__ == "__main__":

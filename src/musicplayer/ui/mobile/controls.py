@@ -154,11 +154,13 @@ def track_row(
     )
 
 
-def scroll_page(controls: list[ft.Control]) -> ft.Column:
+def scroll_page(controls: list[ft.Control], *, on_scroll=None) -> ft.Column:
     return ft.Column(
         controls,
         spacing=14,
         scroll=ft.ScrollMode.AUTO,
+        scroll_interval=100,
+        on_scroll=on_scroll,
         expand=True,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )

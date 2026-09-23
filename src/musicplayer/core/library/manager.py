@@ -13,11 +13,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from musicplayer.core.media import source_key
 from musicplayer.core.storage import sync_directory
 
 from .config import HEADER, MAGIC, SHA256_BYTES, TRACK_FIXED, U32, UUID_ONLY, VERSION
 from .models import IntegrityProblem, Playlist, Track
-from .utils import _as_uuid, _pack_utf8_string, _read_utf8_string, _sha256, source_key
+from .utils import _as_uuid, _pack_utf8_string, _read_utf8_string, _sha256
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,13 @@ class MusicManager:
         with self._lock:
             yield
 
-    def __init__(self, metadata_path: str | Path, music_folder: str | Path) -> None:
+    def __init__(
+        self,
+        metadata_path: str | Path,
+        music_folder: str | Path,
+        *,
+        additional_music_folders: Sequence[str | Path] = (),
+    ) -> None:
         logger.debug(
             "Initializing MusicManager: metadata_path=%s music_folder=%s",
             metadata_path,
@@ -57,6 +64,9 @@ class MusicManager:
             raise
 
         self._music_folder = self.music_folder.resolve()
+        self._additional_music_folders = tuple(
+            Path(folder).resolve() for folder in additional_music_folders
+        )
         self._lock = threading.RLock()
         self._tracks: dict[UUID, Track] = {}
         self._playlists: dict[UUID, Playlist] = {}
@@ -613,9 +623,32 @@ class MusicManager:
             )
             return track_count, playlist_count
 
-    def list_tracks(self) -> tuple[Track, ...]:
+    def list_tracks(self, *, limit: int | None = None) -> tuple[Track, ...]:
         state = self._read_state
-        return tuple(replace(state.tracks[key]) for key in state.newest)
+        keys = state.newest if limit is None else state.newest[: max(0, limit)]
+        return tuple(replace(state.tracks[key]) for key in keys)
+
+    def tracks_by_ids(
+        self, track_ids: Sequence[UUID | str], *, limit: int | None = None
+    ) -> tuple[Track, ...]:
+        """Return selected tracks in library order without copying the catalog."""
+        selected: set[UUID] = set()
+        for track_id in track_ids:
+            try:
+                selected.add(_as_uuid(track_id))
+            except TypeError, ValueError:
+                continue
+        if not selected or (limit is not None and limit <= 0):
+            return ()
+        state = self._read_state
+        matches: list[Track] = []
+        for key in state.newest:
+            if key not in selected:
+                continue
+            matches.append(replace(state.tracks[key]))
+            if limit is not None and len(matches) >= max(0, limit):
+                break
+        return tuple(matches)
 
     def counts(self) -> tuple[int, int]:
         state = self._read_state
@@ -630,17 +663,29 @@ class MusicManager:
         except TypeError, ValueError:
             return False
 
-    def search_tracks(self, query: str) -> tuple[Track, ...]:
+    def search_tracks(
+        self, query: str, *, offset: int = 0, limit: int | None = None
+    ) -> tuple[Track, ...]:
         needle = query.strip().casefold()
-        return tuple(
-            track
-            for track in self.list_tracks()
-            if not needle
-            or any(
+        if limit is not None and limit <= 0:
+            return ()
+        remaining_offset = max(0, offset)
+        state = self._read_state
+        matches: list[Track] = []
+        for key in state.newest:
+            track = state.tracks[key]
+            if needle and not any(
                 needle in value.casefold()
                 for value in (track.title, track.filename, track.source)
-            )
-        )
+            ):
+                continue
+            if remaining_offset:
+                remaining_offset -= 1
+                continue
+            matches.append(replace(track))
+            if limit is not None and len(matches) >= max(0, limit):
+                break
+        return tuple(matches)
 
     def find_track_by_source(self, source: str) -> Track | None:
         state = self._read_state
@@ -1158,7 +1203,12 @@ class MusicManager:
 
     # -- internal helpers -------------------------------------------
     def _relative_filename(self, filename: str | Path) -> str:
-        """Return a validated track filename relative to the music folder."""
+        """Return a validated managed filename.
+
+        Ordinary tracks remain compact paths relative to ``music_folder``.
+        Android MediaStore exports are stored as absolute paths, but only when
+        they are inside an explicitly configured public music root.
+        """
         logger.debug("Resolving track filename: filename=%s", filename)
         candidate = Path(filename)
         path = (
@@ -1167,18 +1217,22 @@ class MusicManager:
             else (self._music_folder / candidate).resolve()
         )
         try:
-            relative = path.relative_to(self._music_folder)
+            result = str(path.relative_to(self._music_folder))
         except ValueError:
-            logger.warning(
-                "Rejected track path outside music folder: filename=%s resolved_path=%s music_folder=%s",
-                filename,
-                path,
-                self._music_folder,
-            )
-            raise ValueError(
-                "Track files must be inside the configured music folder"
-            ) from None
-        result = str(relative)
+            if not candidate.is_absolute() or not any(
+                path.is_relative_to(root) for root in self._additional_music_folders
+            ):
+                logger.warning(
+                    "Rejected track path outside managed music folders: "
+                    "filename=%s resolved_path=%s music_folder=%s",
+                    filename,
+                    path,
+                    self._music_folder,
+                )
+                raise ValueError(
+                    "Track files must be inside a configured music folder"
+                ) from None
+            result = str(path)
         logger.debug(
             "Resolved track filename: filename=%s relative_filename=%s",
             filename,
@@ -1187,7 +1241,9 @@ class MusicManager:
         return result
 
     def _path_for_filename(self, filename: str) -> Path:
-        path = self._music_folder / self._relative_filename(filename)
+        stored = self._relative_filename(filename)
+        candidate = Path(stored)
+        path = candidate if candidate.is_absolute() else self._music_folder / candidate
         logger.debug(
             "Resolved music path for filename: filename=%s path=%s", filename, path
         )

@@ -205,20 +205,8 @@ wheels = [
 ]
 
 [[package]]
-name = "flet-audio"
-version = "0.86.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "flet" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/38/5dfcb8cfb7af6b4b74de4476e1db09e6cc962a65c1bbfd3ca16dc9741f72/flet_audio-0.86.5.tar.gz", hash = "sha256:ee936a803bfd218afa80fbbc13eb701d7a457e008b7ff97d4d61c148e92dcc0c", size = 11546, upload-time = "2026-08-01T16:51:46.64Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/f3/f22b9d4473fe7a8b42409fcd765c762e1e5ff1d9dab214ef2d6f78e5b4f6/flet_audio-0.86.5-py3-none-any.whl", hash = "sha256:577ce2c4a816e4105f0c06f1fcd3d1049af01ec143c0f141797677f03998fd4f", size = 13380, upload-time = "2026-08-01T16:51:45.572Z" },
-]
-
-[[package]]
 name = "flet-background-audio"
-version = "0.2.0"
+version = "0.6.0"
 source = { editable = "packages/flet_background_audio" }
 dependencies = [
     { name = "flet" },
@@ -425,7 +413,6 @@ name = "musicplayer"
 source = { editable = "." }
 dependencies = [
     { name = "flet" },
-    { name = "flet-audio" },
     { name = "flet-background-audio" },
     { name = "mutagen" },
     { name = "packaging" },
@@ -445,7 +432,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "flet", specifier = "==0.86.5" },
-    { name = "flet-audio", specifier = "==0.86.5" },
     { name = "flet-background-audio", editable = "packages/flet_background_audio" },
     { name = "mutagen", specifier = "==1.48.1" },
     { name = "packaging", specifier = ">=24.0" },

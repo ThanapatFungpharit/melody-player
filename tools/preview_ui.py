@@ -49,13 +49,15 @@ def main(page: ft.Page):
     page.window.width = args.width or (390 if args.mobile else 1540)
     page.window.height = args.height or (844 if args.mobile else 960)
     if args.screen in ("home", "search", "library", "playlists"):
-        app.navigate(("home", "search", "library", "playlists").index(args.screen))
+        app.navigation.navigate(
+            ("home", "search", "library", "playlists").index(args.screen)
+        )
     elif args.screen == "playlist":
         playlists = app.manager.list_playlists()
         if playlists:
-            app._open_playlist(str(playlists[0].id))
+            app.playlists_page._open_playlist(str(playlists[0].id))
         else:
-            app.navigate(3)
+            app.navigation.navigate(3)
     else:
         app.shell.open_panel(args.screen)
     page.on_close = lambda _: (app._close(None), temporary.cleanup())
