@@ -14,6 +14,7 @@ from musicplayer.ui.components.common import (
     _track_credit,
     _track_title,
 )
+from musicplayer.ui.components.track_pages import page_navigation
 from musicplayer.ui.desktop.controls import (
     heading as _page_header,
 )
@@ -102,10 +103,11 @@ def _playlists_view(app: MusicPlayerApp) -> ft.Control:
 def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
     tracks = app.manager.playlist_tracks(playlist.id)
     track_ids = tuple(str(track.id) for track in tracks)
+    start, end = app.playlists_page._visible_range(len(tracks))
     other_playlists = tuple(
         item for item in app.manager.list_playlists() if item.id != playlist.id
     )
-    details = app.library.details_many(track.id for track in tracks)
+    details = app.library.details_many(track.id for track in tracks[start:end])
     bulk_add_button: ft.Control
     bulk_add_button = ft.OutlinedButton(
         "Add to playlist",
@@ -133,7 +135,7 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                     track_ids,
                     details.get(str(track.id)),
                 )
-                for index, track in enumerate(tracks)
+                for index, track in enumerate(tracks[start:end], start=start)
             ],
             show_default_drag_handles=False,
             mouse_cursor=ft.MouseCursor.GRAB,
@@ -148,6 +150,7 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
             "This playlist is empty. Add tracks from Search or Library.",
             expand=True,
         )
+    pager = page_navigation(len(tracks), start, end, app.playlists_page._change_page)
     return ft.Column(
         [
             ft.Row(
@@ -180,8 +183,8 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                         ft.Icons.SHUFFLE_ROUNDED,
                         tooltip="Shuffle playlist",
                         disabled=not tracks,
-                        on_click=lambda _: app.playlists_page._play_playlist(
-                            playlist, shuffle=True
+                        on_click=lambda _: app.playlists_page._shuffle_playlist(
+                            playlist
                         ),
                     ),
                     ft.IconButton(
@@ -193,6 +196,13 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
                     ft.PopupMenuButton(
                         icon=ft.Icons.MORE_HORIZ_ROUNDED,
                         items=[
+                            ft.PopupMenuItem(
+                                content="Export playlist",
+                                icon=ft.Icons.IOS_SHARE_ROUNDED,
+                                on_click=lambda _: app.playlists_page._export_playlist(
+                                    playlist
+                                ),
+                            ),
                             ft.PopupMenuItem(
                                 content="Rename playlist",
                                 icon=ft.Icons.EDIT_ROUNDED,
@@ -213,6 +223,7 @@ def _playlist_detail(app: MusicPlayerApp, playlist: Playlist) -> ft.Control:
             ),
             ft.Divider(height=1),
             rows,
+            *([pager] if pager is not None else []),
         ],
         spacing=16,
         expand=True,
@@ -232,6 +243,24 @@ def _playlist_track_row(
     menu = app.playlists_page._playlist_track_menu(
         playlist, track, index, other_playlists, playlist_track_ids, details
     )
+    menu[0:0] = [
+        ft.PopupMenuItem(
+            content="Move up",
+            icon=ft.Icons.ARROW_UPWARD_ROUNDED,
+            disabled=index == 0,
+            on_click=lambda _: app.playlists_page._reorder_playlist(
+                str(playlist.id), index, index - 1
+            ),
+        ),
+        ft.PopupMenuItem(
+            content="Move down",
+            icon=ft.Icons.ARROW_DOWNWARD_ROUNDED,
+            disabled=index == len(playlist_track_ids) - 1,
+            on_click=lambda _: app.playlists_page._reorder_playlist(
+                str(playlist.id), index, index + 2
+            ),
+        ),
+    ]
     leading: list[ft.Control] = []
     leading.extend(
         [

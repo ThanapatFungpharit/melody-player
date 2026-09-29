@@ -1,13 +1,36 @@
 from dataclasses import dataclass
+from typing import Any
 
 import flet as ft
 
 AudioSource = str | bytes
 
 
+def _validate_repeat_mode(value: str) -> None:
+    if value not in ("off", "track", "playlist"):
+        raise ValueError(f"Invalid repeat mode: {value!r}")
+
+
+def _validate_generation(value: int) -> int:
+    generation = int(value)
+    if generation < 0 or generation % 2:
+        raise ValueError("Python source generations must be nonnegative and even")
+    return generation
+
+
+def _validate_queue_items(items: list[dict[str, str]]) -> None:
+    """Reject malformed rows before Dart silently drops them."""
+    for index, item in enumerate(items):
+        for key in ("track_id", "source"):
+            value = item.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Queue item {index} requires a nonempty {key}")
+
+
 @dataclass
 class ManagedAudioErrorEvent(ft.Event["ManagedAudio"]):
     message: str
+    generation: int
 
 
 @dataclass
@@ -42,7 +65,7 @@ class ManagedAudioTrackChangeEvent(ft.Event["ManagedAudio"]):
 
 @ft.control("ManagedAudio")
 class ManagedAudio(ft.Service):
-    """Long-lived audio player owned entirely by this extension.
+    """Page-scoped command and event bridge to a process-scoped audio player.
 
     The matching Dart service owns the decoder, live queue, preloading, and
     transport. Python exposes only the versioned RPC and event surface used by
@@ -57,9 +80,21 @@ class ManagedAudio(ft.Service):
     on_state_change: ft.EventHandler[ManagedAudioStateChangeEvent] | None = None
     on_track_change: ft.EventHandler[ManagedAudioTrackChangeEvent] | None = None
 
-    async def load_source(self, source: AudioSource, generation: int) -> None:
+    async def load_source(
+        self,
+        source: AudioSource,
+        generation: int,
+        autoplay: bool = False,
+        position_ms: int = 0,
+    ) -> None:
         await self._invoke_method(
-            "load_source", {"source": source, "generation": int(generation)}
+            "load_source",
+            {
+                "source": source,
+                "generation": _validate_generation(generation),
+                "autoplay": bool(autoplay),
+                "position_ms": max(0, int(position_ms)),
+            },
         )
 
     async def set_queue(
@@ -68,16 +103,21 @@ class ManagedAudio(ft.Service):
         current_index: int,
         generation: int,
         repeat_mode: str,
-        shuffle: bool,
+        autoplay: bool = False,
+        position_ms: int = 0,
     ) -> None:
+        _validate_queue_items(items)
+        _validate_repeat_mode(repeat_mode)
+        generation = _validate_generation(generation)
         await self._invoke_method(
             "set_queue",
             {
                 "items": items,
                 "current_index": int(current_index),
-                "generation": int(generation),
+                "generation": generation,
                 "repeat_mode": repeat_mode,
-                "shuffle": bool(shuffle),
+                "autoplay": bool(autoplay),
+                "position_ms": max(0, int(position_ms)),
             },
         )
 
@@ -86,15 +126,15 @@ class ManagedAudio(ft.Service):
         items: list[dict[str, str]],
         current_index: int,
         repeat_mode: str,
-        shuffle: bool,
     ) -> None:
+        _validate_queue_items(items)
+        _validate_repeat_mode(repeat_mode)
         await self._invoke_method(
             "update_queue",
             {
                 "items": items,
                 "current_index": int(current_index),
                 "repeat_mode": repeat_mode,
-                "shuffle": bool(shuffle),
             },
         )
 
@@ -104,10 +144,7 @@ class ManagedAudio(ft.Service):
     async def clear_source(self) -> None:
         await self._invoke_method("clear_source")
 
-    async def set_foreground(self, foreground: bool) -> None:
-        await self._invoke_method("set_foreground", {"foreground": bool(foreground)})
-
-    async def get_playback_state(self) -> dict[str, int | None]:
+    async def get_playback_state(self) -> dict[str, Any]:
         result = await self._invoke_method("get_playback_state")
         return dict(result or {})
 
@@ -122,3 +159,12 @@ class ManagedAudio(ft.Service):
 
     async def seek(self, position: ft.DurationValue) -> None:
         await self._invoke_method("seek", {"position": position})
+
+    async def stop(self) -> None:
+        await self._invoke_method("stop")
+
+    async def skip_next(self) -> None:
+        await self._invoke_method("skip_next")
+
+    async def skip_previous(self) -> None:
+        await self._invoke_method("skip_previous")

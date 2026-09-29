@@ -7,6 +7,7 @@ from musicplayer.ui.components.queue_status import (
     queue_item_status,
     queue_mode_status,
 )
+from musicplayer.ui.components.track_pages import page_navigation
 from musicplayer.ui.mobile.controls import (
     heading,
     icon_button,
@@ -19,8 +20,10 @@ from musicplayer.ui.mobile.controls import (
 def _queue_view(app) -> ft.Control:
     queue = app.playback.queue
     mode = queue_mode_status(queue)
+    start, end = app.queue_page._visible_range(len(queue.items), queue.current_index)
     rows = []
-    for index, track_id in enumerate(queue.items):
+    for index in range(start, end):
+        track_id = queue.items[index]
         try:
             track = app.manager.get_track(track_id)
             details = app.library.details(track_id)
@@ -58,11 +61,12 @@ def _queue_view(app) -> ft.Control:
                 cache=getattr(app, "thumbnails", None),
             )
         )
+    pager = page_navigation(len(queue.items), start, end, app.queue_page._change_page)
     return scroll_page(
         [
             heading(
                 "Queue",
-                f"{len(rows)} tracks · {mode.label}",
+                f"{len(queue.items)} tracks · {mode.label}",
                 icon_button(
                     ft.Icons.ARROW_BACK_ROUNDED,
                     "Back",
@@ -97,9 +101,10 @@ def _queue_view(app) -> ft.Control:
             ft.Row(
                 [
                     ft.TextButton(
-                        "Shuffle on" if queue.shuffle else "Shuffle off",
+                        "Shuffle upcoming",
                         icon=ft.Icons.SHUFFLE_ROUNDED,
-                        on_click=lambda _: app.playback.toggle_shuffle(),
+                        disabled=queue.upcoming_count < 2,
+                        on_click=lambda _: app.playback.shuffle_upcoming(),
                     ),
                     ft.TextButton(
                         mode.label,
@@ -117,6 +122,7 @@ def _queue_view(app) -> ft.Control:
                 visible=bool(rows),
             ),
             *rows,
+            *([pager] if pager is not None else []),
             *(
                 []
                 if rows

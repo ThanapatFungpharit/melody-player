@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,6 +41,53 @@ class MusicManagerTests(unittest.TestCase):
             [track.id for track in reloaded.playlist_tracks(playlist)], [second, first]
         )
 
+    def test_playlist_saves_reuse_unchanged_track_records(self) -> None:
+        track_id = self.add_track("song.mp3")
+        with patch.object(
+            self.manager,
+            "_serialize_track_records",
+            wraps=self.manager._serialize_track_records,
+        ) as serialize:
+            playlist_id = self.manager.create_playlist("First")
+            self.manager.add_to_playlist(playlist_id, track_id)
+            self.manager.rename_playlist(playlist_id, "Updated")
+            self.assertEqual(serialize.call_count, 0)
+
+            self.manager.rename_track(track_id, "Renamed song")
+            self.assertEqual(serialize.call_count, 1)
+            self.manager.remove_from_playlist(playlist_id, track_id)
+            self.assertEqual(serialize.call_count, 1)
+
+        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        self.assertEqual(reloaded.get_track(track_id).title, "Renamed song")
+        self.assertEqual(reloaded.get_playlist(playlist_id).name, "Updated")
+        self.assertEqual(reloaded.playlist_tracks(playlist_id), ())
+
+    def test_failed_playlist_save_keeps_committed_cache_and_snapshot(self) -> None:
+        track_id = self.add_track("song.mp3")
+        playlist_id = self.manager.create_playlist("Before")
+        committed_records = self.manager._track_records_cache
+        committed_tracks = self.manager._read_state.tracks
+
+        with (
+            patch.object(
+                self.manager, "_write_metadata", side_effect=OSError("disk full")
+            ),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            self.manager.rename_playlist(playlist_id, "After")
+
+        self.assertIs(self.manager._track_records_cache, committed_records)
+        self.assertIs(self.manager._read_state.tracks, committed_tracks)
+        self.assertEqual(self.manager.get_playlist(playlist_id).name, "Before")
+        self.assertEqual(self.manager.get_track(track_id).title, "song")
+        self.assertEqual(
+            MusicManager(self.root / "library.mmdb", self.music)
+            .get_playlist(playlist_id)
+            .name,
+            "Before",
+        )
+
     def test_bounded_reads_copy_only_the_requested_library_slice(self) -> None:
         first = self.add_track("first-match.mp3")
         second = self.add_track("other.mp3")
@@ -70,6 +118,52 @@ class MusicManagerTests(unittest.TestCase):
             [newest],
         )
         self.assertEqual(self.manager.list_tracks(limit=0), ())
+
+    def test_sorted_library_pages_copy_only_visible_matches(self) -> None:
+        oldest = self.add_track("zulu-match.mp3")
+        middle = self.add_track("alpha-match.mp3")
+        newest = self.add_track("beta-match.mp3")
+        self.add_track("unrelated.mp3")
+        library = LibraryService(
+            self.manager, ApplicationStore(self.root / "state.json")
+        )
+
+        with patch("musicplayer.core.library.manager.replace", wraps=replace) as copy:
+            title_page = library.tracks(query="match", sort="title", offset=1, limit=1)
+        self.assertEqual([track.id for track in title_page], [newest])
+        self.assertEqual(copy.call_count, 1)
+
+        self.assertEqual(
+            [track.id for track in library.tracks(query="match", sort="oldest")],
+            [oldest, middle, newest],
+        )
+        self.assertEqual(
+            [track.id for track in library.tracks(query="match", sort="title")],
+            [middle, newest, oldest],
+        )
+        self.assertEqual(library.tracks(sort="title", limit=0), ())
+        self.assertEqual(library.tracks(sort="oldest", offset=99, limit=1), ())
+
+    def test_selected_tracks_keep_library_order_after_membership_changes(self) -> None:
+        oldest = self.add_track("oldest.mp3")
+        middle = self.add_track("middle.mp3")
+        newest = self.add_track("newest.mp3")
+        selected = (str(oldest), middle, str(newest), str(oldest), "invalid")
+
+        self.assertEqual(
+            [track.id for track in self.manager.tracks_by_ids(selected, limit=2)],
+            [newest, middle],
+        )
+
+        self.manager.delete_track(newest)
+        latest = self.add_track("latest.mp3")
+        self.assertEqual(
+            [
+                track.id
+                for track in self.manager.tracks_by_ids((*selected, latest), limit=2)
+            ],
+            [latest, middle],
+        )
 
     def test_source_duplicate_normalizes_youtube_urls(self) -> None:
         track_id = self.add_track(
@@ -167,6 +261,59 @@ class MusicManagerTests(unittest.TestCase):
         path = self.manager.track_path(track_id)
         self.manager.delete_track(track_id)
         self.assertTrue(path.exists())
+
+    def test_delete_track_and_file_removes_audio_and_playlist_reference(self) -> None:
+        track_id = self.add_track("delete.mp3")
+        path = self.manager.track_path(track_id)
+        playlist_id = self.manager.create_playlist("Temporary")
+        self.manager.add_to_playlist(playlist_id, track_id)
+        library = LibraryService(
+            self.manager, ApplicationStore(self.root / "state.json")
+        )
+
+        library.delete_track_and_file(track_id)
+
+        self.assertFalse(path.exists())
+        self.assertFalse(self.manager.has_track(track_id))
+        self.assertEqual(self.manager.playlist_tracks(playlist_id), ())
+
+    def test_delete_track_file_failure_keeps_library_entry(self) -> None:
+        track_id = self.add_track("locked.mp3")
+        path = self.manager.track_path(track_id)
+        library = LibraryService(
+            self.manager, ApplicationStore(self.root / "state.json")
+        )
+
+        with (
+            patch.object(Path, "unlink", side_effect=PermissionError("file locked")),
+            self.assertRaisesRegex(PermissionError, "file locked"),
+        ):
+            library.delete_track_and_file(track_id)
+
+        self.assertTrue(path.exists())
+        self.assertTrue(self.manager.has_track(track_id))
+
+    def test_playlist_and_library_exports_preserve_order_and_file_uris(self) -> None:
+        first = self.add_track("first song.mp3")
+        second = self.add_track("second.mp3")
+        playlist_id = self.manager.create_playlist("Reversed")
+        self.manager.add_to_playlist(playlist_id, first)
+        self.manager.add_to_playlist(playlist_id, second)
+        library = LibraryService(
+            self.manager, ApplicationStore(self.root / "state.json")
+        )
+
+        playlist_lines = (
+            library.export_playlist_m3u8(playlist_id).decode("utf-8").splitlines()
+        )
+        library_lines = library.export_library_m3u8().decode("utf-8").splitlines()
+
+        self.assertEqual(playlist_lines[0], "#EXTM3U")
+        self.assertEqual(playlist_lines[1], "#EXTINF:-1,first song")
+        self.assertEqual(playlist_lines[2], self.manager.track_path(first).as_uri())
+        self.assertEqual(playlist_lines[4], self.manager.track_path(second).as_uri())
+        self.assertEqual(library_lines[2], self.manager.track_path(second).as_uri())
+        self.assertEqual(library_lines[4], self.manager.track_path(first).as_uri())
 
     def test_local_import_keeps_audio_when_registration_rollback_fails(self) -> None:
         source = self.root / "outside.mp3"

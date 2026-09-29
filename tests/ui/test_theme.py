@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import flet as ft
@@ -12,6 +13,17 @@ from musicplayer.ui.pages.settings import SettingsPage
 
 
 class ThemeTests(unittest.TestCase):
+    def test_new_settings_follow_system_theme(self) -> None:
+        app = MusicPlayerApp.__new__(MusicPlayerApp)
+        app.settings = AppSettings()
+        settings_page = SettingsPage(app)
+
+        settings_page._build_appearance_settings()
+
+        self.assertEqual(app.settings.theme, "system")
+        self.assertEqual(AppSettings.from_dict({}).theme, "system")
+        self.assertEqual(settings_page.theme.value, "system")
+
     def test_theme_selector_previews_mode_and_keeps_draft_when_settings_refresh(
         self,
     ) -> None:
@@ -47,12 +59,19 @@ class ThemeTests(unittest.TestCase):
         settings_page = SettingsPage(app)
 
         settings_page._build_appearance_settings()
-        settings_page._select_accent("ocean")
+        picker = settings_page.accent_picker
+        theme = settings_page.theme
+        settings_page._select_accent("coral")
+        self.assertIs(settings_page.accent_picker, picker)
+        self.assertIs(settings_page.theme, theme)
+        cast(Mock, app.context_panel._refresh_context_panel).assert_not_called()
+        cast(Mock, app.page.update).assert_called_once()
         settings_page._build_appearance_settings()
 
-        self.assertEqual(settings_page.accent_draft, "ocean")
-        self.assertEqual(settings_page.theme.value, "dark")
-        self.assertEqual(settings_page.selected_accent, "ocean")
+        self.assertEqual(settings_page.accent_draft, "coral")
+        self.assertEqual(settings_page.theme.value, "system")
+        self.assertEqual(settings_page.selected_accent, "coral")
+        self.assertTrue(settings_page.accent_picker.wrap)
         app._reapply_accent.assert_called_once()
 
 

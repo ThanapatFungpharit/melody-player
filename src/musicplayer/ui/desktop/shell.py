@@ -41,7 +41,9 @@ class DesktopShell:
             "Settings (Ctrl+,)",
         )
         self.utility_buttons = {"downloads": downloads, "settings": settings}
-        self.brand_label = ft.Text("Melody", weight=ft.FontWeight.BOLD, size=22)
+        self.brand_label = ft.Text(
+            "Melody", weight=ft.FontWeight.BOLD, size=22, color=ft.Colors.PRIMARY
+        )
         self.section_label = ft.Text(
             "YOUR MUSIC",
             size=10,
@@ -105,29 +107,30 @@ class DesktopShell:
             expand=True,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
-        app.page.add(
-            ft.Container(
-                ft.Column(
-                    [
-                        ft.Container(
-                            ft.Row(
-                                [self.rail, self.workspace],
-                                spacing=0,
-                                expand=True,
-                                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-                            ),
-                            padding=ft.Padding.only(top=12, right=12),
+        self.root = ft.Container(
+            ft.Column(
+                [
+                    ft.Container(
+                        ft.Row(
+                            [self.rail, self.workspace],
+                            spacing=0,
                             expand=True,
+                            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
                         ),
-                        app.player.root,
-                    ],
-                    spacing=0,
-                    expand=True,
-                ),
-                bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+                        padding=ft.Padding.only(top=12, right=12),
+                        expand=True,
+                    ),
+                    app.player.root,
+                ],
+                spacing=0,
                 expand=True,
-            )
+            ),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            expand=True,
+            opacity=0 if getattr(app, "startup_transition", False) else 1,
+            animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
         )
+        app.page.add(self.root)
         self.resize(float(app.page.width or 1540), float(app.page.height or 960))
 
     def select(self, index: int) -> None:
@@ -154,9 +157,7 @@ class DesktopShell:
     def _navigation_style(selected):
         return ft.ButtonStyle(
             bgcolor=ft.Colors.PRIMARY_CONTAINER if selected else ft.Colors.TRANSPARENT,
-            color=ft.Colors.ON_PRIMARY_CONTAINER
-            if selected
-            else ft.Colors.ON_SURFACE_VARIANT,
+            color=ft.Colors.PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT,
             shape=ft.RoundedRectangleBorder(radius=14),
             padding=ft.Padding.symmetric(horizontal=14),
             alignment=ft.Alignment.CENTER_LEFT,
@@ -197,19 +198,28 @@ class DesktopShell:
         self.app.content.visible = True
         self._refresh_navigation()
         if update:
-            self.app.page.update()
+            self.app.page.update(
+                self.panel, self.app.content, self.rail, self.app.player.queue_button
+            )
 
     def refresh_panel(self) -> None:
         self.panel.content = self.app.context_panel._panel_view(self.app.active_panel)
-        self.app.page.update()
+        self.app.page.update(self.panel)
 
     def refresh_downloads(self) -> None:
         active = self.app.downloads.active_count()
-        self.downloads.badge = str(active) if active else None
-        self.utility_buttons["downloads"].tooltip = (
+        badge = str(active) if active else None
+        tooltip = (
             f"Downloads, {active} active (Ctrl+D)" if active else "Downloads (Ctrl+D)"
         )
-        self.app.page.update()
+        if (
+            self.downloads.badge == badge
+            and self.utility_buttons["downloads"].tooltip == tooltip
+        ):
+            return
+        self.downloads.badge = badge
+        self.utility_buttons["downloads"].tooltip = tooltip
+        self.app.page.update(self.downloads, self.utility_buttons["downloads"])
 
     def resize(self, width: float, height: float) -> None:
         extended = width >= 1180
@@ -234,7 +244,9 @@ class DesktopShell:
         self.panel.padding = 20 if docked else 28
         self.app.content.visible = not self.app.active_panel or docked
         self.app.player.resize(width)
-        self.app.page.update()
+        self.app.page.update(
+            self.rail, self.panel, self.app.content, self.app.player.root
+        )
 
     def keyboard(self, event) -> None:
         app = self.app

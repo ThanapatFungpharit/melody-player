@@ -60,8 +60,12 @@ class FletBackgroundAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler
     private fun publishAudio(source: File, relativePath: String): Map<String, String> {
         require(source.isFile && source.length() > 0) { "The staged audio file is missing" }
         val extension = source.extension.lowercase()
-        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
-            ?: "audio/*"
+        val mimeType = when (extension) {
+            "webm" -> "audio/webm"
+            "mp4", "m4a" -> "audio/mp4"
+            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+                ?.takeIf { it.startsWith("audio/") } ?: "audio/mpeg"
+        }
         val folder = relativePath.trim().trim('/').ifBlank { "Melody" }
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
@@ -82,7 +86,9 @@ class FletBackgroundAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler
             }
             values.clear()
             values.put(MediaStore.Audio.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
+            check(resolver.update(uri, values, null, null) > 0) {
+                "Android could not finish publishing the Music file"
+            }
             val publishedName = queryString(uri, MediaStore.Audio.Media.DISPLAY_NAME)
                 ?: source.name
             val publishedPath = queryString(uri, MediaStore.Audio.Media.DATA)

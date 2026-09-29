@@ -153,7 +153,7 @@ class SettingsPage:
                     bgcolor=ft.Colors.PRIMARY_CONTAINER,
                 ),
             ],
-            columns={"xs": 12, "lg": 6, "xl": 4},
+            columns={"xs": 12, "lg": 7},
         )
 
     def _build_appearance_settings(self) -> ft.Container:
@@ -169,9 +169,9 @@ class SettingsPage:
             height=56,
             border_radius=12,
             options=[
+                ft.DropdownOption(key="system", text="Use system setting"),
                 ft.DropdownOption(key="dark", text="Dark"),
                 ft.DropdownOption(key="light", text="Light"),
-                ft.DropdownOption(key="system", text="Use system setting"),
             ],
             on_select=self._theme_changed,
         )
@@ -179,8 +179,26 @@ class SettingsPage:
             label="Resume queue and playback state",
             value=self.app.settings.resume_session,
         )
+        self.skip_loading_delay = ft.Switch(
+            label="Open as soon as the library is ready",
+            value=self.app.settings.skip_loading_delay,
+        )
         self.notifications = ft.Switch(
             label="Notify when tracks change", value=self.app.settings.notifications
+        )
+        self.auto_focal_point_live_notifications = ft.Switch(
+            label="Auto Focal Point for Live Notifications",
+            value=self.app.settings.auto_focal_point_live_notifications,
+        )
+        self.notification_action_pair = ft.Dropdown(
+            value=self.app.settings.notification_action_pair,
+            label="Android notification shortcuts",
+            helper_text="Choose two controls beside playback and track skipping.",
+            options=[
+                ft.DropdownOption(key="shuffle_favorite", text="Shuffle + Favorite"),
+                ft.DropdownOption(key="shuffle_repeat", text="Shuffle + Repeat"),
+                ft.DropdownOption(key="repeat_favorite", text="Repeat + Favorite"),
+            ],
         )
         # -- accent color picker ----------------------------------------
         self.selected_accent = self.accent_draft
@@ -189,20 +207,64 @@ class SettingsPage:
             [
                 self._settings_section_header(
                     ft.Icons.TUNE_ROUNDED,
-                    "Appearance & session",
-                    "Choose how Melody looks and restores your workspace.",
+                    "Appearance",
+                    "Set the mood for your music.",
+                ),
+                ft.Text(
+                    "DISPLAY",
+                    size=11,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PRIMARY,
                 ),
                 self.theme,
-                ft.Text(
-                    "Accent color",
-                    weight=ft.FontWeight.BOLD,
+                ft.Container(
+                    ft.Column(
+                        [
+                            ft.Text("Accent color", weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                "Choose a color for controls and highlights.",
+                                size=12,
+                                color=ft.Colors.ON_SURFACE_VARIANT,
+                            ),
+                            self.accent_picker,
+                        ],
+                        spacing=8,
+                    ),
+                    padding=16,
+                    border_radius=16,
+                    bgcolor=ft.Colors.PRIMARY_CONTAINER,
                 ),
-                self.accent_picker,
                 ft.Divider(height=18),
+                ft.Text(
+                    "STARTUP & PLAYBACK",
+                    size=11,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PRIMARY,
+                ),
                 self.resume,
+                ft.Column(
+                    [
+                        self.skip_loading_delay,
+                        ft.Text(
+                            "Skip the three-second minimum loading screen on your next launch.",
+                            size=12,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                        ),
+                    ],
+                    spacing=0,
+                ),
+                ft.Divider(height=18),
+                ft.Text(
+                    "NOTIFICATIONS",
+                    size=11,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PRIMARY,
+                ),
                 self.notifications,
+                self.auto_focal_point_live_notifications,
+                self.notification_action_pair,
             ],
-            columns={"xs": 12, "lg": 6, "xl": 4},
+            columns={"xs": 12, "lg": 5},
         )
 
     def _build_youtube_settings(self) -> ft.Container:
@@ -279,7 +341,7 @@ class SettingsPage:
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
             ],
-            columns={"xs": 12, "lg": 12, "xl": 4},
+            columns={"xs": 12, "lg": 5},
         )
 
     def _build_data_management_settings(self) -> ft.Container:
@@ -370,7 +432,7 @@ class SettingsPage:
                     border=ft.Border.all(1, ft.Colors.ERROR),
                 ),
             ],
-            columns={"xs": 12},
+            columns={"xs": 12, "lg": 7},
         )
 
     def _build_settings_footer(self) -> ft.ResponsiveRow:
@@ -442,7 +504,7 @@ class SettingsPage:
             border_radius=14,
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
         )
-        result.col = {"xs": 12, "lg": 4}
+        result.col = {"xs": 12, "md": 6, "xl": 4}
         return result
 
     def _confirm_data_action(self, action: str) -> None:
@@ -602,6 +664,10 @@ class SettingsPage:
     async def _restore_default_settings(self) -> bool:
         defaults = AppSettings()
         already_default = self.app.settings == defaults
+        previous_notification_actions = self.app.settings.notification_action_pair
+        previous_auto_focal_point = (
+            self.app.settings.auto_focal_point_live_notifications
+        )
         configured_cookie = self.app.settings.cookie_file
         managed_cookie = Path(self.app.data_directory) / COOKIE_FILE_NAME
         if configured_cookie and await self.app.tasks.io(
@@ -616,6 +682,15 @@ class SettingsPage:
         self.app.providers = await self.app.tasks.io(
             ProviderRegistry, settings=self.app.settings
         )
+        if (
+            previous_auto_focal_point
+            != self.app.settings.auto_focal_point_live_notifications
+        ):
+            self.app._sync_system_media(refresh_metadata=True)
+        elif (
+            previous_notification_actions != self.app.settings.notification_action_pair
+        ):
+            self.app._sync_system_media(refresh_metadata=False)
         self.app.page.theme_mode = _theme_mode(self.app.settings.theme)
         self.pending_cookie_file = None
         self.pending_cookie_name = ""
@@ -631,8 +706,6 @@ class SettingsPage:
             self.app.player_bar._refresh_player()
         if getattr(self.app, "active_panel", None):
             self.app.context_panel._refresh_context_panel()
-        else:
-            self.app.page.update()
 
     @staticmethod
     def _settings_section_header(icon: Any, title: str, subtitle: str) -> ft.Control:
@@ -667,7 +740,7 @@ class SettingsPage:
         self.concurrency_value.value = f"{int(event.control.value)} workers"
         self.app.page.update(self.concurrency_value)
 
-    def _build_accent_picker(self) -> ft.Control:
+    def _build_accent_picker(self) -> ft.Row:
         """Build a row of clickable accent-color swatches."""
         swatches: list[ft.Control] = []
         for name, hex_color in THEME_PALETTES.items():
@@ -702,17 +775,18 @@ class SettingsPage:
                 ),
                 on_click=lambda _, n=name: self._select_accent(n),
                 padding=4,
+                width=72,
             )
             swatches.append(swatch)
-        return ft.Row(swatches, spacing=8, scroll=ft.ScrollMode.AUTO)
+        return ft.Row(swatches, spacing=8, run_spacing=8, wrap=True)
 
     def _select_accent(self, name: str) -> None:
         """Update the visually selected accent palette."""
         self.accent_draft = name
         self.selected_accent = name
-        self.accent_picker = self._build_accent_picker()
+        self.accent_picker.controls = self._build_accent_picker().controls
         self.app._reapply_accent()
-        self.app.context_panel._refresh_context_panel()
+        self.app.page.update()
 
     def _theme_changed(self, event: Any) -> None:
         """Preview a theme choice immediately; persistence still happens on save."""
@@ -802,7 +876,14 @@ class SettingsPage:
         settings.theme = self.theme_draft or self.theme.value or "system"
         settings.accent_color = self.accent_draft or self.selected_accent
         settings.resume_session = bool(self.resume.value)
+        settings.skip_loading_delay = bool(self.skip_loading_delay.value)
         settings.notifications = bool(self.notifications.value)
+        settings.notification_action_pair = (
+            self.notification_action_pair.value or "shuffle_favorite"
+        )
+        settings.auto_focal_point_live_notifications = bool(
+            self.auto_focal_point_live_notifications.value
+        )
         old_settings = replace(self.app.settings)
         self.app._show_message("Saving settings…")
 
@@ -866,6 +947,13 @@ class SettingsPage:
         providers = await self.app.tasks.io(persist)
         self.app.settings = settings
         self.app.providers = providers
+        if (
+            settings.auto_focal_point_live_notifications
+            != old_settings.auto_focal_point_live_notifications
+        ):
+            self.app._sync_system_media(refresh_metadata=True)
+        elif settings.notification_action_pair != old_settings.notification_action_pair:
+            self.app._sync_system_media(refresh_metadata=False)
         if self.pending_cookie_file is pending:
             self.pending_cookie_file = None
             self.pending_cookie_name = ""
@@ -908,5 +996,7 @@ def _settings_card(
         ),
         padding=22,
     )
+    section.bgcolor = ft.Colors.SURFACE_CONTAINER_LOW
+    section.border_radius = 22
     section.col = columns
     return section

@@ -92,11 +92,16 @@ class LibraryService:
         self.store.record_play(str(track_id), played_at=time.time(), playback=playback)
 
     def delete_track(self, track_id: UUID | str, *, delete_file: bool = False) -> None:
-        path = self.manager.track_path(track_id)
-        self.manager.delete_track(track_id)
-        self.store.remove_track_details(str(track_id))
-        if delete_file and not self.manager.is_path_referenced(path):
-            path.unlink(missing_ok=True)
+        with self.manager.mutation():
+            path = self.manager.track_path(track_id)
+            if delete_file and not self.manager.is_path_referenced(
+                path, excluding=track_id
+            ):
+                # Keep the library entry available for retry if the OS refuses
+                # to remove a playing or protected file.
+                path.unlink(missing_ok=True)
+            self.manager.delete_track(track_id)
+            self.store.remove_track_details(str(track_id))
 
     def delete_track_and_file(self, track_id: UUID | str) -> None:
         """Remove a library record and its owned media as one user action."""
@@ -187,23 +192,23 @@ class LibraryService:
         offset: int = 0,
         limit: int | None = None,
     ) -> tuple[Track, ...]:
-        matching_tracks = self.manager.search_tracks(
-            query,
-            offset=offset if sort == "recent" else 0,
-            limit=limit if sort == "recent" else None,
-        )
-        if sort == "recent":
-            return matching_tracks
-        tracks = list(matching_tracks)
-        if sort == "title":
-            tracks.sort(
-                key=lambda item: (item.title or Path(item.filename).stem).casefold()
-            )
-        if sort == "oldest":
-            tracks.sort(key=lambda item: item.added_at)
-        start = max(0, offset)
-        end = None if limit is None else start + max(0, limit)
-        return tuple(tracks[start:end])
+        return self.manager.search_tracks(query, offset=offset, limit=limit, sort=sort)
 
     def playlists(self) -> tuple[Playlist, ...]:
         return self.manager.list_playlists()
+
+    def export_library_m3u8(self) -> bytes:
+        """Return an ordered M3U8 index of the managed library files."""
+        return self._m3u8(self.manager.list_tracks())
+
+    def export_playlist_m3u8(self, playlist_id: UUID | str) -> bytes:
+        """Return an M3U8 index in the playlist's saved track order."""
+        return self._m3u8(self.manager.playlist_tracks(playlist_id))
+
+    def _m3u8(self, tracks: Iterable[Track]) -> bytes:
+        lines = ["#EXTM3U"]
+        for track in tracks:
+            title = " ".join((track.title or Path(track.filename).stem).split())
+            lines.append(f"#EXTINF:-1,{title}")
+            lines.append(self.manager.track_path(track.id).resolve().as_uri())
+        return ("\n".join(lines) + "\n").encode("utf-8")

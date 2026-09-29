@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from musicplayer.platform_runtime import current_architecture
 
@@ -23,6 +26,31 @@ else:
     )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_OPTIONAL_REMOTE_DEBUG_MODULES = {
+    "_remote_debugging.pyd",
+    "_remote_debugging.soref",
+    "lib_remote_debugging.so",
+}
+
+
+def strip_optional_remote_debugger(output: Path) -> None:
+    """Remove CPython's optional debugger from a generated release bundle."""
+    for path in output.rglob("*"):
+        if path.is_file() and path.name.casefold() in _OPTIONAL_REMOTE_DEBUG_MODULES:
+            path.unlink()
+
+
+def prepare_desktop_media_bundles(target: str, architectures: list[str]) -> None:
+    """Prepare independent architecture bundles with bounded concurrency."""
+    if len(architectures) == 1:
+        fetch_bundle(target, architectures[0])
+        return
+    with ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="melody-desktop-media"
+    ) as pool:
+        futures = [pool.submit(fetch_bundle, target, arch) for arch in architectures]
+        for future in futures:
+            future.result()
 
 
 def main() -> None:
@@ -35,18 +63,20 @@ def main() -> None:
         dest="architectures",
     )
     arguments, flet_arguments = parser.parse_known_args()
-    architectures = arguments.architectures or [current_architecture()]
+    architectures = list(
+        dict.fromkeys(arguments.architectures or [current_architecture()])
+    )
 
     extra = flet_arguments
     if extra[:1] == ["--"]:
         extra = extra[1:]
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
     extra = platform_flet_arguments(
         extra, target=arguments.target, project_file=PROJECT_ROOT / "pyproject.toml"
     )
     build_environment = production_build_environment()
 
-    for architecture in architectures:
-        fetch_bundle(arguments.target, architecture)
+    prepare_desktop_media_bundles(arguments.target, architectures)
 
     command = [
         sys.executable,
@@ -70,6 +100,7 @@ def main() -> None:
         check=True,
         env=build_environment,
     )
+    strip_optional_remote_debugger(PROJECT_ROOT / "build" / arguments.target)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "flet==0.86.5",
-    "flet-background-audio==0.6.0",
+    "flet-background-audio==0.7.0",
     "mutagen==1.48.1",
     "packaging>=24.0",
     "yt-dlp==2026.8.19",
@@ -92,6 +92,7 @@ flet-background-audio = { path = "packages/flet_background_audio", editable = tr
 [dependency-groups]
 build = [
     "flet-cli==0.86.5",
+    "python-dotenv>=1,<2",
 ]
 dev = [
     "flet-desktop==0.86.5",

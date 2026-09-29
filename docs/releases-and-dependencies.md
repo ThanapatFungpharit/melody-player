@@ -31,16 +31,18 @@ them throughout the TOML file.
 | Component | Tested baseline in this checkout |
 | --- | --- |
 | Flet / Flet Desktop / Flet CLI | 0.86.5, exact Python pins |
-| Local flet-background-audio Python/Dart package | 0.6.0 |
+| Local flet-background-audio Python/Dart package | 0.7.0 |
 | Bridge Dart Flet | 0.86.5, exact |
-| Bridge audioplayers / flutter_media_session | 6.6.0 / 3.0.3, exact |
+| Bridge just_audio / audio_session / just_audio_media_kit | 0.10.6 / 0.2.4 / 2.1.0, exact |
+| Bridge media_kit Windows audio / Linux libraries | 1.0.9 / 1.2.1, exact |
+| Bridge flutter_media_session | 3.0.3, exact |
 | Bundled yt-dlp fallback | 2026.8.19, exact |
 | Mutagen media-tag support | 1.48.1, exact |
 
 The background-audio package is owned and maintained in this repository. It is
 an application dependency resolved from `packages/flet_background_audio` through
 `tool.uv.sources` and Flet's dev-package mapping. It is not an independently
-supported public distribution. Its `0.6.0` version describes the Python/Dart
+supported public distribution. Its `0.7.0` version describes the Python/Dart
 bridge protocol, not Melody's application version; keep both package manifests
 in agreement when the bridge protocol changes. The Dart package is marked
 `publish_to: none`.

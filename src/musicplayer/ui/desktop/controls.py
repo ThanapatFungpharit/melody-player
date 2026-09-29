@@ -8,7 +8,24 @@ import flet as ft
 def heading(title: str, subtitle: str, *, expand: bool = False) -> ft.Column:
     return ft.Column(
         [
-            ft.Text(title, size=30, weight=ft.FontWeight.BOLD, max_lines=2),
+            ft.Row(
+                [
+                    ft.Container(
+                        width=4,
+                        height=30,
+                        border_radius=2,
+                        bgcolor=ft.Colors.PRIMARY,
+                    ),
+                    ft.Text(
+                        title,
+                        size=30,
+                        weight=ft.FontWeight.BOLD,
+                        max_lines=2,
+                        expand=True,
+                    ),
+                ],
+                spacing=12,
+            ),
             ft.Text(subtitle, size=13, color=ft.Colors.ON_SURFACE_VARIANT),
         ],
         spacing=6,
@@ -66,12 +83,17 @@ def pill(label: str, icon=None) -> ft.Container:
         ft.Row(
             [
                 *([ft.Icon(icon, size=16, color=ft.Colors.PRIMARY)] if icon else []),
-                ft.Text(label, size=12, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    label,
+                    size=12,
+                    weight=ft.FontWeight.W_600,
+                    color=ft.Colors.ON_PRIMARY_CONTAINER,
+                ),
             ],
             spacing=8,
             tight=True,
         ),
         padding=ft.Padding.symmetric(horizontal=12, vertical=8),
         border_radius=20,
-        bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        bgcolor=ft.Colors.PRIMARY_CONTAINER,
     )

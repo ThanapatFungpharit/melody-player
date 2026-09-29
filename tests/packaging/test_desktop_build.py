@@ -1,13 +1,71 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from threading import Barrier
 from unittest import mock
 
 from tools import build_desktop
 
 
 class DesktopBuildTests(unittest.TestCase):
+    def test_media_bundles_for_two_architectures_are_prepared_concurrently(
+        self,
+    ) -> None:
+        both_started = Barrier(2, timeout=5)
+
+        def fetch(_target: str, _architecture: str) -> None:
+            both_started.wait()
+
+        with mock.patch.object(
+            build_desktop, "fetch_bundle", side_effect=fetch
+        ) as call:
+            build_desktop.prepare_desktop_media_bundles("macos", ["x86_64", "arm64"])
+
+        self.assertEqual(
+            {args.args[1] for args in call.call_args_list}, {"x86_64", "arm64"}
+        )
+
+    def test_repeated_architecture_is_fetched_and_built_once(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch(
+                "sys.argv",
+                [
+                    "build_desktop.py",
+                    "macos",
+                    "--architecture",
+                    "arm64",
+                    "--architecture",
+                    "arm64",
+                ],
+            ),
+            mock.patch.object(build_desktop, "fetch_bundle") as fetch,
+            mock.patch.object(build_desktop.subprocess, "run") as run,
+        ):
+            build_desktop.main()
+
+        fetch.assert_called_once_with("macos", "arm64")
+        command = run.call_args.args[0]
+        self.assertEqual(command.count("arm64"), 1)
+        self.assertEqual(run.call_args.kwargs["env"]["FLUTTER_XCODE_ARCHS"], "arm64")
+
+    def test_release_bundle_removes_optional_remote_debug_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            debugger = root / "DLLs" / "_remote_debugging.pyd"
+            debugger.parent.mkdir()
+            debugger.write_bytes(b"optional debugger")
+            runtime = debugger.with_name("_asyncio.pyd")
+            runtime.write_bytes(b"runtime module")
+
+            build_desktop.strip_optional_remote_debugger(root)
+
+            self.assertFalse(debugger.exists())
+            self.assertEqual(runtime.read_bytes(), b"runtime module")
+
     def test_macos_architectures_match_python_native_app_and_media_tools(self) -> None:
         # serious_python's Darwin targets use x86_64, while Flutter otherwise
         # defaults a release app to universal. Both must match the media bundle.
@@ -25,7 +83,7 @@ class DesktopBuildTests(unittest.TestCase):
             ):
                 build_desktop.main()
 
-            self.assertEqual(
+            self.assertCountEqual(
                 fetch.call_args_list,
                 [mock.call("macos", architecture) for architecture in architectures],
             )

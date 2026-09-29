@@ -15,9 +15,14 @@ def _home_view(app) -> ft.Control:
             icon=ft.Icons.SHUFFLE_ROUNDED,
             height=52,
             disabled=not track_count,
-            on_click=lambda _: app.home_page._play_library(shuffle=True),
+            on_click=lambda _: app.home_page._shuffle_library(),
         ),
     ]
+    sections.append(
+        app.home_page._build_recommendation_section(
+            lambda: _recommendations(app), spacing=14
+        )
+    )
     for title, items, message in (
         ("Recently played", recent, "Play a track to start your listening history."),
     ):
@@ -30,7 +35,6 @@ def _home_view(app) -> ft.Control:
         )
         if not items:
             sections.append(_empty_state(ft.Icons.MUSIC_NOTE_ROUNDED, message))
-    sections.extend(_recommendations(app))
     sections.append(heading("Favorites"))
     sections.extend(
         [
@@ -53,7 +57,7 @@ def _recommendations(app) -> list[ft.Control]:
     controls: list[ft.Control] = [
         heading(
             "Recommended for you",
-            "A related mix selected by YouTube Music",
+            "A mix based on your recent and favorite tracks",
             icon_button(
                 ft.Icons.REFRESH_ROUNDED,
                 "Refresh recommendations",
@@ -82,8 +86,11 @@ def _recommendations(app) -> list[ft.Control]:
         playlists = app.manager.list_playlists()
         controls.extend(
             app.search_page._search_result_row(result, playlists)
-            for result in home.recommendations
+            for result in home._visible_recommendations()
         )
+        navigation = home._recommendation_navigation()
+        if navigation is not None:
+            controls.append(navigation)
     else:
         controls.append(
             _empty_state(

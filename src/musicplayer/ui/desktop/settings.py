@@ -14,23 +14,50 @@ def _settings_view(app: MusicPlayerApp) -> ft.Control:
     youtube_access = app.settings_page._build_youtube_settings()
     data_management = app.settings_page._build_data_management_settings()
     footer = app.settings_page._build_settings_footer()
-    for section in (appearance, download, youtube_access, data_management):
-        section.bgcolor = ft.Colors.SURFACE_CONTAINER_LOW
-        section.border = None
-        section.border_radius = 20
+    appearance_column = ft.Column(
+        [appearance, youtube_access],
+        spacing=16,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    appearance_column.col = {"xs": 12, "lg": 5}
+    library_column = ft.Column(
+        [download, data_management],
+        spacing=16,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    library_column.col = {"xs": 12, "lg": 7}
     return ft.Column(
         [
-            app.shared._context_header(
-                "Settings",
-                "Make Melody feel like you.",
+            ft.Container(
+                app.shared._context_header(
+                    "Settings",
+                    "Shape your listening experience.",
+                ),
+                padding=20,
+                border_radius=22,
+                gradient=ft.LinearGradient(
+                    begin=ft.Alignment.TOP_LEFT,
+                    end=ft.Alignment.BOTTOM_RIGHT,
+                    colors=[
+                        ft.Colors.PRIMARY_CONTAINER,
+                        ft.Colors.SURFACE_CONTAINER_LOW,
+                    ],
+                ),
             ),
             app.shared._responsive_grid(
-                [appearance, download, youtube_access, data_management],
+                [appearance_column, library_column],
+                spacing=16,
+                run_spacing=16,
                 scroll=ft.ScrollMode.AUTO,
                 expand=True,
             ),
-            ft.Divider(height=1),
-            footer,
+            ft.Container(
+                footer,
+                padding=16,
+                border_radius=18,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            ),
         ],
         spacing=16,
         expand=True,

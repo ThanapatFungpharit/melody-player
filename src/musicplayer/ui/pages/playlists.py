@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from threading import RLock
@@ -20,6 +21,11 @@ from musicplayer.core.media import (
 from musicplayer.ui.components.common import (
     _track_credit,
     _track_title,
+)
+from musicplayer.ui.components.track_pages import (
+    PAGE_SIZE,
+    page_bounds,
+    page_navigation,
 )
 from musicplayer.ui.tasks import page_action
 
@@ -53,6 +59,7 @@ class PlaylistsPage:
 
     def reset(self) -> None:
         self.selected_playlist_id: str | None = None
+        self._page_offset = 0
         self.playlist_import_session: _PlaylistImportSession | None = None
         self.playlist_import_loading = False
         self.playlist_import_lock = RLock()
@@ -65,6 +72,16 @@ class PlaylistsPage:
 
     def _open_playlist(self, playlist_id: str) -> None:
         self.selected_playlist_id = playlist_id
+        self._page_offset = 0
+        self.app.navigation.navigate(3)
+
+    def _visible_range(self, total: int) -> tuple[int, int]:
+        start, end = page_bounds(total, self._page_offset)
+        self._page_offset = start
+        return start, end
+
+    def _change_page(self, direction: int) -> None:
+        self._page_offset = max(0, self._page_offset + direction * PAGE_SIZE)
         self.app.navigation.navigate(3)
 
     def _playlist_detail(self, playlist: Playlist) -> ft.Control:
@@ -91,11 +108,32 @@ class PlaylistsPage:
 
     def _close_playlist(self) -> None:
         self.selected_playlist_id = None
+        self._page_offset = 0
         self.app.navigation.navigate(3)
 
-    def _play_playlist(self, playlist: Playlist, *, shuffle: bool = False) -> None:
+    def _play_playlist(self, playlist: Playlist) -> None:
         ids = [str(track_id) for track_id in playlist.track_ids]
-        self.app.playback.play_tracks(ids, shuffle=True if shuffle else None)
+        self.app.playback.play_tracks(ids)
+
+    def _shuffle_playlist(self, playlist: Playlist) -> None:
+        ids = [str(track_id) for track_id in playlist.track_ids]
+        self.app.playback.play_tracks_shuffled(ids)
+
+    @page_action
+    async def _export_playlist(self, playlist: Playlist) -> None:
+        contents = await self.app.tasks.io(
+            self.app.library.export_playlist_m3u8, playlist.id
+        )
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", playlist.name).strip(" .")
+        saved = await self.app.file_picker.save_file(
+            dialog_title="Export playlist",
+            file_name=f"{safe_name or 'Playlist'}.m3u8",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["m3u8"],
+            src_bytes=contents,
+        )
+        if saved:
+            self.app._show_message("Playlist exported.")
 
     def _create_playlist_dialog(self) -> None:
         field = ft.TextField(label="Playlist name", autofocus=True)
@@ -452,45 +490,105 @@ class PlaylistsPage:
             for track in self.app.manager.list_tracks()
             if str(track.id) not in member_ids
         ]
-        checkboxes = [
-            ft.Checkbox(
-                label=(
-                    f"{_track_title(track)} — "
-                    f"{_track_credit(self.app.library.details(track.id))}"
-                ),
-                value=False,
-            )
-            for track in candidates
-        ]
-        select_all = ft.Checkbox(label="Select all", value=False)
+        selected_ids: set[str] = set()
+        offset = 0
+        search = ft.TextField(label="Find a track", prefix_icon=ft.Icons.SEARCH_ROUNDED)
+        select_all = ft.Checkbox(
+            label="Select all tracks", value=False, disabled=not candidates
+        )
         selection = ft.Text(
             "No tracks selected",
             size=12,
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
+        track_list = ft.Column(
+            spacing=2,
+            height=min(340, max(96, float(self.app.page.height or 640) * 0.35)),
+            scroll=ft.ScrollMode.AUTO,
+        )
+        pager = ft.Container()
+        add_button = ft.Button(
+            "Add selected", icon=ft.Icons.PLAYLIST_ADD_ROUNDED, disabled=True
+        )
 
         def update_selection() -> None:
-            selected = sum(bool(checkbox.value) for checkbox in checkboxes)
-            select_all.value = bool(checkboxes) and selected == len(checkboxes)
+            selected = len(selected_ids)
+            select_all.value = bool(candidates) and selected == len(candidates)
             add_button.disabled = selected == 0
             selection.value = (
                 f"{selected} track{'s' if selected != 1 else ''} selected"
                 if selected
                 else "No tracks selected"
             )
-            self.app.page.update(select_all, selection, add_button, *checkboxes)
+
+        def render_page(*, update: bool = True) -> None:
+            nonlocal offset
+            term = (search.value or "").casefold()
+            matching = [
+                track
+                for track in candidates
+                if not term or term in _track_title(track).casefold()
+            ]
+            start, end = page_bounds(len(matching), offset)
+            offset = start
+            visible = matching[start:end]
+            details = self.app.library.details_many(track.id for track in visible)
+            track_list.controls = [
+                ft.Checkbox(
+                    label=(
+                        f"{_track_title(track)} — "
+                        f"{_track_credit(details[str(track.id)])}"
+                    ),
+                    value=str(track.id) in selected_ids,
+                    on_change=lambda event, tid=str(track.id): toggle_track(
+                        tid, bool(event.control.value)
+                    ),
+                )
+                for track in visible
+            ]
+            if not matching:
+                track_list.controls = [
+                    ft.Text(
+                        "Every library track is already in this playlist."
+                        if not candidates
+                        else "No tracks match this search."
+                    )
+                ]
+            pager.content = page_navigation(len(matching), start, end, change_page)
+            update_selection()
+            if update:
+                self.app.page.update(
+                    track_list, pager, select_all, selection, add_button
+                )
+
+        def change_page(direction: int) -> None:
+            nonlocal offset
+            offset += direction * PAGE_SIZE
+            render_page()
+
+        def toggle_track(track_id: str, checked: bool) -> None:
+            if checked:
+                selected_ids.add(track_id)
+            else:
+                selected_ids.discard(track_id)
+            update_selection()
+            self.app.page.update(select_all, selection, add_button)
 
         def toggle_all(_: Any) -> None:
-            checked = bool(select_all.value)
-            for checkbox in checkboxes:
-                checkbox.value = checked
-            update_selection()
+            if select_all.value:
+                selected_ids.update(str(track.id) for track in candidates)
+            else:
+                selected_ids.clear()
+            render_page()
+
+        def search_changed(_: Any) -> None:
+            nonlocal offset
+            offset = 0
+            render_page()
 
         def add_selected(_: Any) -> None:
             track_ids = [
-                str(track.id)
-                for track, checkbox in zip(candidates, checkboxes, strict=True)
-                if checkbox.value
+                str(track.id) for track in candidates if str(track.id) in selected_ids
             ]
             if not track_ids:
                 return
@@ -512,36 +610,9 @@ class PlaylistsPage:
             self.app.tasks.start(lambda: commit())
 
         select_all.on_change = toggle_all
-        for checkbox in checkboxes:
-            checkbox.on_change = lambda _: update_selection()
-        add_button = ft.Button(
-            "Add selected",
-            icon=ft.Icons.PLAYLIST_ADD_ROUNDED,
-            disabled=True,
-            on_click=add_selected,
-        )
-        track_list: ft.Control
-        if checkboxes:
-            from typing import cast
-
-            track_list = ft.Column(
-                cast(list[ft.Control], checkboxes),
-                spacing=2,
-                height=min(340, max(96, float(self.app.page.height or 640) * 0.35)),
-                scroll=ft.ScrollMode.AUTO,
-            )
-        else:
-            select_all.disabled = True
-            track_list = ft.Container(
-                ft.Text(
-                    "Every library track is already in this playlist. Add music to "
-                    "your library, then return here.",
-                    color=ft.Colors.ON_SURFACE_VARIANT,
-                    text_align=ft.TextAlign.CENTER,
-                ),
-                padding=ft.Padding.symmetric(vertical=32, horizontal=12),
-                alignment=ft.Alignment.CENTER,
-            )
+        search.on_change = search_changed
+        add_button.on_click = add_selected
+        render_page(update=False)
 
         self.app.page.show_dialog(
             ft.AlertDialog(
@@ -553,9 +624,11 @@ class PlaylistsPage:
                         ft.Text(
                             "Choose multiple tracks from your library and add them in one action."
                         ),
+                        search,
                         select_all,
                         ft.Divider(height=1),
                         track_list,
+                        pager,
                         selection,
                     ],
                     spacing=10,
@@ -613,13 +686,18 @@ class PlaylistsPage:
             or not (0 <= old_index < len(view.controls))
         ):
             return
+        drop_index = new_index
         if new_index > old_index:
             new_index -= 1
         target = max(0, min(new_index, len(view.controls) - 1))
         row = view.controls.pop(old_index)
         view.controls.insert(target, row)
         self.app.page.update(view)
-        self._reorder_playlist(playlist_id, old_index, event.new_index)
+        self._reorder_playlist(
+            playlist_id,
+            self._page_offset + old_index,
+            self._page_offset + drop_index,
+        )
 
     @page_action
     async def _transfer_playlist_track(

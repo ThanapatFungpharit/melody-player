@@ -1,4 +1,5 @@
 import "package:flet/flet.dart";
+import "package:flutter/foundation.dart";
 import "package:flutter/services.dart";
 
 /// Copies completed Android downloads into the public Music/Melody collection.
@@ -17,7 +18,7 @@ class SharedAudioStorageService extends FletService {
 
   Future<dynamic> _invokeMethod(String name, dynamic args) async {
     if (name != "publish") return null;
-    if (!Platform.isAndroid) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
       throw UnsupportedError("Shared audio publishing is Android-only");
     }
     final data = Map<String, dynamic>.from(args as Map);
@@ -25,5 +26,11 @@ class SharedAudioStorageService extends FletService {
       "source": data["source"] as String,
       "relativePath": data["relative_path"] as String? ?? "Melody",
     });
+  }
+
+  @override
+  void dispose() {
+    control.removeInvokeMethodListener(_invokeMethod);
+    super.dispose();
   }
 }

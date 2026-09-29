@@ -51,6 +51,82 @@ def _ui_payload(presentation: str) -> dict[str, bytes]:
 
 
 class ProductionBuildTests(unittest.TestCase):
+    def test_android_wrapper_uses_dotenv_signing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_store = root / "release.jks"
+            key_store.write_bytes(b"key store")
+            (root / ".env").write_text(
+                f"FLET_ANDROID_SIGNING_KEY_STORE={key_store}\n"
+                "FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD=store-password\n"
+                "FLET_ANDROID_SIGNING_KEY_PASSWORD=key-password\n"
+                "FLET_ANDROID_SIGNING_KEY_ALIAS=release\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(build_android, "PROJECT_ROOT", root),
+                mock.patch(
+                    "sys.argv", ["build_android.py", "apk", "--architecture", "arm64"]
+                ),
+                mock.patch.object(
+                    build_android, "platform_flet_arguments", return_value=[]
+                ),
+                mock.patch.object(build_android, "fetch_bundle"),
+                mock.patch.object(build_android, "_run_flet_build") as build,
+            ):
+                build_android.main()
+                self.assertEqual(
+                    os.environ["FLET_ANDROID_SIGNING_KEY_ALIAS"], "release"
+                )
+            build.assert_called_once()
+
+    def test_desktop_wrapper_passes_dotenv_values_to_flet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text(
+                "BUILD_MARKER='from dotenv'\nEXPORTED_MARKER=from-dotenv\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(
+                    os.environ, {"EXPORTED_MARKER": "exported"}, clear=True
+                ),
+                mock.patch.object(build_desktop, "PROJECT_ROOT", root),
+                mock.patch("sys.argv", ["build_desktop.py", "windows"]),
+                mock.patch.object(
+                    build_desktop, "current_architecture", return_value="x86_64"
+                ),
+                mock.patch.object(
+                    build_desktop, "platform_flet_arguments", return_value=[]
+                ),
+                mock.patch.object(build_desktop, "fetch_bundle"),
+                mock.patch.object(build_desktop, "strip_optional_remote_debugger"),
+                mock.patch.object(build_desktop.subprocess, "run") as run,
+            ):
+                build_desktop.main()
+            self.assertEqual(run.call_args.kwargs["env"]["BUILD_MARKER"], "from dotenv")
+            self.assertEqual(run.call_args.kwargs["env"]["EXPORTED_MARKER"], "exported")
+
+    def test_desktop_wrapper_builds_without_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(build_desktop, "PROJECT_ROOT", Path(directory)),
+                mock.patch("sys.argv", ["build_desktop.py", "windows"]),
+                mock.patch.object(
+                    build_desktop, "current_architecture", return_value="x86_64"
+                ),
+                mock.patch.object(
+                    build_desktop, "platform_flet_arguments", return_value=[]
+                ),
+                mock.patch.object(build_desktop, "fetch_bundle"),
+                mock.patch.object(build_desktop, "strip_optional_remote_debugger"),
+                mock.patch.object(build_desktop.subprocess, "run") as run,
+            ):
+                build_desktop.main()
+            run.assert_called_once()
+
     def test_all_build_and_dev_only_transitive_packages_are_forbidden(self) -> None:
         packages = dependency_group_packages(Path("pyproject.toml"))
 
@@ -212,11 +288,29 @@ class ProductionBuildTests(unittest.TestCase):
 
         with (
             mock.patch("sys.argv", ["build_android.py", "apk", "--", "--yes"]),
+            mock.patch.object(build_android, "load_dotenv", return_value=False),
             mock.patch("tools.build_android.fetch_bundle") as android_fetch,
             self.assertRaises(RuntimeError),
         ):
             build_android.main()
         android_fetch.assert_not_called()
+
+    def test_android_runtime_filter_is_added_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            flutter_dir = Path(directory)
+            gradle_file = flutter_dir / "android" / "build.gradle.kts"
+            gradle_file.parent.mkdir()
+            gradle_file.write_text("allprojects {}\n", encoding="utf-8")
+
+            build_android.configure_android_runtime(flutter_dir)
+            build_android.configure_android_runtime(flutter_dir)
+
+            generated = gradle_file.read_text(encoding="utf-8")
+            self.assertEqual(
+                generated.count("// melody: strip Python remote debugger"), 1
+            )
+            self.assertIn("_remote_debugging.soref", generated)
+            self.assertIn("lib_remote_debugging.so", generated)
 
     def test_artifact_audit_accepts_compiled_production_archive(self) -> None:
         release = json.dumps(EXPECTED_RELEASE_CONFIG).encode()

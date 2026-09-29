@@ -7,7 +7,6 @@ from musicplayer.ui.mobile.controls import (
     heading,
     icon_button,
     more,
-    scroll_page,
     track_row,
 )
 
@@ -21,7 +20,9 @@ def _library_view(app) -> ft.Control:
         on_change=app.library_page._library_query_changed,
         expand=True,
     )
-    app.library_page.track_list = ft.Column(spacing=6)
+    app.library_page.track_list = ft.ListView(
+        spacing=6, build_controls_on_demand=True, cache_extent=300, expand=True
+    )
     has_visible_tracks = app.library_page._refresh_library_list(update=False)
     actions = [
         ft.PopupMenuItem(
@@ -34,6 +35,12 @@ def _library_view(app) -> ft.Control:
             icon=ft.Icons.ADD_TO_QUEUE_ROUNDED,
             disabled=not has_visible_tracks,
             on_click=lambda _: app.library_page._queue_visible_library(),
+        ),
+        ft.PopupMenuItem(
+            content="Export library playlist",
+            icon=ft.Icons.IOS_SHARE_ROUNDED,
+            disabled=app.manager.counts()[0] == 0,
+            on_click=app.library_page._export_library,
         ),
     ]
     sort_actions = [
@@ -50,10 +57,10 @@ def _library_view(app) -> ft.Control:
     shuffle_button = icon_button(
         ft.Icons.SHUFFLE_ROUNDED,
         "Shuffle visible tracks",
-        lambda _: app.library_page._play_visible_library(shuffle=True),
+        lambda _: app.library_page._shuffle_visible_library(),
     )
     shuffle_button.disabled = not has_visible_tracks
-    return scroll_page(
+    return ft.Column(
         [
             heading(
                 "Library",
@@ -79,7 +86,9 @@ def _library_view(app) -> ft.Control:
             ),
             app.library_page.track_list,
         ],
-        on_scroll=app.library_page._library_scrolled,
+        spacing=14,
+        expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
 
 

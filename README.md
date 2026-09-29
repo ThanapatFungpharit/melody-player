@@ -22,7 +22,7 @@ Melody is a cross-platform music player and downloader built with CPython 3.14, 
 
 ## Architecture
 
-The state owners, dependency rules, crash-recovery contracts, and native lifecycle limits are documented in [Architecture and invariants](docs/architecture.md). See [Contributing](CONTRIBUTING.md) for the test groups and [Release and dependency policy](docs/releases-and-dependencies.md) for versioning, the local background-audio bridge, and runtime yt-dlp selection.
+The state owners, dependency rules, crash-recovery contracts, and native lifecycle limits are documented in [Architecture and invariants](docs/architecture.md). The [background-audio package reference](packages/flet_background_audio/README.md) covers its controls, events, queue contract, and platform behavior. See [Contributing](CONTRIBUTING.md) for the test groups and [Release and dependency policy](docs/releases-and-dependencies.md) for versioning and runtime yt-dlp selection.
 
 The `core/` package owns independently usable capabilities:
 
@@ -47,6 +47,8 @@ The `ui/` package is split into presentation layers while keeping application be
 
 Track deletion is explicit and deterministic. Deleting a library track removes its enriched metadata, playlist references, and managed audio file when no other record owns that path. Clearing download history only removes operation history; it never removes media that is still available in the library.
 
+The Library export action and each playlist's Export action save an M3U8 file in track order. The export contains links to the audio files on the current device; it does not copy the audio into the export.
+
 `app.py` selects the presentation from the native platform at startup. Both shells call the same application services, playback coordinator, persistent store, and managed player, so queue state, settings, downloads, history, and playback remain synchronized even when the controls and information density differ. Capability parity follows the user's goal rather than requiring identical controls on every device.
 
 Release wrappers package only the target presentation: Windows, Linux, and macOS
@@ -64,11 +66,11 @@ The latency-sensitive paths are deliberately bounded:
 - Startup performs no network request, updater probe, media-tool download, or full-library hash/stray-file scan. It checks file availability only for tracks in the restored queue instead of walking the whole catalog; SHA-256 integrity checks remain available at the explicit feature boundaries that require them.
 - Search, stream resolution, and local imports share a pool capped at two active and two pending tasks. Library playback never enters that pool or reads whole tracks through Python; it hands the complete path queue directly to the managed player. The pool and its threads do not exist while idle; excess submissions are rejected immediately so UI actions never block behind or add to an unbounded queue.
 - The downloader creates its own pool only on the first download. Active work is capped by the configured concurrency and pending work has the same cap, for a maximum of `2 × concurrent_downloads` accepted tasks. The pool retires after the final task, and overload is reported per song without cancelling an otherwise valid batch.
-- Local audio paths reach the native decoder immediately. The next predicted track is prepared speculatively, and the long-lived native service swaps a ready candidate decoder without remounting Flet services or forcing a page-wide update. A retiring decoder is paused before the candidate starts, then disposed asynchronously so cleanup does not extend the audible handoff. Generation checks discard stale Python and native work when the user changes tracks rapidly.
+- Local audio paths reach the process-scoped native player immediately. `just_audio` owns decoding, buffering, playlist transitions, and repeat; `audio_session` configures audio focus and interruptions. Explicit selections prepare a replacement beside the active player and retire the old player after the replacement is ready. Generation checks discard stale Python and native work when the user changes tracks rapidly.
 - Playback position and duration events update only the seek slider and time labels instead of rebuilding the complete player bar, re-reading track metadata, and recreating artwork on every tick.
 - System media state is updated immediately for track, transport, queue-mode, and artwork changes, while position-only updates are throttled to once every five seconds. The operating system extrapolates the playhead between updates, preserving an accurate seek surface without waking the Python UI on every audio tick.
 - Returning from the background reconciles the UI with the native player's current position and duration before the media-session timeline is corrected, so the in-app seek surface does not jump back to its last foreground value.
-- Android keeps the foreground media session attached while a resumable queue exists, including while paused, and releases its keep-alive resources on explicit Stop. While the UI is backgrounded, the native decoder reduces Python position callbacks from once per second to once per five seconds, and unchanged lock-screen metadata/actions are not republished. iOS uses the native playback audio-session category, and the underlying player handles transient audio-focus interruptions such as calls before resuming when the operating system restores focus.
+- Android keeps the foreground media session attached while a resumable queue exists, including while paused, and releases its keep-alive resources on explicit Stop. Removing the app from recents retains the Flutter engine while the foreground service is running, so reopening the notification reconnects to the same decoder. The native decoder sends position callbacks once per second while the UI is visible or hidden, and unchanged lock-screen metadata/actions are not republished. iOS uses the native playback audio-session category, and the underlying player handles transient audio-focus interruptions such as calls before resuming when the operating system restores focus.
 - Desktop volume changes reach the audio backend continuously while dragging, but the durable setting is written only when the drag settles. Mobile delegates loudness to the device's media volume controls and exposes a shared mute/restore capability; button and mute changes remain immediately durable.
 - Starting a track commits play count, last-played time, recents, history, and the current session queue in one atomic state-file replacement. Private application state uses compact JSON to reduce serialization and disk traffic.
 - Download callbacks notify the UI at most five times per second and checkpoint non-terminal progress at most once per second. Completion, failure, cancellation, and status transitions are still immediate, so the trade-off is only that a forced process termination can lose up to one second of transient progress.
@@ -151,16 +153,16 @@ Network search/download tests are intentionally excluded; provider mapping and t
 ## Desktop bundles
 
 Use the build wrapper rather than invoking `flet build` directly. It resolves
-the latest matching FFmpeg archive for the requested target, verifies the
-provider-published SHA-256 hash, extracts only `ffmpeg` and `ffprobe`, and then
-packages them with the app:
+the current BtbN release for Windows and pinned archives for other targets,
+verifies the provider SHA-256 hash, checks the extracted programs and their
+cached copies, and then packages them with the app:
 
 ```console
-uv sync --no-dev --group build
-uv run --locked --no-dev --group build python tools/build_desktop.py windows --architecture x86_64 -- --yes
-uv run --locked --no-dev --group build python tools/build_desktop.py linux --architecture x86_64 -- --yes
-uv run --locked --no-dev --group build python tools/build_desktop.py macos --architecture x86_64 -- --yes
-uv run --locked --no-dev --group build python tools/build_desktop.py macos --architecture arm64 -- --yes
+uv sync --locked --python 3.14 --no-dev --group build
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py windows --architecture x86_64 -- --yes
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py linux --architecture x86_64 -- --yes
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture x86_64 -- --yes
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture arm64 -- --yes
 ```
 
 The release workflow builds separate Intel and Apple Silicon macOS bundles on
@@ -182,9 +184,9 @@ position-independent FFmpeg executable as an ABI-specific native library and
 enables installer extraction into Android's read-only native-library directory:
 
 ```console
-uv sync --no-dev --group build
-uv run --locked --no-dev --group build python -m tools.build_android apk -- --yes --split-per-abi
-uv run --locked --no-dev --group build python -m tools.build_android aab -- --yes
+uv sync --locked --python 3.14 --no-dev --group build
+uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android apk -- --yes --split-per-abi
+uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab -- --yes
 ```
 
 The default Android build supports `arm64-v8a`, `armeabi-v7a`, and `x86_64`,
@@ -197,6 +199,67 @@ Use `--architecture arm64`, `--architecture arm`, or `--architecture x86_64`
 before `--` to build a single ABI. The release workflow uploads each
 side-loadable APK as an architecture-specific artifact and uploads the Google
 Play App Bundle separately.
+
+## Build each target or every platform
+
+The wrapper commands above build one native target at a time. Run a desktop
+command on its matching operating system: Windows for `windows`, Linux for
+`linux`, and macOS for `macos`. Prepare the release toolchain once, then choose
+the target command to run:
+
+```console
+uv sync --locked --python 3.14 --no-dev --group build
+```
+
+```console
+# Windows x86_64 (run on Windows)
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py windows --architecture x86_64 -- --yes
+
+# Linux x86_64 (run on Linux)
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py linux --architecture x86_64 -- --yes
+
+# macOS Intel or Apple Silicon (run on the matching Mac)
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture x86_64 -- --yes
+uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture arm64 -- --yes
+
+# Android: all APK ABIs, then the Play Store bundle
+uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android apk -- --yes --split-per-abi
+uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab -- --yes
+```
+
+Desktop builds are written to `build/windows`, `build/linux`, or `build/macos`.
+Android writes APKs to `build/apk` and the App Bundle to `build/aab`. Android
+requires SDK platform 36, Build Tools 36.0.0, accepted Android SDK licenses,
+and the four release-signing environment variables described below.
+Both build wrappers load the project-root `.env` when it exists. Values already
+exported in the shell take precedence, and builds work without an `.env` file.
+
+Use [`act`](https://github.com/nektos/act) to run the **Application builds**
+workflow locally. Put the Android workflow secrets in `.env`, then choose one
+workflow job or invoke every job:
+
+```console
+# Entire workflow: preflight, validation, and every build job
+act workflow_dispatch -W .github/workflows/release-builds.yml --secret-file .env --artifact-server-path ./artifacts --pull=false
+
+# Individual workflow jobs
+act workflow_dispatch -W .github/workflows/release-builds.yml -j windows --secret-file .env --artifact-server-path ./artifacts --pull=false
+act workflow_dispatch -W .github/workflows/release-builds.yml -j linux --secret-file .env --artifact-server-path ./artifacts --pull=false
+act workflow_dispatch -W .github/workflows/release-builds.yml -j macos --secret-file .env --artifact-server-path ./artifacts --pull=false
+act workflow_dispatch -W .github/workflows/release-builds.yml -j android-apk --secret-file .env --artifact-server-path ./artifacts --pull=false
+act workflow_dispatch -W .github/workflows/release-builds.yml -j android-aab --secret-file .env --artifact-server-path ./artifacts --pull=false
+```
+
+`act` runs Linux containers. The APK and App Bundle jobs run independently, so
+each verifies and uploads its artifacts when its own build succeeds. The
+all-jobs command builds the Linux and Android artifacts locally, writes uploaded
+artifacts beneath `artifacts`, and reports the Windows and macOS jobs as
+unsupported. Build those desktop bundles with the
+matching native wrapper command above. GitHub Actions runs every workflow job
+on its matching hosted runner and creates the full Windows x86_64, Linux
+x86_64, Intel macOS, Apple Silicon macOS, three-ABI Android APK, and Android
+App Bundle release set. Manual workflow runs build and validate artifacts;
+publishing occurs only when a `v*` tag triggers the workflow.
 
 ## Production release safeguards
 
@@ -212,10 +275,13 @@ disabled. The audit permits only the two Flet bootstrap sources required by the
 embedded Python runtime.
 Packaged releases use the CPython 3.14 runtime.
 
-Local Android builds must provide the four `FLET_ANDROID_SIGNING_*` variables
-accepted by Flet (`KEY_STORE`, `KEY_STORE_PASSWORD`, `KEY_PASSWORD`, and
-`KEY_ALIAS`). The wrapper verifies that the key-store file exists and rejects
-obvious debug-key configurations before doing any build work.
+Local Android builds accept the four `ANDROID_KEY_*` values written to `.env` by
+`generate-android-key.ps1`. The wrapper decodes the Base64 keystore to a
+temporary file for the build and removes it afterward. You can also provide
+the four `FLET_ANDROID_SIGNING_*` variables accepted by Flet (`KEY_STORE`,
+`KEY_STORE_PASSWORD`, `KEY_PASSWORD`, and `KEY_ALIAS`). The wrapper verifies
+that the key-store file exists and rejects obvious debug-key configurations
+before doing any build work.
 
 After a local build, run the same recursive artifact audit used by CI:
 

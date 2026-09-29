@@ -19,6 +19,13 @@ class RepeatMode(str, enum.Enum):
     PLAYLIST = "playlist"
 
 
+NOTIFICATION_ACTION_PAIRS = (
+    "shuffle_favorite",
+    "shuffle_repeat",
+    "repeat_favorite",
+)
+
+
 @dataclass
 class AppSettings:
     download_directory: str = field(
@@ -27,7 +34,7 @@ class AppSettings:
     volume: int = 5
     previous_volume: int = 5
     muted: bool = False
-    theme: str = "dark"
+    theme: str = "system"
     audio_format: str = "mp3"
     audio_quality: str = "best"
     # Audio extraction launches external encoder processes; two concurrent
@@ -35,7 +42,10 @@ class AppSettings:
     concurrent_downloads: int = 2
     cookie_file: str = ""
     resume_session: bool = True
+    skip_loading_delay: bool = False
     notifications: bool = True
+    notification_action_pair: str = "shuffle_favorite"
+    auto_focal_point_live_notifications: bool = False
     accent_color: str = "violet"
 
     @classmethod
@@ -51,6 +61,12 @@ class AppSettings:
             1, min(8, int(values["concurrent_downloads"]))
         )
         values["cookie_file"] = str(values["cookie_file"] or "")
+        values["skip_loading_delay"] = values["skip_loading_delay"] is True
+        if values["notification_action_pair"] not in NOTIFICATION_ACTION_PAIRS:
+            values["notification_action_pair"] = defaults.notification_action_pair
+        values["auto_focal_point_live_notifications"] = (
+            values["auto_focal_point_live_notifications"] is True
+        )
         return cls(**values)
 
     def to_dict(self) -> dict[str, Any]:

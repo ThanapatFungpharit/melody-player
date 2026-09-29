@@ -78,7 +78,7 @@ def validate_development_audio_encoders(bundle: MediaBinaryBundle) -> None:
         raise MediaBinaryError(
             "Bundled FFmpeg is missing audio encoders required by Settings: "
             f"{formatted}. Delete the cached media bundle and restart Melody "
-            "to download the pinned codec-complete build."
+            "to download a verified codec-complete build."
         )
 
 
@@ -120,8 +120,8 @@ def prepare_development_media_binaries(
     fetch_bundle(platform_name, architecture, binary_root=binary_root)
     bundle = media_binary_bundle(binary_root=binary_root, validate=True)
     if platform_name == "windows":
-        # The Windows manifest is pinned to a codec-complete build. Keep the
-        # gate scoped to that manifest until the other desktop archives have
+        # Windows bundles are checked for required codecs during fetch. Keep the
+        # startup gate scoped to Windows until the other desktop archives have
         # equivalent codec guarantees.
         validate_development_audio_encoders(bundle)
     logger.info(
@@ -137,7 +137,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # A source checkout may need to fetch its pinned media tools. Register the
+    # A source checkout may need to fetch its media tools. Register the
     # operation now; the first download starts it, while launch stays local.
     configure_runtime_preparation(
         prepare_development_media_binaries,

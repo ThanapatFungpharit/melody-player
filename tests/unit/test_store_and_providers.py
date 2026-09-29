@@ -20,6 +20,26 @@ from musicplayer.application.store import ApplicationStore
 
 
 class StoreTests(unittest.TestCase):
+    def test_legacy_shuffle_state_is_removed_when_loading_playback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "playback": {
+                            "queue": ["track"],
+                            "current_index": 0,
+                            "shuffle": True,
+                            "repeat": "off",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = ApplicationStore(path)
+            self.assertNotIn("shuffle", store.get("playback"))
+
     def test_settings_and_track_details_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -28,6 +48,9 @@ class StoreTests(unittest.TestCase):
                 volume=37,
                 theme="light",
                 cookie_file=str(Path(directory) / "cookies.txt"),
+                notification_action_pair="shuffle_repeat",
+                auto_focal_point_live_notifications=True,
+                skip_loading_delay=True,
             )
             store.save_settings(settings)
             store.save_track_details(
@@ -38,11 +61,32 @@ class StoreTests(unittest.TestCase):
 
             self.assertEqual(restored.settings.volume, 37)
             self.assertEqual(restored.settings.theme, "light")
+            self.assertEqual(
+                restored.settings.notification_action_pair, "shuffle_repeat"
+            )
+            self.assertTrue(restored.settings.auto_focal_point_live_notifications)
+            self.assertTrue(restored.settings.skip_loading_delay)
             self.assertEqual(restored.track_details("track").uploader, "Nina's label")
             self.assertTrue(restored.track_details("track").favorite)
             self.assertEqual(
                 restored.settings.cookie_file, str(Path(directory) / "cookies.txt")
             )
+
+    def test_invalid_notification_shortcuts_use_default_pair(self) -> None:
+        settings = AppSettings.from_dict({"notification_action_pair": "unknown"})
+        self.assertEqual(settings.notification_action_pair, "shuffle_favorite")
+
+    def test_invalid_auto_focal_point_setting_uses_center_mode(self) -> None:
+        settings = AppSettings.from_dict(
+            {"auto_focal_point_live_notifications": "true"}
+        )
+        self.assertFalse(settings.auto_focal_point_live_notifications)
+
+    def test_loading_delay_setting_defaults_off_and_rejects_non_boolean(self) -> None:
+        self.assertFalse(AppSettings.from_dict({}).skip_loading_delay)
+        self.assertFalse(
+            AppSettings.from_dict({"skip_loading_delay": "true"}).skip_loading_delay
+        )
 
     def test_track_details_many_returns_one_isolated_render_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -146,6 +190,35 @@ class StoreTests(unittest.TestCase):
 
             save.assert_not_called()
 
+    def test_track_detail_save_does_not_compare_unrelated_metadata(self) -> None:
+        class UnrelatedDetails(dict):
+            def __eq__(self, other: object) -> bool:
+                raise AssertionError("Unchanged track metadata was compared")
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.json")
+            store._data["track_details"] = UnrelatedDetails(
+                {"track": {"favorite": True}}
+            )
+            with patch.object(store, "_save_locked") as save:
+                store.save_track_details("other", TrackDetails(favorite=True))
+
+            save.assert_called_once()
+            self.assertTrue(store.track_details("other").favorite)
+
+    def test_unchanged_or_missing_track_details_skip_disk_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.json")
+            details = TrackDetails(favorite=True)
+            store.save_track_details("track", details)
+
+            with patch.object(store, "_save_locked") as save:
+                store.save_track_details("track", details)
+                store.remove_track_details("unknown")
+
+            save.assert_not_called()
+            self.assertTrue(store.track_details("track").favorite)
+
     def test_failed_atomic_write_restores_in_memory_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ApplicationStore(Path(directory) / "state.json")
@@ -192,6 +265,22 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("recent_tracks"), ["track"])
             self.assertEqual(store.get("playback_history"), ["track"])
 
+    def test_late_play_batch_cannot_restore_deleted_track(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.json")
+            store.record_play("deleted", played_at=1.0)
+            store.remove_track_details("deleted")
+
+            store.save_playback_updates(
+                {"playback": {"queue": ["other"], "current_index": 0}},
+                {"deleted": 1, "other": 1},
+            )
+
+            self.assertEqual(store.track_details("deleted").play_count, 0)
+            self.assertEqual(store.get("recent_tracks"), ["other"])
+            self.assertEqual(store.get("playback_history"), ["other"])
+            self.assertEqual(store.track_details("other").play_count, 1)
+
     def test_clear_library_data_preserves_unrelated_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ApplicationStore(Path(directory) / "state.json")
@@ -222,7 +311,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("playback")["queue"], [])
             self.assertEqual(store.get("playback")["current_index"], -1)
             self.assertEqual(store.get("playback")["position_ms"], 0)
-            self.assertTrue(store.get("playback")["shuffle"])
+            self.assertNotIn("shuffle", store.get("playback"))
             self.assertEqual(store.get("playback")["repeat"], "playlist")
             self.assertEqual(store.settings.theme, "light")
             self.assertEqual(store.get("search_history"), ["keep this search"])

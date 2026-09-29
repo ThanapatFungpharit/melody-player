@@ -6,11 +6,14 @@ import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, Mock, patch
 
 from flet.controls.control_event import get_event_field_type
 from flet_background_audio import (
+    BackgroundAudioSession,
     ManagedAudio,
     ManagedAudioDurationChangeEvent,
+    ManagedAudioErrorEvent,
     ManagedAudioTrackChangeEvent,
 )
 
@@ -37,6 +40,58 @@ class FakePage:
 
 
 class ManagedAudioBackendTests(unittest.TestCase):
+    def test_media_session_defaults_hide_unavailable_skip_actions(self) -> None:
+        session = BackgroundAudioSession()
+        invoke = AsyncMock()
+        with patch.object(session, "_invoke_method", invoke):
+            asyncio.run(session.sync(title="Track"))
+
+        self.assertEqual(invoke.call_args.args[0], "sync")
+        payload = invoke.call_args.args[1]
+        self.assertFalse(payload["has_next"])
+        self.assertFalse(payload["has_previous"])
+
+    def test_managed_queue_rejects_rows_missing_required_keys(self) -> None:
+        audio = ManagedAudio()
+        malformed = [{"id": "one", "url": "one.mp3"}]
+
+        with self.assertRaisesRegex(
+            ValueError, "Queue item 0 requires a nonempty track_id"
+        ):
+            asyncio.run(audio.set_queue(malformed, 0, 1, "off"))
+        with self.assertRaisesRegex(
+            ValueError, "Queue item 0 requires a nonempty track_id"
+        ):
+            asyncio.run(audio.update_queue(malformed, 0, "off"))
+
+    def test_managed_queue_rejects_invalid_repeat_and_generation(self) -> None:
+        audio = ManagedAudio()
+        items = [{"track_id": "one", "source": "one.mp3"}]
+
+        with self.assertRaisesRegex(ValueError, "Invalid repeat mode"):
+            asyncio.run(audio.set_queue(items, 0, 2, "unknown"))
+        with self.assertRaisesRegex(ValueError, "generations must be"):
+            asyncio.run(audio.set_queue(items, 0, 3, "off"))
+
+    def test_source_selection_carries_play_intent_and_position(self) -> None:
+        audio = ManagedAudio()
+        invoke = AsyncMock()
+        with patch.object(audio, "_invoke_method", invoke):
+            asyncio.run(
+                audio.set_queue(
+                    [{"track_id": "one", "source": "one.mp3"}],
+                    0,
+                    4,
+                    "off",
+                    autoplay=True,
+                    position_ms=12_000,
+                )
+            )
+        self.assertEqual(invoke.call_args.args[0], "set_queue")
+        payload = invoke.call_args.args[1]
+        self.assertTrue(payload["autoplay"])
+        self.assertEqual(payload["position_ms"], 12_000)
+
     def test_custom_duration_event_annotation_resolves_in_flet(self) -> None:
         """Native duration events must be deserializable in packaged runtimes."""
         audio = ManagedAudio()
@@ -48,6 +103,10 @@ class ManagedAudioBackendTests(unittest.TestCase):
         self.assertIs(
             get_event_field_type(audio, "on_track_change"),
             ManagedAudioTrackChangeEvent,
+        )
+        self.assertIs(
+            get_event_field_type(audio, "on_error"),
+            ManagedAudioErrorEvent,
         )
 
     def test_native_queue_is_installed_as_one_generation_scoped_operation(self):
@@ -62,15 +121,14 @@ class ManagedAudioBackendTests(unittest.TestCase):
             items,
             1,
             repeat_mode="playlist",
-            shuffle=True,
         )
         backend.play(250)
 
         self.assertEqual(len(page.scheduled), 2)  # set_queue RPC + watchdog
         operation, args, generation = page.scheduled[0][1]
         self.assertEqual(operation.__self__, backend.audio)
-        self.assertEqual(args, (items, 1, 1, "playlist", True))
-        self.assertEqual(generation, 1)
+        self.assertEqual(args, (items, 1, 2, "playlist", False, 0))
+        self.assertEqual(generation, 2)
         self.assertEqual(backend._pending_play_position, 250)
 
     def test_native_track_change_adopts_generation_before_followup_events(self):
@@ -108,6 +166,20 @@ class ManagedAudioBackendTests(unittest.TestCase):
         )
         self.assertEqual(stopped, [True])
 
+    def test_python_selection_after_native_transition_uses_next_even_generation(self):
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        backend._track_changed(
+            cast(
+                ManagedAudioTrackChangeEvent,
+                SimpleNamespace(track_id="next", index=1, generation=3),
+            )
+        )
+
+        backend.load("selected.mp3")
+        self.assertEqual(backend._generation, 4)
+        self.assertEqual(page.scheduled[-2][1][-1], 4)
+
     def test_phone_gain_uses_system_volume_while_desktop_keeps_precise_gain(self):
         for mobile, expected in ((True, 1.0), (False, 0.25)):
             backend = ManagedAudioBackend(FakePage(), use_device_volume=mobile)  # ty: ignore[invalid-argument-type]
@@ -128,7 +200,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
         # The long-lived service receives an async source-load RPC and a load
         # watchdog; play remains pending until native preparation completes.
         self.assertEqual(len(page.scheduled), 2)
-        backend._loaded_event(1)
+        backend._loaded_event(2)
         self.assertTrue(page.futures[1].cancelled())
         backend.pause()
         backend.resume()
@@ -150,7 +222,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
         mounted_services = tuple(page.services)
 
         backend.load(b"first")
-        backend._loaded_event(1)
+        backend._loaded_event(2)
         backend.load(b"second")
         backend.pause()
 
@@ -177,7 +249,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
 
         loaded = backend.audio.on_loaded
         assert loaded is not None
-        cast(Any, loaded)(SimpleNamespace(generation=1))
+        cast(Any, loaded)(SimpleNamespace(generation=2))
 
         self.assertTrue(page.futures[1].cancelled())
         self.assertEqual(len(page.scheduled), 3)
@@ -233,25 +305,10 @@ class ManagedAudioBackendTests(unittest.TestCase):
         position_handler = backend.audio.on_position_change
         assert position_handler is not None
 
-        cast(Any, position_handler)(SimpleNamespace(position=1_000, generation=1))
+        cast(Any, position_handler)(SimpleNamespace(position=1_000, generation=2))
         self.assertEqual(positions, [])
-        cast(Any, position_handler)(SimpleNamespace(position=2_000, generation=2))
+        cast(Any, position_handler)(SimpleNamespace(position=2_000, generation=4))
         self.assertEqual(positions, [2_000])
-
-    def test_lifecycle_updates_native_progress_frequency_only_on_change(self) -> None:
-        page = FakePage()
-        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
-
-        backend.set_foreground(False)
-        backend.set_foreground(False)
-        backend.set_foreground(True)
-
-        self.assertEqual(len(page.scheduled), 2)
-        self.assertIs(
-            page.scheduled[0][0].__func__, ManagedAudioBackend._set_foreground
-        )
-        self.assertEqual(page.scheduled[0][1], (False, 1))
-        self.assertEqual(page.scheduled[1][1], (True, 2))
 
     def test_replayed_source_can_complete_again_without_reloading(self) -> None:
         backend = ManagedAudioBackend(FakePage())  # ty: ignore[invalid-argument-type]
@@ -275,7 +332,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
         self.assertEqual(completed, [True, True])
         self.assertEqual(playing, [True])
 
-    def test_media_session_updates_are_throttled_to_five_seconds(self) -> None:
+    def test_media_session_updates_each_second(self) -> None:
         page = FakePage()
         backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
@@ -292,7 +349,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
             artist="Artist",
             artwork_uri="https://example.test/cover.jpg",
             duration_ms=180_000,
-            position_ms=4_999,
+            position_ms=2_000,
             playing=True,
         )
         backend.sync_media_session(
@@ -304,11 +361,46 @@ class ManagedAudioBackendTests(unittest.TestCase):
             playing=True,
         )
 
-        self.assertEqual(len(page.scheduled), 2)
+        self.assertEqual(len(page.scheduled), 3)
         first_payload = page.scheduled[0][1][1]
         second_payload = page.scheduled[1][1][1]
+        third_payload = page.scheduled[2][1][1]
         self.assertEqual(first_payload["position_ms"], 1_000)
-        self.assertEqual(second_payload["position_ms"], 5_000)
+        self.assertEqual(second_payload["position_ms"], 2_000)
+        self.assertEqual(third_payload["position_ms"], 5_000)
+
+    def test_repeat_shuffle_and_favorite_changes_refresh_media_actions(self) -> None:
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+
+        backend.sync_media_session(
+            title="Track",
+            repeat_mode="off",
+            can_repeat=True,
+            can_shuffle=False,
+            can_favorite=True,
+            favorite=False,
+        )
+        backend.sync_media_session(
+            title="Track",
+            repeat_mode="track",
+            can_repeat=True,
+            can_shuffle=True,
+            can_favorite=True,
+            favorite=True,
+            notification_action_pair="shuffle_repeat",
+            auto_focal_point_live_notifications=True,
+        )
+
+        self.assertEqual(len(page.scheduled), 2)
+        payload = page.scheduled[-1][1][1]
+        self.assertEqual(payload["repeat_mode"], "track")
+        self.assertTrue(payload["can_repeat"])
+        self.assertTrue(payload["can_shuffle"])
+        self.assertTrue(payload["can_favorite"])
+        self.assertTrue(payload["favorite"])
+        self.assertEqual(payload["notification_action_pair"], "shuffle_repeat")
+        self.assertTrue(payload["auto_focal_point_live_notifications"])
 
     def test_failed_media_session_update_can_be_retried(self) -> None:
         class FailingSession:
@@ -358,6 +450,33 @@ class ManagedAudioBackendTests(unittest.TestCase):
         self.assertEqual(len(page.scheduled), 2)
         self.assertTrue(page.scheduled[-1][1][1]["reattach"])
 
+    def test_return_to_committed_state_supersedes_pending_media_sync(self) -> None:
+        class RecordingSession:
+            def __init__(self) -> None:
+                self.states: list[bool] = []
+
+            async def sync(self, **payload: object) -> None:
+                self.states.append(bool(payload["playing"]))
+
+            async def deactivate(self) -> None:
+                pass
+
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        session = RecordingSession()
+        backend.media_session = session  # ty: ignore[invalid-assignment]
+
+        backend.sync_media_session(title="Track", playing=True)
+        asyncio.run(backend._run_media_sync(*page.scheduled[-1][1]))
+        backend.sync_media_session(title="Track", playing=False)
+        backend.sync_media_session(title="Track", playing=True)
+
+        self.assertEqual(len(page.scheduled), 3)
+        asyncio.run(backend._run_media_sync(*page.scheduled[1][1]))
+        asyncio.run(backend._run_media_sync(*page.scheduled[2][1]))
+        self.assertEqual(session.states, [True, True])
+        self.assertTrue(backend._media_snapshot[7])
+
     def test_pause_keeps_media_session_metadata_until_explicit_stop(self) -> None:
         class SessionBackend:
             def __init__(self) -> None:
@@ -370,7 +489,6 @@ class ManagedAudioBackendTests(unittest.TestCase):
             items=["queued-track"],
             peek_next=lambda **_: None,
             repeat=SimpleNamespace(value="off"),
-            shuffle=False,
         )
         playback = SimpleNamespace(
             external_title="Preview",
@@ -386,6 +504,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
         )
         app = object.__new__(MusicPlayerApp)
         app.playback = playback  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+        app.settings = SimpleNamespace(notification_action_pair="shuffle_favorite")  # ty: ignore[invalid-assignment]
         session_backend = SessionBackend()
         app.backend = session_backend  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
         app._system_media_key = None
@@ -401,22 +520,27 @@ class ManagedAudioBackendTests(unittest.TestCase):
         self.assertEqual(session_backend.payloads[-1]["title"], "")
         self.assertFalse(session_backend.payloads[-1]["keep_alive"])
 
-    def test_refresh_state_publishes_native_position_and_duration(self) -> None:
+    def test_refresh_state_publishes_native_position_duration_and_playing(self) -> None:
         page = FakePage()
         backend = ManagedAudioBackend(page)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         assert isinstance(backend.audio, ManagedAudio)
 
-        async def get_playback_state() -> dict[str, int]:
-            return {"position_ms": 12_345, "duration_ms": 180_000}
+        async def get_playback_state() -> dict[str, int | bool]:
+            return {
+                "position_ms": 12_345,
+                "duration_ms": 180_000,
+                "playing": True,
+            }
 
         backend.audio.get_playback_state = get_playback_state  # ty: ignore[invalid-assignment]
         backend._loaded = True
         positions: list[int] = []
         durations: list[int] = []
+        playing: list[bool] = []
         backend.bind(
             on_position=positions.append,
             on_duration=durations.append,
-            on_playing=lambda _: None,
+            on_playing=playing.append,
             on_completed=lambda: None,
         )
 
@@ -424,6 +548,56 @@ class ManagedAudioBackendTests(unittest.TestCase):
 
         self.assertEqual(positions, [12_345])
         self.assertEqual(durations, [180_000])
+        self.assertEqual(playing, [True])
+
+    def test_reattach_adopts_native_runtime_without_loading_again(self) -> None:
+        page = FakePage()
+        backend = ManagedAudioBackend(page)  # ty: ignore[invalid-argument-type]
+        state: dict[str, Any] = {
+            "track_id": "saved-track",
+            "source": "saved.mp3",
+            "generation": 7,
+            "position_ms": 42_000,
+            "duration_ms": 180_000,
+            "playing": True,
+        }
+        backend.audio.get_playback_state = AsyncMock(return_value=state)
+        adopted: list[dict[str, Any]] = []
+        backend.bind(
+            on_position=lambda _: None,
+            on_duration=lambda _: None,
+            on_playing=lambda _: None,
+            on_completed=lambda: None,
+            on_native_reattach=adopted.append,
+        )
+
+        asyncio.run(backend.reattach_native_state())
+
+        self.assertEqual(adopted, [state])
+        self.assertEqual(backend._generation, 7)
+        self.assertTrue(backend._loaded)
+        self.assertTrue(backend._media_reattach_pending)
+        self.assertEqual(page.scheduled, [])
+
+    def test_stale_native_error_does_not_clear_new_source(self) -> None:
+        backend = ManagedAudioBackend(FakePage())  # ty: ignore[invalid-argument-type]
+        errors: list[str] = []
+        backend.bind(
+            on_position=lambda _: None,
+            on_duration=lambda _: None,
+            on_playing=lambda _: None,
+            on_completed=lambda: None,
+            on_error=errors.append,
+        )
+        backend.load("first.mp3")
+        backend.load("second.mp3")
+        handler = backend.audio.on_error
+        assert handler is not None
+
+        cast(Any, handler)(SimpleNamespace(message="old failure", generation=2))
+        self.assertEqual(errors, [])
+        cast(Any, handler)(SimpleNamespace(message="current failure", generation=4))
+        self.assertEqual(errors, ["current failure"])
 
     def test_native_media_action_is_forwarded_to_controller_callback(self) -> None:
         page = FakePage()
@@ -519,6 +693,37 @@ class ManagedAudioBackendTests(unittest.TestCase):
                 ("stop", None),
             ],
         )
+
+    def test_notification_repeat_shuffle_and_favorite_actions_target_current_track(
+        self,
+    ) -> None:
+        app = object.__new__(MusicPlayerApp)
+        repeat_action = Mock()
+        shuffle_action = Mock()
+        favorite_action = Mock()
+        app.playback = SimpleNamespace(  # ty: ignore[invalid-assignment]
+            media_session_active=True,
+            queue=SimpleNamespace(items=["track"]),
+            current_track_id="track",
+            external_title="",
+            cycle_repeat=repeat_action,
+            shuffle_upcoming=shuffle_action,
+        )
+        app.library_page = SimpleNamespace(_toggle_favorite=favorite_action)  # ty: ignore[invalid-assignment]
+
+        app._media_action("cycleRepeat", None)
+        app._media_action("shuffleUpcoming", None)
+        app._media_action("toggleFavorite", None)
+
+        repeat_action.assert_called_once_with()
+        shuffle_action.assert_called_once_with()
+        favorite_action.assert_called_once_with("track")
+
+        app.playback.external_title = "Preview"
+        app._media_action("shuffleUpcoming", None)
+        app._media_action("toggleFavorite", None)
+        shuffle_action.assert_called_once_with()
+        favorite_action.assert_called_once_with("track")
 
 
 if __name__ == "__main__":

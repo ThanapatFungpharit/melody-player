@@ -49,7 +49,9 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
     )
     app.library_page.query.col = {"xs": 12, "md": 8}
     app.library_page.sort.col = {"xs": 12, "md": 4}
-    app.library_page.track_list = ft.Column(spacing=4)
+    app.library_page.track_list = ft.ListView(
+        spacing=4, build_controls_on_demand=True, cache_extent=300, expand=True
+    )
     has_visible_tracks = app.library_page._refresh_library_list(update=False)
     library_header = _page_header(
         "Library", "Your favorites, downloads, and local discoveries."
@@ -62,6 +64,12 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
                     "Add files",
                     icon=ft.Icons.LIBRARY_ADD_ROUNDED,
                     on_click=app.library_page._pick_local_files,
+                ),
+                ft.TextButton(
+                    "Export library",
+                    icon=ft.Icons.IOS_SHARE_ROUNDED,
+                    disabled=app.manager.counts()[0] == 0,
+                    on_click=app.library_page._export_library,
                 ),
                 ft.Button(
                     "Play all",
@@ -77,9 +85,7 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
                     ft.Icons.SHUFFLE_ROUNDED,
                     tooltip="Shuffle visible tracks",
                     disabled=not has_visible_tracks,
-                    on_click=lambda _: app.library_page._play_visible_library(
-                        shuffle=True
-                    ),
+                    on_click=lambda _: app.library_page._shuffle_visible_library(),
                 ),
                 ft.IconButton(
                     ft.Icons.ADD_TO_QUEUE_ROUNDED,
@@ -119,16 +125,11 @@ def _library_view(app: MusicPlayerApp) -> ft.Control:
             app.shared._responsive_grid(
                 [app.library_page.query, app.library_page.sort], spacing=12
             ),
-            ft.Column(
-                [app.library_page.track_list],
-                scroll=ft.ScrollMode.AUTO,
-                scroll_interval=100,
-                on_scroll=app.library_page._library_scrolled,
-                expand=True,
-            ),
+            app.library_page.track_list,
         ],
         spacing=20,
         expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
 
 

@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from heapq import nsmallest
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -29,6 +30,7 @@ class _LibraryReadState:
     playlists: dict[UUID, Playlist]
     sources: dict[str, UUID]
     newest: tuple[UUID, ...]
+    newest_rank: dict[UUID, int]
 
 
 class MusicManager:
@@ -73,6 +75,9 @@ class MusicManager:
         self._source_index: dict[str, dict[UUID, None]] = {}
         self._content_index: dict[str, dict[UUID, None]] = {}
         self._newest_track_ids: tuple[UUID, ...] | None = None
+        # Updated only after a successful commit. Playlist-only saves can reuse
+        # these immutable bytes without encoding every track again.
+        self._track_records_cache: bytes | None = None
         try:
             self._load()
             self._publish_read_state()
@@ -305,29 +310,48 @@ class MusicManager:
                 )
                 continue
 
-    def _save(self) -> None:
+    def _save(self, *, tracks_changed: bool = True) -> None:
+        """Commit metadata, rebuilding track records only when tracks changed."""
         logger.debug(
             "Saving music metadata atomically: path=%s tracks=%d playlists=%d",
             self.metadata_path,
             len(self._tracks),
             len(self._playlists),
         )
-        data = self._serialize_metadata()
+        track_records = None if tracks_changed else self._track_records_cache
+        if track_records is None:
+            track_records = self._serialize_track_records()
+        data = self._serialize_metadata(track_records)
         self._write_metadata(data)
-        self._publish_read_state()
+        self._track_records_cache = track_records
+        self._publish_read_state(tracks_changed=tracks_changed)
 
-    def _publish_read_state(self) -> None:
+    def _publish_read_state(self, *, tracks_changed: bool = True) -> None:
         # Readers never wait behind hashing, imports or durable commits. Publish
         # only after success; these copies are never mutated by later writers.
+        if tracks_changed or not hasattr(self, "_read_state"):
+            newest = tuple(track.id for track in self._tracks_newest_first())
+            tracks = {key: replace(value) for key, value in self._tracks.items()}
+            sources = {
+                key: next(iter(ids)) for key, ids in self._source_index.items() if ids
+            }
+            newest_rank = {track_id: rank for rank, track_id in enumerate(newest)}
+        else:
+            previous = self._read_state
+            tracks = previous.tracks
+            sources = previous.sources
+            newest = previous.newest
+            newest_rank = previous.newest_rank
         self._read_state = _LibraryReadState(
-            {key: replace(value) for key, value in self._tracks.items()},
+            tracks,
             {key: self._copy_playlist(value) for key, value in self._playlists.items()},
-            {key: next(iter(ids)) for key, ids in self._source_index.items() if ids},
-            tuple(track.id for track in self._tracks_newest_first()),
+            sources,
+            newest,
+            newest_rank,
         )
 
-    def _serialize_metadata(self) -> bytes:
-        parts: list[bytes] = [HEADER.pack(MAGIC, VERSION, len(self._tracks))]
+    def _serialize_track_records(self) -> bytes:
+        parts: list[bytes] = []
         for track in self._tracks.values():
             parts.append(TRACK_FIXED.pack(track.id.bytes, track.added_at))
             parts.extend(
@@ -335,7 +359,13 @@ class MusicManager:
                 for value in (track.filename, track.source, track.title)
             )
             parts.append(self._content_hash_bytes(track))
+        return b"".join(parts)
 
+    def _serialize_metadata(self, track_records: bytes) -> bytes:
+        parts: list[bytes] = [
+            HEADER.pack(MAGIC, VERSION, len(self._tracks)),
+            track_records,
+        ]
         parts.append(U32.pack(len(self._playlists)))
         for playlist in self._playlists.values():
             parts.append(UUID_ONLY.pack(playlist.id.bytes))
@@ -631,7 +661,7 @@ class MusicManager:
     def tracks_by_ids(
         self, track_ids: Sequence[UUID | str], *, limit: int | None = None
     ) -> tuple[Track, ...]:
-        """Return selected tracks in library order without copying the catalog."""
+        """Return selected tracks in library order without scanning the catalog."""
         selected: set[UUID] = set()
         for track_id in track_ids:
             try:
@@ -641,14 +671,15 @@ class MusicManager:
         if not selected or (limit is not None and limit <= 0):
             return ()
         state = self._read_state
-        matches: list[Track] = []
-        for key in state.newest:
-            if key not in selected:
-                continue
-            matches.append(replace(state.tracks[key]))
-            if limit is not None and len(matches) >= max(0, limit):
-                break
-        return tuple(matches)
+        ranked_tracks = (
+            (state.newest_rank[key], key)
+            for key in selected
+            if key in state.newest_rank
+        )
+        ranked = (
+            sorted(ranked_tracks) if limit is None else nsmallest(limit, ranked_tracks)
+        )
+        return tuple(replace(state.tracks[key]) for _, key in ranked)
 
     def counts(self) -> tuple[int, int]:
         state = self._read_state
@@ -664,13 +695,46 @@ class MusicManager:
             return False
 
     def search_tracks(
-        self, query: str, *, offset: int = 0, limit: int | None = None
+        self,
+        query: str,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        sort: str = "recent",
     ) -> tuple[Track, ...]:
         needle = query.strip().casefold()
         if limit is not None and limit <= 0:
             return ()
         remaining_offset = max(0, offset)
         state = self._read_state
+        if sort in {"title", "oldest"}:
+            matching_keys = [
+                key
+                for key in state.newest
+                if not needle
+                or any(
+                    needle in value.casefold()
+                    for value in (
+                        state.tracks[key].title,
+                        state.tracks[key].filename,
+                        state.tracks[key].source,
+                    )
+                )
+            ]
+            if sort == "title":
+                ordering = lambda key: (
+                    state.tracks[key].title or Path(state.tracks[key].filename).stem
+                ).casefold()
+            else:
+                ordering = lambda key: state.tracks[key].added_at
+            end = None if limit is None else remaining_offset + limit
+            if end is not None and end < len(matching_keys):
+                ordered = nsmallest(end, matching_keys, key=ordering)
+            else:
+                ordered = sorted(matching_keys, key=ordering)
+            return tuple(
+                replace(state.tracks[key]) for key in ordered[remaining_offset:end]
+            )
         matches: list[Track] = []
         for key in state.newest:
             track = state.tracks[key]
@@ -857,7 +921,7 @@ class MusicManager:
             playlist_id = uuid4()
             self._playlists[playlist_id] = Playlist(playlist_id, name)
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 self._playlists.pop(playlist_id, None)
                 raise
@@ -882,7 +946,7 @@ class MusicManager:
                 return
             playlist.name = name
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 playlist.name = previous_name
                 raise
@@ -901,7 +965,7 @@ class MusicManager:
             self._playlists = dict(self._playlists)
             del self._playlists[playlist_uuid]
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 self._playlists = previous_playlists
                 raise
@@ -918,7 +982,7 @@ class MusicManager:
             previous_playlists = self._playlists
             self._playlists = {}
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 self._playlists = previous_playlists
                 raise
@@ -948,7 +1012,7 @@ class MusicManager:
             if track.id not in playlist.track_ids:
                 playlist.track_ids.append(track.id)
                 try:
-                    self._save()
+                    self._save(tracks_changed=False)
                 except Exception:
                     playlist.track_ids.pop()
                     raise
@@ -985,7 +1049,7 @@ class MusicManager:
             previous = list(playlist.track_ids)
             playlist.track_ids.extend(additions)
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1026,7 +1090,7 @@ class MusicManager:
                 return 0
             playlist.track_ids = merged
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1056,7 +1120,7 @@ class MusicManager:
                 ) from None
             playlist.track_ids.pop(index)
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 playlist.track_ids.insert(index, track_uuid)
                 raise
@@ -1099,7 +1163,7 @@ class MusicManager:
                     playlist.track_ids[index],
                 )
                 try:
-                    self._save()
+                    self._save(tracks_changed=False)
                 except Exception:
                     playlist.track_ids[index], playlist.track_ids[new_index] = (
                         playlist.track_ids[new_index],
@@ -1146,7 +1210,7 @@ class MusicManager:
             previous = playlist.track_ids
             playlist.track_ids = normalized
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1167,7 +1231,7 @@ class MusicManager:
             if track.id not in target.track_ids:
                 target.track_ids.append(track.id)
                 try:
-                    self._save()
+                    self._save(tracks_changed=False)
                 except Exception:
                     target.track_ids.pop()
                     raise
@@ -1194,7 +1258,7 @@ class MusicManager:
             if added_to_target:
                 target.track_ids.append(track.id)
             try:
-                self._save()
+                self._save(tracks_changed=False)
             except Exception:
                 source.track_ids.insert(source_index, track.id)
                 if added_to_target:

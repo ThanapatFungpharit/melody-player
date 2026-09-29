@@ -34,7 +34,7 @@ class DesktopPlayer(PlaybackBindings):
             on_change_end=lambda e: app.playback.set_volume(int(e.control.value)),
         )
         self.volume_label = ft.Text(width=36, size=11)
-        self.art.width = self.art.height = 56
+        self.art.width = self.art.height = 76
         self.title.size = 14
         self.position.color = self.duration.color = ft.Colors.ON_SURFACE_VARIANT
         self.position.width = self.duration.width = 38
@@ -90,6 +90,7 @@ class DesktopPlayer(PlaybackBindings):
                             self.mute,
                             self.volume,
                             self.volume_label,
+                            self.stop,
                             self.queue_button,
                         ],
                         spacing=0,

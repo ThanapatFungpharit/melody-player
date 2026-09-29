@@ -13,7 +13,6 @@ class PlaybackQueue:
 
     items: list[str] = field(default_factory=list)
     current_index: int = -1
-    shuffle: bool = False
     repeat: RepeatMode = RepeatMode.OFF
 
     @property
@@ -28,29 +27,25 @@ class PlaybackQueue:
             return tuple(self.items)
         return tuple(self.items[self.current_index + 1 :])
 
+    @property
+    def upcoming_count(self) -> int:
+        return len(self.items) - max(0, self.current_index + 1)
+
     def replace(
         self,
         track_ids: list[str],
         *,
         start_index: int = 0,
-        shuffle: bool | None = None,
+        shuffle_once: bool = False,
     ) -> str | None:
         self.items = list(dict.fromkeys(str(item) for item in track_ids))
         self.current_index = (
             max(0, min(start_index, len(self.items) - 1)) if self.items else -1
         )
-        if shuffle is not None:
-            self.shuffle = bool(shuffle)
-        if self.shuffle and self.items:
-            # Shuffle is a one-time queue reorder, not a random decision at
-            # every transition. An explicit shuffled collection reorders every
-            # row; otherwise a specifically requested track remains first.
-            if shuffle is True:
-                random.shuffle(self.items)
-            else:
-                current = self.items.pop(self.current_index)
-                random.shuffle(self.items)
-                self.items.insert(0, current)
+        if shuffle_once and self.items:
+            # Starting a collection shuffled is a one-time reorder. Later
+            # selections and queue replacements never inherit a shuffle mode.
+            random.shuffle(self.items)
             self.current_index = 0
         return self.current
 
@@ -103,16 +98,17 @@ class PlaybackQueue:
         self.items = [current] if current else []
         self.current_index = 0 if current else -1
 
-    def set_shuffle(self, enabled: bool) -> bool:
-        enabled = bool(enabled)
-        if self.shuffle != enabled:
-            self.shuffle = enabled
-            if enabled:
-                start = max(0, self.current_index + 1)
-                upcoming = self.items[start:]
-                random.shuffle(upcoming)
-                self.items[start:] = upcoming
-        return self.shuffle
+    def shuffle_upcoming(self) -> bool:
+        """Reshuffle the remaining tracks once."""
+        start = max(0, self.current_index + 1)
+        if self.upcoming_count < 2:
+            return False
+        upcoming = self.items[start:]
+        random.shuffle(upcoming)
+        if upcoming == self.items[start:]:
+            upcoming = upcoming[1:] + upcoming[:1]
+        self.items[start:] = upcoming
+        return True
 
     def peek_next(self, *, automatic: bool = False) -> str | None:
         """Return the next visible queue item without advancing the queue."""
@@ -157,20 +153,27 @@ class PlaybackQueue:
             "queue": list(self.items),
             "current_index": self.current_index,
             "position_ms": max(0, int(position_ms)),
-            "shuffle": self.shuffle,
             "repeat": self.repeat.value,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackQueue:
-        items = [str(item) for item in data.get("queue", [])]
-        index = int(data.get("current_index", -1))
+        raw_items = data.get("queue", [])
+        items = (
+            [item for item in raw_items if isinstance(item, str) and item]
+            if isinstance(raw_items, list)
+            else []
+        )
+        try:
+            index = int(data.get("current_index", -1))
+        except TypeError, ValueError, OverflowError:
+            index = -1
         if not items:
             index = -1
         else:
             index = max(0, min(index, len(items) - 1))
         try:
             repeat = RepeatMode(data.get("repeat", RepeatMode.OFF.value))
-        except ValueError:
+        except TypeError, ValueError:
             repeat = RepeatMode.OFF
-        return cls(items, index, bool(data.get("shuffle", False)), repeat)
+        return cls(items, index, repeat)

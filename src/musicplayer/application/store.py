@@ -32,6 +32,9 @@ class ApplicationStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._data = self._load()
+        # Pending play batches may arrive after a track is removed. Keep their
+        # IDs for this process lifetime so those writes cannot recreate it.
+        self._deleted_track_ids: set[str] = set()
 
     def _load(self) -> dict[str, Any]:
         try:
@@ -80,6 +83,9 @@ class ApplicationStore:
                 settings.pop("cookie_profile", None)
                 settings.setdefault("cookie_file", "")
             data["version"] = 3
+        playback = data.get("playback")
+        if isinstance(playback, dict):
+            playback.pop("shuffle", None)
         return data
 
     @staticmethod
@@ -96,7 +102,6 @@ class ApplicationStore:
                 "queue": [],
                 "current_index": -1,
                 "position_ms": 0,
-                "shuffle": False,
                 "repeat": "off",
             },
         }
@@ -139,23 +144,38 @@ class ApplicationStore:
 
     def save_track_details(self, track_id: str, details: TrackDetails) -> None:
         with self._lock:
-            self._commit_locked({}, track_details={str(track_id): details.to_dict()})
+            key = str(track_id)
+            self._commit_locked({}, track_details={key: details.to_dict()})
+            self._deleted_track_ids.discard(key)
 
     def remove_track_details(self, track_id: str) -> None:
         with self._lock:
-            self._commit_locked({}, track_details={str(track_id): _MISSING})
+            key = str(track_id)
+            histories = {
+                name: [item for item in self._data.get(name, []) if item != key]
+                for name in ("recent_tracks", "playback_history")
+            }
+            self._commit_locked(histories, track_details={key: _MISSING})
+            self._deleted_track_ids.add(key)
 
     def clear_library_data(self) -> None:
         """Clear state that refers to library tracks, preserving other app data."""
         with self._lock:
+            removed_ids = set(self._data["track_details"])
+            removed_ids.update(self._data.get("recent_tracks", []))
+            removed_ids.update(self._data.get("playback_history", []))
             playback = self._data.get("playback", {})
             if isinstance(playback, dict):
+                queue = playback.get("queue")
+                if isinstance(queue, list):
+                    removed_ids.update(item for item in queue if isinstance(item, str))
                 cleared_playback = {
                     **playback,
                     "queue": [],
                     "current_index": -1,
                     "position_ms": 0,
                 }
+                cleared_playback.pop("shuffle", None)
             else:
                 cleared_playback = self._defaults()["playback"]
             replacements = {
@@ -165,6 +185,7 @@ class ApplicationStore:
                 "playback": cleared_playback,
             }
             self._commit_locked(replacements)
+            self._deleted_track_ids.update(removed_ids)
 
     def get(self, key: str, default: Any = None) -> Any:
         return deepcopy(self._data.get(key, default))
@@ -189,6 +210,8 @@ class ApplicationStore:
         """Update play metadata, histories, and optional session state atomically."""
         key = str(track_id)
         with self._lock:
+            if key in self._deleted_track_ids:
+                return
             details = TrackDetails.from_dict(self._data["track_details"].get(key, {}))
             details.play_count += 1
             details.last_played = float(played_at)
@@ -241,7 +264,15 @@ class ApplicationStore:
                 key: [item for item in self._data.get(key, []) if item in valid_ids]
                 for key in ("recent_tracks", "playback_history")
             }
+            stale_history_ids = {
+                item
+                for name in histories
+                for item in self._data.get(name, [])
+                if item not in valid_ids
+            }
             self._commit_locked(histories, track_details=stale)
+            self._deleted_track_ids.update(stale)
+            self._deleted_track_ids.update(stale_history_ids)
 
     def _recent_items_locked(self, key: str, value: str, *, limit: int) -> list[str]:
         remaining = (item for item in self._data.get(key, []) if item != value)
@@ -253,23 +284,39 @@ class ApplicationStore:
         *,
         track_details: dict[str, Any] | None = None,
     ) -> None:
-        """Persist replacements once, restoring changed entries on failure.
+        """Persist changed entries once, preserving the old state on failure.
 
         Callers hold the lock and supply owned values, never in-place mutations.
-        Snapshot only touched entries so updating a track needs no library copy.
+        Compare only touched entries before copying the catalog for a changed
+        track detail, avoiding a second full equality pass.
         _MISSING represents deletion as well as an absent previous value.
         """
-        candidate = {**self._data, **changes}
+        updates = {
+            key: value
+            for key, value in changes.items()
+            if not track_details or key != "track_details"
+            if self._data.get(key, _MISSING) != value
+        }
         if track_details:
-            details = dict(self._data["track_details"])
+            current_details = self._data["track_details"]
+            changed_details = {}
             for key, value in track_details.items():
                 if value is _MISSING:
-                    details.pop(key, None)
-                else:
-                    details[key] = value
-            candidate["track_details"] = details
-        if candidate == self._data:
+                    if key in current_details:
+                        changed_details[key] = value
+                elif current_details.get(key, _MISSING) != value:
+                    changed_details[key] = value
+            if changed_details:
+                details = dict(current_details)
+                for key, value in changed_details.items():
+                    if value is _MISSING:
+                        details.pop(key)
+                    else:
+                        details[key] = value
+                updates["track_details"] = details
+        if not updates:
             return
+        candidate = {**self._data, **updates}
         self._pending_data = candidate
         try:
             self._save_locked()
@@ -288,14 +335,15 @@ class ApplicationStore:
             if "volume" in changes:
                 updates["settings"] = {**self._data["settings"], **changes["volume"]}
             details = {}
-            if plays:
-                for key, count in plays.items():
-                    # A deletion that committed before this batch must stay deleted.
-                    if (
-                        not self._data["playback"].get("queue")
-                        and "playback" not in updates
-                    ):
-                        continue
+            accepted_plays = {
+                key: count
+                for key, count in plays.items()
+                if key not in self._deleted_track_ids
+            }
+            if not self._data["playback"].get("queue") and "playback" not in updates:
+                accepted_plays.clear()
+            if accepted_plays:
+                for key, count in accepted_plays.items():
                     item = TrackDetails.from_dict(
                         self._data["track_details"].get(key, {})
                     )
@@ -304,7 +352,9 @@ class ApplicationStore:
                     details[key] = item.to_dict()
                 for name, limit in (("recent_tracks", 20), ("playback_history", 100)):
                     updates[name] = list(
-                        dict.fromkeys([*reversed(plays), *self._data.get(name, [])])
+                        dict.fromkeys(
+                            [*reversed(accepted_plays), *self._data.get(name, [])]
+                        )
                     )[:limit]
             self._commit_locked(updates, track_details=details)
 

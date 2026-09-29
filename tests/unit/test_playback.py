@@ -19,13 +19,17 @@ class FakeAudioBackend:
         self.volume = 0.0
         self.pause_count = 0
         self.seeked_to: list[int] = []
-        self.queues: list[tuple[list[dict[str, str]], int, str, bool]] = []
-        self.queue_updates: list[tuple[list[dict[str, str]], int, str, bool]] = []
+        self.queues: list[tuple[list[dict[str, str]], int, str]] = []
+        self.queue_updates: list[tuple[list[dict[str, str]], int, str]] = []
         self.cancelled_loads = 0
         self.discarded_sources = 0
 
-    def load(self, source: str | bytes) -> None:
+    def load(
+        self, source: str | bytes, *, autoplay: bool = False, position_ms: int = 0
+    ) -> None:
         self.source = source
+        if autoplay:
+            self.played_at.append(position_ms)
 
     def play(self, position_ms: int = 0) -> None:
         self.played_at.append(position_ms)
@@ -48,9 +52,12 @@ class FakeAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
+        autoplay: bool = False,
+        position_ms: int = 0,
     ) -> None:
-        self.queues.append((items, current_index, repeat_mode, shuffle))
+        self.queues.append((items, current_index, repeat_mode))
+        if autoplay:
+            self.played_at.append(position_ms)
 
     def update_queue(
         self,
@@ -58,9 +65,8 @@ class FakeAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
     ) -> None:
-        self.queue_updates.append((items, current_index, repeat_mode, shuffle))
+        self.queue_updates.append((items, current_index, repeat_mode))
 
     def cancel_load(self) -> None:
         self.cancelled_loads += 1
@@ -89,9 +95,9 @@ class PlaybackControllerTests(unittest.TestCase):
 
             controller.play_tracks(ids)
 
-            items, index, repeat, shuffle = backend.queues[-1]
+            items, index, repeat = backend.queues[-1]
             self.assertEqual([item["track_id"] for item in items], ids)
-            self.assertEqual((index, repeat, shuffle), (0, "off", False))
+            self.assertEqual((index, repeat), (0, "off"))
             self.assertEqual(backend.played_at, [0])
 
             controller.on_loaded()
@@ -141,9 +147,44 @@ class PlaybackControllerTests(unittest.TestCase):
 
             self.assertEqual(len(backend.queues), 1)
             self.assertEqual(len(backend.queue_updates), 2)
-            latest, index, repeat, shuffle = backend.queue_updates[-1]
+            latest, index, repeat = backend.queue_updates[-1]
             self.assertEqual([item["track_id"] for item in latest], ids)
-            self.assertEqual((index, repeat, shuffle), (0, "track", False))
+            self.assertEqual((index, repeat), (0, "track"))
+
+    def test_shuffle_upcoming_updates_native_queue_on_every_tap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            manager = MusicManager(root / "library.mmdb", music)
+            ids: list[str] = []
+            for name in ("one.mp3", "two.mp3", "three.mp3", "four.mp3"):
+                path = music / name
+                path.write_bytes(name.encode())
+                ids.append(str(manager.add_track(path, title=name)))
+            store = ApplicationStore(root / "state.json")
+            backend = FakeAudioBackend()
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, backend
+            )
+            controller.play_tracks(ids)
+
+            with patch("musicplayer.application.queue.random.shuffle"):
+                self.assertTrue(controller.shuffle_upcoming())
+                self.assertEqual(
+                    controller.queue.items, [ids[0], ids[2], ids[3], ids[1]]
+                )
+                self.assertTrue(controller.shuffle_upcoming())
+
+            self.assertEqual(controller.queue.items, [ids[0], ids[3], ids[1], ids[2]])
+            self.assertEqual(len(backend.queues), 1)
+            self.assertEqual(len(backend.queue_updates), 2)
+            self.assertEqual(
+                [item["track_id"] for item in backend.queue_updates[-1][0]],
+                controller.queue.items,
+            )
+            self.assertNotIn("shuffle", controller.queue.to_dict())
+            self.assertNotIn("shuffle", store.get("playback"))
 
     def test_retiring_player_events_cannot_corrupt_native_handoff_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -263,12 +304,12 @@ class PlaybackControllerTests(unittest.TestCase):
             ):
                 controller.play_tracks([str(track_id), str(next_id)])
 
-            items, index, repeat, shuffle = backend.queues[-1]
+            items, index, repeat = backend.queues[-1]
             self.assertEqual(
                 [item["source"] for item in items],
                 [str(path.resolve()), str(next_path.resolve())],
             )
-            self.assertEqual((index, repeat, shuffle), (0, "off", False))
+            self.assertEqual((index, repeat), (0, "off"))
             self.assertEqual(backend.source, "")
             self.assertEqual(backend.played_at, [0])
 
@@ -299,7 +340,7 @@ class PlaybackControllerTests(unittest.TestCase):
 
             self.assertEqual(backend.cancelled_loads, 1)
             self.assertEqual(len(backend.queues), 2)
-            items, index, _, _ = backend.queues[-1]
+            items, index, _ = backend.queues[-1]
             self.assertEqual(items[index]["track_id"], ids[1])
 
     def test_play_tracks_keeps_requested_start_after_filtering(self) -> None:
@@ -420,7 +461,6 @@ class PlaybackControllerTests(unittest.TestCase):
                     "queue": ["not-a-uuid", str(track_id)],
                     "current_index": 1,
                     "position_ms": 3456,
-                    "shuffle": False,
                     "repeat": "off",
                 },
             )
@@ -432,6 +472,32 @@ class PlaybackControllerTests(unittest.TestCase):
             self.assertEqual(controller.queue.items, [str(track_id)])
             self.assertEqual(controller.current_track_id, str(track_id))
             self.assertEqual(controller.position_ms, 3456)
+
+    def test_invalid_restored_position_does_not_prevent_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            path = music / "song.mp3"
+            path.write_bytes(b"audio")
+            manager = MusicManager(root / "library.mmdb", music)
+            track_id = manager.add_track(path, title="Song")
+            store = ApplicationStore(root / "state.json")
+            store.set(
+                "playback",
+                {
+                    "queue": [str(track_id)],
+                    "current_index": 0,
+                    "position_ms": "invalid",
+                },
+            )
+
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, FakeAudioBackend()
+            )
+
+            self.assertEqual(controller.current_track_id, str(track_id))
+            self.assertEqual(controller.position_ms, 0)
 
     def test_removing_only_current_item_stops_playback_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -496,8 +562,6 @@ class PlaybackControllerTests(unittest.TestCase):
                 manager, LibraryService(manager, store), store, FakeAudioBackend()
             )
             controller.queue.replace(ids)
-            controller.queue.shuffle = True
-
             controller.play_queue_index(2)
 
             self.assertEqual(controller.queue.items, ids)
@@ -523,7 +587,6 @@ class PlaybackControllerTests(unittest.TestCase):
                     "queue": [str(track_id)],
                     "current_index": 0,
                     "position_ms": 3456,
-                    "shuffle": False,
                     "repeat": "off",
                 },
             )
@@ -534,7 +597,7 @@ class PlaybackControllerTests(unittest.TestCase):
 
             controller.toggle()
 
-            items, index, _, _ = backend.queues[-1]
+            items, index, _ = backend.queues[-1]
             self.assertEqual(items[index]["source"], str(path.resolve()))
             self.assertEqual(backend.source, "")
             self.assertEqual(backend.played_at, [3456])
@@ -701,7 +764,30 @@ class PlaybackControllerTests(unittest.TestCase):
 
             self.assertEqual(backend.discarded_sources, 1)
             self.assertFalse(controller._loading)
+            self.assertFalse(controller.snapshot.loading)
             self.assertFalse(controller._source_loaded)
+
+    def test_native_playing_event_clears_missing_loaded_event(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            path = music / "song.mp3"
+            path.write_bytes(b"audio")
+            manager = MusicManager(root / "library.mmdb", music)
+            track_id = manager.add_track(path, title="Song")
+            store = ApplicationStore(root / "state.json")
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, FakeAudioBackend()
+            )
+
+            controller.play_track(str(track_id))
+            self.assertTrue(controller.snapshot.loading)
+
+            controller.on_playing(True)
+
+            self.assertTrue(controller.playing)
+            self.assertFalse(controller.snapshot.loading)
 
 
 if __name__ == "__main__":

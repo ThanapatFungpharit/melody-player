@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Protocol
+from typing import Any, Protocol
 
 from musicplayer.core.library import MusicManager
 
@@ -20,14 +20,17 @@ from .store import ApplicationStore
 class TrackPlayerBackend(Protocol):
     """Required contract for the package-owned managed track player."""
 
-    def load(self, source: str | bytes) -> None: ...
+    def load(
+        self, source: str | bytes, *, autoplay: bool = False, position_ms: int = 0
+    ) -> None: ...
     def set_queue(
         self,
         items: list[dict[str, str]],
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
+        autoplay: bool = False,
+        position_ms: int = 0,
     ) -> None: ...
 
     def update_queue(
@@ -36,7 +39,6 @@ class TrackPlayerBackend(Protocol):
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
     ) -> None: ...
 
     def play(self, position_ms: int = 0) -> None: ...
@@ -127,9 +129,12 @@ class PlaybackController:
             self.queue.current_index = min(
                 items_before_original, len(self.queue.items) - 1
             )
-        self.position_ms = (
-            int(persisted.get("position_ms", 0)) if current_was_available else 0
-        )
+        self.position_ms = 0
+        if current_was_available:
+            try:
+                self.position_ms = max(0, int(persisted.get("position_ms", 0)))
+            except TypeError, ValueError, OverflowError:
+                pass
         self.volume = settings.volume
         self.muted = settings.muted
         self.previous_volume = settings.previous_volume
@@ -180,12 +185,49 @@ class PlaybackController:
         return self._media_session_active
 
     @_serialized
+    def on_native_reattach(self, state: dict[str, Any]) -> None:
+        """Mirror a decoder that survived disposal of the previous Flet page."""
+        track_id = state.get("track_id")
+        if isinstance(track_id, str) and track_id in self.queue.items:
+            self.queue.select(self.queue.items.index(track_id))
+            self._loaded_track_id = track_id
+            self._clear_external()
+        else:
+            self._loaded_track_id = None
+            source = str(state.get("source") or "")
+            self.external_title = str(state.get("title") or Path(source).stem)
+            self.external_uploader = str(state.get("artist") or "")
+            self.external_thumbnail = str(state.get("artwork_uri") or "")
+        self._source_loaded = True
+        self._player_loading = False
+        self._loading = False
+        self._playing = bool(state.get("playing"))
+        self._media_session_active = True
+        self.position_ms = max(0, int(state.get("position_ms") or 0))
+        self.duration_ms = max(0, int(state.get("duration_ms") or 0))
+        self._persist()
+        self._notify("track")
+
+    @_serialized
     def play_tracks(
         self,
         track_ids: Sequence[str],
         *,
         start_index: int = 0,
-        shuffle: bool | None = None,
+    ) -> None:
+        self._play_tracks(track_ids, start_index=start_index, shuffle_once=False)
+
+    @_serialized
+    def play_tracks_shuffled(self, track_ids: Sequence[str]) -> None:
+        """Start a collection in a random order without enabling a mode."""
+        self._play_tracks(track_ids, start_index=0, shuffle_once=True)
+
+    def _play_tracks(
+        self,
+        track_ids: Sequence[str],
+        *,
+        start_index: int,
+        shuffle_once: bool,
     ) -> None:
         selected_index = (
             max(0, min(start_index, len(track_ids) - 1)) if track_ids else -1
@@ -209,7 +251,7 @@ class PlaybackController:
         self.queue.replace(
             available,
             start_index=available_index,
-            shuffle=shuffle,
+            shuffle_once=shuffle_once,
         )
         self._load_current(autoplay=True)
 
@@ -235,9 +277,7 @@ class PlaybackController:
         self._playing = True
         self._media_session_active = True
         try:
-            self.backend.load(source)
-            if self._source_loaded:
-                self.backend.play()
+            self.backend.load(source, autoplay=True)
         except (OSError, ValueError, RuntimeError) as error:
             self.on_backend_error(str(error))
         self._notify()
@@ -496,12 +536,13 @@ class PlaybackController:
         self._notify("queue")
 
     @_serialized
-    def toggle_shuffle(self) -> bool:
-        self.queue.set_shuffle(not self.queue.shuffle)
+    def shuffle_upcoming(self) -> bool:
+        if not self.queue.shuffle_upcoming():
+            return False
         self._sync_queue()
         self._persist()
         self._notify("queue")
-        return self.queue.shuffle
+        return True
 
     @_serialized
     def cycle_repeat(self):
@@ -582,8 +623,14 @@ class PlaybackController:
 
     @_serialized
     def on_playing(self, playing: bool) -> None:
-        if self._loading or self._player_loading or not self._source_loaded:
+        if self._loading or not self._source_loaded:
             return
+        if self._player_loading:
+            if not playing:
+                return
+            # A native playing event also confirms that preparation finished.
+            # Recover if the earlier loaded event was missed during a handoff.
+            self._player_loading = False
         self._playing = playing
         if playing:
             self._media_session_active = True
@@ -673,6 +720,7 @@ class PlaybackController:
         self._source_loaded = False
         self._loaded_track_id = None
         self._loading = False
+        self._player_loading = False
         self._pending_play_record_id = None
         self._persist()
         self._notify()
@@ -712,13 +760,22 @@ class PlaybackController:
         return True
 
     def _queue_items(self) -> list[dict[str, str]]:
-        return [
-            {
-                "track_id": track_id,
-                "source": _audio_source(self.manager.track_path(track_id)),
-            }
-            for track_id in self.queue.items
-        ]
+        details = self.library.details_many(self.queue.items)
+        items: list[dict[str, str]] = []
+        for track_id in self.queue.items:
+            track = self.manager.get_track(track_id)
+            extra = details.get(track_id)
+            items.append(
+                {
+                    "track_id": track_id,
+                    "source": _audio_source(self.manager.track_path(track_id)),
+                    "title": track.title or Path(track.filename).stem,
+                    "artist": extra.uploader if extra else "",
+                    "album": extra.source_name if extra else "",
+                    "artwork_uri": extra.thumbnail if extra else "",
+                }
+            )
+        return items
 
     def _activate_queue(
         self,
@@ -740,10 +797,9 @@ class PlaybackController:
             items,
             current_index,
             repeat_mode=self.queue.repeat.value,
-            shuffle=self.queue.shuffle,
+            autoplay=autoplay,
+            position_ms=position_ms,
         )
-        if autoplay:
-            self.backend.play(position_ms)
         self._persist()
 
     def _sync_queue(self) -> None:
@@ -758,7 +814,6 @@ class PlaybackController:
             items,
             self.queue.current_index,
             repeat_mode=self.queue.repeat.value,
-            shuffle=self.queue.shuffle,
         )
 
     def _save_volume(self) -> None:

@@ -1,225 +1,143 @@
 import "dart:async";
-import "dart:typed_data";
 
-import "package:audioplayers/audioplayers.dart";
+import "package:audio_session/audio_session.dart";
 import "package:flet/flet.dart";
 import "package:flutter/foundation.dart";
+import "package:just_audio/just_audio.dart";
 
+import "background_audio_session.dart";
 import "native_playback_registry.dart";
+import "native_queue_policy.dart";
 
 class _NativeQueueItem {
-  const _NativeQueueItem({required this.trackId, required this.source});
+  const _NativeQueueItem({
+    required this.trackId,
+    required this.source,
+    required this.title,
+    required this.artist,
+    required this.album,
+    required this.artworkUri,
+  });
 
   final String trackId;
   final String source;
+  final String title;
+  final String artist;
+  final String album;
+  final String artworkUri;
 
   factory _NativeQueueItem.fromMap(Map<String, dynamic> value) {
     return _NativeQueueItem(
       trackId: (value["track_id"] as String? ?? "").trim(),
       source: (value["source"] as String? ?? "").trim(),
+      title: (value["title"] as String? ?? "").trim(),
+      artist: (value["artist"] as String? ?? "").trim(),
+      album: (value["album"] as String? ?? "").trim(),
+      artworkUri: (value["artwork_uri"] as String? ?? "").trim(),
     );
   }
 }
 
-/// Melody's long-lived, extension-owned source boundary.
-///
-/// Candidate and preloaded players prepare away from the active decoder. A
-/// source switch swaps players only after preparation succeeds, so Flutter UI
-/// patches, filesystem checks, and decoder setup never interrupt the current
-/// track or block the UI isolate.
-class ManagedAudioService extends FletService implements NativePlaybackEngine {
-  ManagedAudioService({required super.control});
+/// Supplies preview bytes to just_audio's range-aware source interface.
+// ignore: experimental_member_use
+class _MemoryAudioSource extends StreamAudioSource {
+  _MemoryAudioSource(this.bytes);
 
-  AudioPlayer? _activePlayer;
-  AudioPlayer? _retiringPlayer;
-  Future<AudioPlayer>? _preloadFuture;
-  Object? _preloadedSource;
-  final List<StreamSubscription<dynamic>> _subscriptions = [];
-  bool _disposed = false;
-  double _volume = 1;
-  bool _volumeUpdating = false;
-  bool _foreground = true;
-  int _positionBucket = -1;
-  int _loadToken = 0;
-  int _preloadToken = 0;
-  int _activeGeneration = 0;
-  Object? _activeSource;
-  String? _activeTrackId;
-  List<_NativeQueueItem> _queue = const [];
-  int _queueIndex = -1;
-  String _repeatMode = "off";
-  bool _queueTransitioning = false;
+  final Uint8List bytes;
 
   @override
-  void init() {
-    super.init();
-    control.addInvokeMethodListener(_invokeMethod);
+  // ignore: experimental_member_use
+  Future<StreamAudioResponse> request([int? start, int? end]) async {
+    final first = (start ?? 0).clamp(0, bytes.length).toInt();
+    final last = (end ?? bytes.length).clamp(first, bytes.length).toInt();
+    // ignore: experimental_member_use
+    return StreamAudioResponse(
+      sourceLength: bytes.length,
+      contentLength: last - first,
+      offset: first,
+      stream: Stream.value(bytes.sublist(first, last)),
+      contentType: "audio/mpeg",
+    );
+  }
+}
+
+/// Process-scoped player; page-scoped Flet services are only command bridges.
+/// just_audio owns decoding, buffering, playlists, automatic next, and repeat.
+class NativeAudioRuntime implements NativePlaybackEngine {
+  NativeAudioRuntime._();
+
+  static final NativeAudioRuntime instance = NativeAudioRuntime._();
+
+  Control? _eventControl;
+  AudioPlayer? _player;
+  AudioPlayer? _preparingPlayer;
+  Future<void>? _sessionFuture;
+  final List<StreamSubscription<dynamic>> _subscriptions = [];
+  List<_NativeQueueItem> _queue = const [];
+  List<int> _playlistQueueIndexes = const [];
+  Object? _activeSource;
+  String? _activeTrackId;
+  String _repeatMode = "off";
+  int _queueIndex = -1;
+  int _playlistIndex = -1;
+  int _generation = 0;
+  int _loadToken = 0;
+  int? _preparingToken;
+  int? _pendingLoadedGeneration;
+  int? _reportedErrorGeneration;
+  int _positionBucket = -1;
+  Duration? _pendingSeekPosition;
+  double _volume = 1;
+  bool _playbackWanted = false;
+  bool _removingGhost = false;
+
+  void attach(Control control) {
+    _eventControl = control;
     activeNativePlaybackEngine = this;
-    _volume = control.getDouble("volume", 1)!;
-    final source = control.getString("src", "")!.trim();
-    if (source.isNotEmpty) {
-      unawaited(_loadSource(source, 0).catchError((Object error) {
-        _event("error", {
-          "message": "The native audio source could not be prepared.",
-        });
-      }));
-    }
+    setVolume(control.getDouble("volume", 1)!);
   }
 
-  bool _sameSource(Object? first, Object? second) {
-    if (identical(first, second)) return true;
-    if (first is Uint8List && second is Uint8List) {
-      return listEquals(first, second);
-    }
-    return first == second;
+  void detach(Control control) {
+    if (identical(_eventControl, control)) _eventControl = null;
   }
 
-  Source _source(Object source) {
-    if (source is Uint8List) return BytesSource(source);
-    if (source is List<int>) return BytesSource(Uint8List.fromList(source));
-    if (source is! String) {
-      throw ArgumentError("ManagedAudio source must be a path, URL, or bytes");
-    }
-    final uri = Uri.tryParse(source);
-    final remote = uri?.scheme == "https" || uri?.scheme == "http";
-    return remote ? UrlSource(source) : DeviceFileSource(source);
-  }
-
-  Future<AudioPlayer> _preparePlayer(Object source) async {
-    final player = AudioPlayer();
+  Future<void> _ensureSession() async {
+    if (kIsWeb) return;
+    final future = _sessionFuture ??= () async {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+    }();
     try {
-      await player.setReleaseMode(ReleaseMode.stop);
-      await player
-          .setSource(_source(source))
-          .timeout(const Duration(seconds: 20));
-      await player.setVolume(_volume);
-      return player;
+      await future;
     } catch (_) {
-      unawaited(player.dispose().catchError((Object _) {}));
+      _sessionFuture = null;
       rethrow;
     }
   }
 
-  Future<void> _loadSource(
-    Object source,
-    int generation, {
-    bool autoplay = false,
-    Duration startPosition = Duration.zero,
-  }) async {
-    final token = ++_loadToken;
-    final Future<AudioPlayer> candidateFuture;
-    if (_sameSource(_preloadedSource, source) && _preloadFuture != null) {
-      candidateFuture = _preloadFuture!;
-      _preloadFuture = null;
-      _preloadedSource = null;
-      _preloadToken++;
-    } else {
-      await _cancelPreload();
-      candidateFuture = _preparePlayer(source);
-    }
-
-    final candidate = await candidateFuture;
-    if (_disposed || token != _loadToken) {
-      unawaited(candidate.dispose().catchError((Object _) {}));
-      return;
-    }
-    await _activatePlayer(
-      candidate,
-      source,
-      generation,
-      token,
-      autoplay: autoplay,
-      startPosition: startPosition,
+  void _retainPlayback() {
+    if (kIsWeb) return;
+    unawaited(
+      NativeMediaSessionRuntime.instance.ensurePlaybackActive().catchError((
+        Object error,
+      ) {
+        debugPrint("ManagedAudio: media session unavailable: $error");
+      }),
     );
   }
 
-  Future<void> _activatePlayer(
-    AudioPlayer candidate,
-    Object source,
-    int generation,
-    int token, {
-    bool autoplay = false,
-    Duration startPosition = Duration.zero,
-  }) async {
-    if (_disposed || token != _loadToken) {
-      unawaited(candidate.dispose().catchError((Object _) {}));
-      return;
+  AudioSource _source(Object source) {
+    if (source is Uint8List) return _MemoryAudioSource(source);
+    if (source is List<int>) {
+      return _MemoryAudioSource(Uint8List.fromList(source));
     }
-    // Everything through the loaded event is synchronous on the Dart isolate.
-    // Detaching the retiring stream must not yield: a newer load could
-    // otherwise invalidate this candidate after the old subscriptions were
-    // cancelled but before the new player was installed.
-    _cancelSubscriptionsSoon();
-    final previous = _activePlayer;
-    if (_retiringPlayer == null) {
-      _retiringPlayer = previous;
-    } else if (previous != null && previous != _retiringPlayer) {
-      unawaited(previous.dispose().catchError((Object _) {}));
+    if (source is! String) {
+      throw ArgumentError("ManagedAudio source must be a path, URL, or bytes");
     }
-    _activePlayer = candidate;
-    _activeSource = source;
-    _activeGeneration = generation;
-    _positionBucket = -1;
-
-    _subscriptions.add(candidate.onDurationChanged.listen((value) {
-      _event("duration_change", {
-        "duration": value.inMilliseconds,
-        "generation": generation,
-      });
-    }));
-    _subscriptions.add(candidate.onPlayerStateChanged.listen((value) {
-      if (value.name == "completed") return;
-      _event("state_change", {
-        "state": value.name,
-        "generation": generation,
-      });
-    }));
-    _subscriptions.add(candidate.onPositionChanged.listen((value) {
-      // The native decoder and media session remain authoritative in the
-      // background. Wake Python only every five seconds while its UI is not
-      // visible; foreground seek controls still receive one update per second.
-      final intervalMs = _foreground ? 1000 : 5000;
-      final bucket = value.inMilliseconds ~/ intervalMs;
-      if (bucket != _positionBucket) {
-        _positionBucket = bucket;
-        _event("position_change", {
-          "position": value.inMilliseconds,
-          "generation": generation,
-        });
-      }
-    }));
-    _subscriptions.add(candidate.onPlayerComplete.listen((_) {
-      _playerCompleted(candidate, generation);
-    }));
-
-    if (!_disposed && token == _loadToken && candidate == _activePlayer) {
-      _event("loaded", {"generation": generation});
-    }
-    final duration = await candidate.getDuration();
-    if (duration != null &&
-        !_disposed &&
-        token == _loadToken &&
-        candidate == _activePlayer) {
-      _event("duration_change", {
-        "duration": duration.inMilliseconds,
-        "generation": generation,
-      });
-    }
-    if (autoplay &&
-        !_disposed &&
-        token == _loadToken &&
-        candidate == _activePlayer) {
-      if (startPosition > Duration.zero) {
-        await candidate.seek(startPosition);
-      }
-      await _retirePrevious();
-      if (!_disposed && token == _loadToken && candidate == _activePlayer) {
-        await candidate.resume();
-      }
-    }
-    if (!_disposed && token == _loadToken && candidate == _activePlayer) {
-      unawaited(_preloadQueueSuccessor());
-    }
+    final uri = Uri.tryParse(source);
+    return uri?.scheme == "http" || uri?.scheme == "https"
+        ? AudioSource.uri(uri!)
+        : AudioSource.file(source);
   }
 
   List<_NativeQueueItem> _parseQueue(dynamic value) {
@@ -227,137 +145,441 @@ class ManagedAudioService extends FletService implements NativePlaybackEngine {
     return raw
         .whereType<Map>()
         .map(
-            (item) => _NativeQueueItem.fromMap(Map<String, dynamic>.from(item)))
+          (item) => _NativeQueueItem.fromMap(Map<String, dynamic>.from(item)),
+        )
         .where((item) => item.trackId.isNotEmpty && item.source.isNotEmpty)
         .toList(growable: false);
   }
 
-  Future<void> _setQueue(Map<String, dynamic> data) async {
-    final items = _parseQueue(data["items"]);
-    _repeatMode = data["repeat_mode"] as String? ?? "off";
-    if (items.isEmpty) {
-      _queue = const [];
-      _queueIndex = -1;
-      _activeTrackId = null;
+  LoopMode _loopMode(String mode) => switch (mode) {
+    "track" => LoopMode.one,
+    "playlist" => LoopMode.all,
+    _ => LoopMode.off,
+  };
+
+  Future<void> _select({
+    required List<AudioSource> sources,
+    required List<_NativeQueueItem> queue,
+    required List<int> queueIndexes,
+    required int initialIndex,
+    required Object? activeSource,
+    required String? activeTrackId,
+    required int generation,
+    required String repeatMode,
+    required bool autoplay,
+    required Duration position,
+    required bool preserveMetadata,
+  }) async {
+    final token = ++_loadToken;
+    final previousPlaybackWanted = _playbackWanted;
+    _preparingToken = token;
+    _pendingSeekPosition = null;
+    _playbackWanted = autoplay;
+    if (autoplay) _retainPlayback();
+    if (sources.isEmpty) {
       await _clearSource();
       return;
     }
-    final requestedIndex = (data["current_index"] as num?)?.toInt() ?? 0;
-    _queue = items;
-    _queueIndex = requestedIndex.clamp(0, items.length - 1).toInt();
-    final item = _queue[_queueIndex];
+    final candidate = AudioPlayer();
+    _preparingPlayer = candidate;
+    try {
+      await _ensureSession();
+      await candidate.setVolume(_volume);
+      await candidate.setLoopMode(
+        queueIndexes.contains(-1) ? LoopMode.off : _loopMode(repeatMode),
+      );
+      final duration = await candidate
+          .setAudioSources(
+            sources,
+            initialIndex: initialIndex,
+            initialPosition: position,
+          )
+          .timeout(const Duration(seconds: 20));
+      if (token != _loadToken) return;
+      final previous = _player;
+      if (preserveMetadata && previous != null) {
+        // Queue edits prepare while the old player is still moving. Transfer
+        // its latest playhead rather than the position captured at request time.
+        await candidate.seek(previous.position);
+        if (token != _loadToken) return;
+      }
+      _preparingPlayer = null;
+      _cancelSubscriptionsSoon();
+      _player = candidate;
+      _queue = queue;
+      _repeatMode = repeatMode;
+      _playlistQueueIndexes = queueIndexes;
+      _playlistIndex = initialIndex;
+      _queueIndex = queueIndexes[initialIndex];
+      _activeSource = activeSource;
+      _activeTrackId = activeTrackId;
+      _generation = generation;
+      _preparingToken = null;
+      _reportedErrorGeneration = null;
+      _pendingLoadedGeneration = null;
+      _positionBucket = -1;
+      _listen(candidate);
+
+      if (!preserveMetadata && _queueIndex >= 0) {
+        _announceTrack(queue[_queueIndex]);
+      }
+      if (previous != null) {
+        try {
+          await previous.pause();
+        } catch (error) {
+          debugPrint("ManagedAudio: retiring player pause failed: $error");
+        }
+        unawaited(previous.dispose().catchError((Object _) {}));
+      }
+      _event("loaded", {"generation": generation});
+      if (duration != null) {
+        _event("duration_change", {
+          "duration": duration.inMilliseconds,
+          "generation": generation,
+        });
+      }
+      final pendingSeek = _pendingSeekPosition;
+      _pendingSeekPosition = null;
+      if (pendingSeek != null) await _seekCurrent(candidate, pendingSeek);
+      if (token == _loadToken) {
+        await candidate.setVolume(_volume);
+        if (_playbackWanted) _startPlaying(candidate);
+      }
+    } catch (_) {
+      if (token == _loadToken) {
+        _preparingToken = null;
+        if (!identical(_player, candidate)) {
+          _playbackWanted = previousPlaybackWanted;
+        }
+      }
+      if (token != _loadToken) return;
+      rethrow;
+    } finally {
+      if (identical(_preparingPlayer, candidate)) _preparingPlayer = null;
+      if (!identical(_player, candidate)) {
+        unawaited(candidate.dispose().catchError((Object _) {}));
+      }
+    }
+  }
+
+  void _listen(AudioPlayer player) {
+    _subscriptions.add(
+      player.currentIndexStream.listen(
+        (index) => _onIndex(player, index),
+        onError: (Object error) => _playerError(player, error),
+      ),
+    );
+    _subscriptions.add(
+      player.durationStream.listen((duration) {
+        if (player != _player || duration == null) return;
+        _onIndex(player, player.currentIndex);
+        _event("duration_change", {
+          "duration": duration.inMilliseconds,
+          "generation": _generation,
+        });
+      }, onError: (Object error) => _playerError(player, error)),
+    );
+    _subscriptions.add(
+      player.positionStream.listen((position) {
+        if (player != _player) return;
+        _onIndex(player, player.currentIndex);
+        final bucket = position.inMilliseconds ~/ 1000;
+        if (bucket == _positionBucket) return;
+        _positionBucket = bucket;
+        _event("position_change", {
+          "position": position.inMilliseconds,
+          "generation": _generation,
+        });
+      }, onError: (Object error) => _playerError(player, error)),
+    );
+    _subscriptions.add(
+      player.playerStateStream.listen((state) {
+        if (player != _player) return;
+        _onIndex(player, player.currentIndex);
+        if (state.processingState == ProcessingState.ready &&
+            _pendingLoadedGeneration == _generation) {
+          _pendingLoadedGeneration = null;
+          _event("loaded", {"generation": _generation});
+        }
+        if (state.processingState == ProcessingState.loading ||
+            state.processingState == ProcessingState.buffering) {
+          // The native media session needs buffering, while Python's play intent
+          // stays unchanged until the decoder reports ready or completed.
+          NativeMediaSessionRuntime.instance.onNativePlaybackEvent(
+            "state_change",
+            {"state": "loading", "generation": _generation},
+          );
+          return;
+        }
+        final name = state.processingState == ProcessingState.completed
+            ? "completed"
+            : state.playing
+            ? "playing"
+            : "paused";
+        if (name != "playing") _publishPosition(player);
+        _event("state_change", {"state": name, "generation": _generation});
+      }, onError: (Object error) => _playerError(player, error)),
+    );
+    _subscriptions.add(
+      player.playbackEventStream.listen(
+        (_) {},
+        onError: (Object error) => _playerError(player, error),
+      ),
+    );
+  }
+
+  void _onIndex(AudioPlayer player, int? index) {
+    if (player != _player ||
+        index == null ||
+        _removingGhost ||
+        index == _playlistIndex ||
+        index >= _playlistQueueIndexes.length) {
+      return;
+    }
+    final wasGhost =
+        _playlistIndex >= 0 &&
+        _playlistIndex < _playlistQueueIndexes.length &&
+        _playlistQueueIndexes[_playlistIndex] < 0;
+    _playlistIndex = index;
+    final queueIndex = _playlistQueueIndexes[index];
+    if (queueIndex < 0 || queueIndex >= _queue.length) return;
+    _queueIndex = queueIndex;
+    final item = _queue[queueIndex];
+    _activeSource = item.source;
     _activeTrackId = item.trackId;
-    await _loadSource(
-      item.source,
-      (data["generation"] as num?)?.toInt() ?? 0,
+    // Explicit Python requests use even generations; native transitions use
+    // odd ones so a concurrent request can never share a generation.
+    _generation = _generation.isEven ? _generation + 1 : _generation + 2;
+    _positionBucket = -1;
+    _reportedErrorGeneration = null;
+    _pendingLoadedGeneration = _generation;
+    _announceTrack(item);
+    _event("track_change", {
+      "track_id": item.trackId,
+      "index": queueIndex,
+      "generation": _generation,
+    });
+    if (player.processingState == ProcessingState.ready) {
+      _pendingLoadedGeneration = null;
+      _event("loaded", {"generation": _generation});
+    }
+    if (wasGhost) unawaited(_removeGhost(player));
+  }
+
+  Future<void> _removeGhost(AudioPlayer player) async {
+    if (player != _player || _playlistQueueIndexes.isEmpty) return;
+    _removingGhost = true;
+    try {
+      await player.removeAudioSourceAt(0);
+      if (player != _player) return;
+      _playlistQueueIndexes = _playlistQueueIndexes.sublist(1);
+      _playlistIndex = player.currentIndex ?? 0;
+      await player.setLoopMode(_loopMode(_repeatMode));
+    } catch (error) {
+      _playerError(player, error);
+    } finally {
+      _removingGhost = false;
+    }
+  }
+
+  void _announceTrack(_NativeQueueItem item) {
+    NativeMediaSessionRuntime.instance.onNativeTrack(
+      title: item.title,
+      artist: item.artist,
+      album: item.album,
+      artworkUri: item.artworkUri,
+    );
+  }
+
+  void _playerError(AudioPlayer player, Object error) {
+    if (player != _player || _reportedErrorGeneration == _generation) return;
+    _reportedErrorGeneration = _generation;
+    _playbackWanted = false;
+    _event("error", {
+      "message": "Native audio playback failed: $error",
+      "generation": _generation,
+    });
+  }
+
+  void _startPlaying(AudioPlayer player) {
+    unawaited(
+      player.play().catchError((Object error) {
+        _playerError(player, error);
+      }),
+    );
+  }
+
+  int? _manualRelativeIndex(AudioPlayer player, int offset) {
+    final current = player.currentIndex ?? _playlistIndex;
+    if (current < 0 || current >= _playlistQueueIndexes.length) return null;
+    final next = current + offset;
+    if (next >= 0 && next < _playlistQueueIndexes.length) return next;
+    if (_repeatMode == "playlist" && _playlistQueueIndexes.isNotEmpty) {
+      return next < 0 ? _playlistQueueIndexes.length - 1 : 0;
+    }
+    return null;
+  }
+
+  Future<void> _setQueue(Map<String, dynamic> data) async {
+    final items = _parseQueue(data["items"]);
+    if (items.isEmpty) {
+      await _clearSource();
+      return;
+    }
+    final index = ((data["current_index"] as num?)?.toInt() ?? 0)
+        .clamp(0, items.length - 1)
+        .toInt();
+    await _select(
+      sources: items.map((item) => _source(item.source)).toList(),
+      queue: items,
+      queueIndexes: List.generate(items.length, (index) => index),
+      initialIndex: index,
+      activeSource: items[index].source,
+      activeTrackId: items[index].trackId,
+      generation: (data["generation"] as num?)?.toInt() ?? 0,
+      repeatMode: data["repeat_mode"] as String? ?? "off",
+      autoplay: data["autoplay"] as bool? ?? false,
+      position: Duration(
+        milliseconds: (data["position_ms"] as num?)?.toInt() ?? 0,
+      ),
+      preserveMetadata: false,
     );
   }
 
   Future<void> _updateQueue(Map<String, dynamic> data) async {
     final items = _parseQueue(data["items"]);
-    _repeatMode = data["repeat_mode"] as String? ?? "off";
-    if (items.isEmpty) {
-      _queue = const [];
-      _queueIndex = -1;
-      _activeTrackId = null;
-      await _clearSource();
+    final repeatMode = data["repeat_mode"] as String? ?? "off";
+    final old = _queue;
+    final unchanged =
+        old.length == items.length &&
+        List.generate(old.length, (index) => index).every(
+          (index) =>
+              old[index].trackId == items[index].trackId &&
+              old[index].source == items[index].source,
+        );
+    if (unchanged && _player != null && !_playlistQueueIndexes.contains(-1)) {
+      _queue = items;
+      _repeatMode = repeatMode;
+      await _player!.setLoopMode(_loopMode(repeatMode));
       return;
     }
-    final currentTrackId = _activeTrackId;
-    final requestedIndex = (data["current_index"] as num?)?.toInt() ?? 0;
-    _queue = items;
-    final activeIndex = currentTrackId == null
-        ? -1
-        : _queue.indexWhere((item) => item.trackId == currentTrackId);
-    _queueIndex = activeIndex >= 0
-        ? activeIndex
-        : requestedIndex.clamp(0, _queue.length - 1).toInt();
-    _activeTrackId = _queue[_queueIndex].trackId;
-    await _preloadQueueSuccessor();
+    final player = _player;
+    if (player == null || _activeSource == null) {
+      _queue = items;
+      _repeatMode = repeatMode;
+      return;
+    }
+    final position = reconcileNativeQueue(
+      items.map((item) => item.trackId).toList(growable: false),
+      _activeTrackId,
+      (data["current_index"] as num?)?.toInt() ?? 0,
+    );
+    final sources = <AudioSource>[];
+    final indexes = <int>[];
+    var initialIndex = position.activeIndex;
+    if (initialIndex < 0) {
+      sources.add(_source(_activeSource!));
+      indexes.add(-1);
+      initialIndex = 0;
+      if (items.isNotEmpty) {
+        for (var offset = 0; offset < items.length; offset++) {
+          final index =
+              (position.detachedSuccessorIndex + offset) % items.length;
+          sources.add(_source(items[index].source));
+          indexes.add(index);
+        }
+      }
+    } else {
+      for (var index = 0; index < items.length; index++) {
+        sources.add(_source(items[index].source));
+        indexes.add(index);
+      }
+    }
+    await _select(
+      sources: sources,
+      queue: items,
+      queueIndexes: indexes,
+      initialIndex: initialIndex,
+      activeSource: _activeSource,
+      activeTrackId: _activeTrackId,
+      generation: _generation,
+      repeatMode: repeatMode,
+      autoplay: _playbackWanted,
+      position: player.position,
+      preserveMetadata: true,
+    );
   }
 
-  int? _nextQueueIndex({required bool automatic}) {
-    if (_queue.isEmpty || _queueIndex < 0) return null;
-    if (automatic && _repeatMode == "track") return _queueIndex;
-    if (_queueIndex + 1 < _queue.length) return _queueIndex + 1;
-    if (_repeatMode == "playlist") return 0;
-    return null;
+  Future<void> _clearSource() async {
+    _loadToken++;
+    _preparingToken = null;
+    _pendingSeekPosition = null;
+    _playbackWanted = false;
+    final player = _player;
+    final preparing = _preparingPlayer;
+    _player = null;
+    _preparingPlayer = null;
+    _queue = const [];
+    _playlistQueueIndexes = const [];
+    _queueIndex = -1;
+    _playlistIndex = -1;
+    _activeSource = null;
+    _activeTrackId = null;
+    _pendingLoadedGeneration = null;
+    _cancelSubscriptionsSoon();
+    for (final decoder in <AudioPlayer>{
+      if (player != null) player,
+      if (preparing != null) preparing,
+    }) {
+      try {
+        await decoder.dispose();
+      } catch (error) {
+        debugPrint("ManagedAudio: player cleanup failed: $error");
+      }
+    }
   }
 
-  Future<void> _preloadQueueSuccessor() async {
-    final index = _nextQueueIndex(automatic: true);
-    if (index == null || index == _queueIndex) {
-      await _cancelPreload();
-      return;
-    }
-    final source = _queue[index].source;
-    if (_sameSource(source, _activeSource) ||
-        _sameSource(_preloadedSource, source)) {
-      return;
-    }
-    try {
-      await _preloadSource(source);
-    } catch (_) {
-      // Speculative decoding must never interrupt the active track. A normal
-      // transition will retry this source and surface a generation-scoped
-      // playback error if it is actually selected.
+  void _cancelSubscriptionsSoon() {
+    final old = List<StreamSubscription<dynamic>>.from(_subscriptions);
+    _subscriptions.clear();
+    for (final subscription in old) {
+      unawaited(subscription.cancel().catchError((Object _) {}));
     }
   }
 
-  void _playerCompleted(AudioPlayer player, int generation) {
-    if (_disposed ||
-        player != _activePlayer ||
-        generation != _activeGeneration) {
-      return;
-    }
-    if (_queue.isEmpty || _queueIndex < 0) {
-      _event("state_change", {
-        "state": "completed",
-        "generation": generation,
-      });
-      return;
-    }
-    unawaited(_completeQueueItem(generation));
+  void _event(String name, [dynamic value]) {
+    NativeMediaSessionRuntime.instance.onNativePlaybackEvent(name, value);
+    _eventControl?.triggerEvent(name, value);
   }
 
-  Future<void> _completeQueueItem(int generation) async {
-    if (_queueTransitioning || generation != _activeGeneration) return;
-    final next = _nextQueueIndex(automatic: true);
-    if (next == null) {
-      _event("state_change", {
-        "state": "completed",
-        "generation": generation,
-      });
-      return;
-    }
-    await _transitionTo(next);
-  }
-
-  Future<void> _transitionTo(int index) async {
-    if (_queueTransitioning ||
-        _disposed ||
-        index < 0 ||
-        index >= _queue.length) {
-      return;
-    }
-    _queueTransitioning = true;
-    final item = _queue[index];
-    final generation = _activeGeneration + 1;
-    _queueIndex = index;
-    _activeTrackId = item.trackId;
-    _event("track_change", {
-      "track_id": item.trackId,
-      "index": index,
-      "generation": generation,
+  void _publishPosition(AudioPlayer player) {
+    if (player != _player) return;
+    final position = player.position.inMilliseconds;
+    _positionBucket = position ~/ 1000;
+    _event("position_change", {
+      "position": position,
+      "generation": _generation,
     });
-    try {
-      await _loadSource(item.source, generation, autoplay: true);
-    } catch (_) {
-      _event("error", {
-        "message": "The next native audio source could not be prepared.",
-      });
-    } finally {
-      _queueTransitioning = false;
+  }
+
+  Future<void> _seekCurrent(AudioPlayer player, Duration position) async {
+    await player.seek(position);
+    // A paused seek can remain in the same one-second bucket. Publish its
+    // exact position instead of waiting for the next periodic decoder tick.
+    _publishPosition(player);
+  }
+
+  void setVolume(double value) {
+    _volume = value.clamp(0, 1).toDouble();
+    for (final player in <AudioPlayer>{
+      if (_player != null) _player!,
+      if (_preparingPlayer != null) _preparingPlayer!,
+    }) {
+      unawaited(
+        player.setVolume(_volume).catchError((Object error) {
+          _playerError(player, error);
+        }),
+      );
     }
   }
 
@@ -366,209 +588,92 @@ class ManagedAudioService extends FletService implements NativePlaybackEngine {
     String action, {
     Duration? seekPosition,
   }) async {
-    if (_disposed) return false;
-    final player = _activePlayer;
+    final player = _player;
     switch (action) {
       case "play":
         if (player == null) return false;
-        final position = await player.getCurrentPosition();
-        final duration = await player.getDuration();
-        if (position != null && duration != null && position >= duration) {
-          await player.seek(Duration.zero);
+        _playbackWanted = true;
+        _retainPlayback();
+        if (player.processingState == ProcessingState.completed) {
+          await _seekCurrent(player, Duration.zero);
         }
-        await _retirePrevious();
-        if (!_disposed && player == _activePlayer) await player.resume();
+        _startPlaying(player);
         return true;
       case "pause":
+        _playbackWanted = false;
         if (player == null) return false;
         await player.pause();
-        await _retirePrevious();
         return true;
       case "skipToNext":
-        if (_queue.isEmpty || _queueIndex < 0) return false;
-        final next = _nextQueueIndex(automatic: false);
-        if (next == null) {
-          if (player != null) {
-            await player.pause();
-            await player.seek(Duration.zero);
-          }
+        if (player == null || _queue.isEmpty) return false;
+        final next = _manualRelativeIndex(player, 1);
+        if (next != null) {
+          await player.seek(Duration.zero, index: next);
         } else {
-          await _transitionTo(next);
+          _playbackWanted = false;
+          await player.pause();
+          await _seekCurrent(player, Duration.zero);
         }
         return true;
       case "skipToPrevious":
-        if (_queue.isEmpty || _queueIndex < 0 || player == null) return false;
-        final position = await player.getCurrentPosition();
-        if (position != null && position > const Duration(seconds: 5)) {
-          await player.seek(Duration.zero);
-          return true;
-        }
-        var previous = _queueIndex - 1;
-        if (previous < 0) {
-          previous = _repeatMode == "playlist" ? _queue.length - 1 : 0;
-        }
-        if (previous == _queueIndex) {
-          await player.seek(Duration.zero);
-          await player.resume();
+        if (player == null || _queue.isEmpty) return false;
+        if (player.position > const Duration(seconds: 5)) {
+          await _seekCurrent(player, Duration.zero);
+        } else if (_manualRelativeIndex(player, -1) case final previous?) {
+          await player.seek(Duration.zero, index: previous);
         } else {
-          await _transitionTo(previous);
+          await _seekCurrent(player, Duration.zero);
         }
         return true;
       case "seekTo":
         if (player == null || seekPosition == null) return false;
-        await player.seek(seekPosition);
+        await _seekCurrent(player, seekPosition);
         return true;
       case "rewind":
       case "fastForward":
         if (player == null) return false;
-        final position = await player.getCurrentPosition() ?? Duration.zero;
-        final delta = action == "rewind"
-            ? const Duration(seconds: -10)
-            : const Duration(seconds: 10);
-        final targetMs = (position + delta).inMilliseconds;
-        await player.seek(Duration(milliseconds: targetMs < 0 ? 0 : targetMs));
+        final delta = action == "rewind" ? -10000 : 10000;
+        final position = player.position.inMilliseconds + delta;
+        await _seekCurrent(
+          player,
+          Duration(milliseconds: position < 0 ? 0 : position),
+        );
         return true;
       case "stop":
-        if (player == null) return false;
-        final generation = _activeGeneration;
-        await player.pause();
-        await _clearSource();
-        _event("state_change", {
-          "state": "stopped",
-          "generation": generation,
-        });
+        final generation = _generation;
+        try {
+          await _clearSource();
+        } finally {
+          _event("state_change", {
+            "state": "stopped",
+            "generation": generation,
+          });
+          await NativeMediaSessionRuntime.instance.deactivateForStop();
+        }
         return true;
       default:
         return false;
     }
   }
 
-  Future<void> _preloadSource(Object source) async {
-    await _cancelPreload();
-    if (_disposed) return;
-    final token = ++_preloadToken;
-    final future = _preparePlayer(source);
-    _preloadedSource = source;
-    _preloadFuture = future;
-    try {
-      final player = await future;
-      if (_disposed || token != _preloadToken) {
-        // A consumed future is owned by _loadSource; cancellation owns all
-        // other obsolete candidates.
-        if (_preloadFuture == future) {
-          _preloadFuture = null;
-          _preloadedSource = null;
-          unawaited(player.dispose().catchError((Object _) {}));
-        }
-      }
-    } catch (_) {
-      if (_preloadFuture == future) {
-        _preloadFuture = null;
-        _preloadedSource = null;
-      }
-      rethrow;
-    }
-  }
-
-  Future<void> _cancelPreload() async {
-    _preloadToken++;
-    final future = _preloadFuture;
-    _preloadFuture = null;
-    _preloadedSource = null;
-    if (future == null) return;
-    unawaited(future.then((player) async {
-      if (player != _activePlayer) await player.dispose();
-    }).catchError((Object _) {}));
-  }
-
-  Future<void> _retirePrevious() async {
-    final previous = _retiringPlayer;
-    _retiringPlayer = null;
-    if (previous == null) return;
-    try {
-      await previous.pause();
-    } finally {
-      // Decoder disposal is cleanup, not part of the critical handoff. Once
-      // the previous player is paused, let the ready candidate begin while
-      // the old native resources are released asynchronously.
-      unawaited(previous.dispose().catchError((Object _) {}));
-    }
-  }
-
-  Future<void> _clearSource() async {
-    _loadToken++;
-    await _cancelPreload();
-    await _cancelSubscriptions();
-    final active = _activePlayer;
-    final retiring = _retiringPlayer;
-    _activePlayer = null;
-    _retiringPlayer = null;
-    _activeSource = null;
-    await Future.wait([
-      if (active != null) active.dispose(),
-      if (retiring != null && retiring != active) retiring.dispose(),
-    ]);
-  }
-
-  Future<void> _cancelSubscriptions() async {
-    final subscriptions =
-        List<StreamSubscription<dynamic>>.from(_subscriptions);
-    _subscriptions.clear();
-    await Future.wait(
-        subscriptions.map((subscription) => subscription.cancel()));
-  }
-
-  void _cancelSubscriptionsSoon() {
-    final subscriptions =
-        List<StreamSubscription<dynamic>>.from(_subscriptions);
-    _subscriptions.clear();
-    for (final subscription in subscriptions) {
-      unawaited(subscription.cancel().catchError((Object _) {}));
-    }
-  }
-
-  void _event(String name, [dynamic value]) {
-    if (!_disposed) control.triggerEvent(name, value);
-  }
-
-  @override
-  void update() {
-    _volume = control.getDouble("volume", 1)!;
-    if (!_volumeUpdating && !_disposed) {
-      _volumeUpdating = true;
-      unawaited(_updateVolume());
-    }
-  }
-
-  Future<void> _updateVolume() async {
-    try {
-      while (!_disposed) {
-        final value = _volume;
-        final players = <AudioPlayer>{
-          if (_activePlayer != null) _activePlayer!,
-          if (_retiringPlayer != null) _retiringPlayer!,
-        };
-        await Future.wait(players.map((player) => player.setVolume(value)));
-        if (_volume == value) break;
-      }
-    } catch (_) {
-      _event("error", {"message": "The native audio player did not respond."});
-    } finally {
-      _volumeUpdating = false;
-    }
-  }
-
-  Future<dynamic> _invokeMethod(String name, dynamic args) async {
-    if (_disposed) return null;
+  Future<dynamic> invokeMethod(String name, dynamic args) async {
     switch (name) {
       case "load_source":
         final data = Map<String, dynamic>.from(args as Map);
-        _queue = const [];
-        _queueIndex = -1;
-        _activeTrackId = null;
-        await _loadSource(
-          data["source"] as Object,
-          (data["generation"] as num?)?.toInt() ?? 0,
+        await _select(
+          sources: [_source(data["source"] as Object)],
+          queue: const [],
+          queueIndexes: const [-1],
+          initialIndex: 0,
+          activeSource: data["source"],
+          activeTrackId: null,
+          generation: (data["generation"] as num?)?.toInt() ?? 0,
+          repeatMode: "off",
+          autoplay: data["autoplay"] as bool? ?? false,
+          position: Duration(
+            milliseconds: (data["position_ms"] as num?)?.toInt() ?? 0,
+          ),
+          preserveMetadata: true,
         );
         return null;
       case "set_queue":
@@ -579,81 +684,95 @@ class ManagedAudioService extends FletService implements NativePlaybackEngine {
         return null;
       case "cancel_load":
         _loadToken++;
+        _preparingToken = null;
+        _pendingSeekPosition = null;
+        final candidate = _preparingPlayer;
+        _preparingPlayer = null;
+        if (candidate != null) {
+          unawaited(candidate.dispose().catchError((Object _) {}));
+        }
         return null;
       case "clear_source":
-        _queue = const [];
-        _queueIndex = -1;
-        _activeTrackId = null;
         await _clearSource();
         return null;
-      case "set_foreground":
-        final data = Map<String, dynamic>.from(args as Map);
-        _foreground = data["foreground"] as bool? ?? true;
-        _positionBucket = -1;
-        return null;
       case "get_playback_state":
-        final player = _activePlayer;
-        if (player == null) {
-          return <String, int?>{
-            "position_ms": null,
-            "duration_ms": null,
-          };
-        }
-        final values = await Future.wait<Duration?>([
-          player.getCurrentPosition(),
-          player.getDuration(),
-        ]);
-        return <String, int?>{
-          "position_ms": values[0]?.inMilliseconds,
-          "duration_ms": values[1]?.inMilliseconds,
+        final player = _player;
+        return <String, Object?>{
+          "track_id": _activeTrackId,
+          "source": _activeSource is String ? _activeSource : null,
+          ...NativeMediaSessionRuntime.instance.currentMetadata,
+          "queue_index": _queueIndex,
+          "generation": _generation,
+          "position_ms": player?.position.inMilliseconds,
+          "duration_ms": player?.duration?.inMilliseconds,
+          "playing": player?.playing ?? false,
         };
       case "play":
-        final player = _activePlayer;
-        if (player == null) return null;
+        _playbackWanted = true;
+        _retainPlayback();
         final position = parseDuration(args["position"]);
-        if (position != null && position > Duration.zero) {
-          await player.seek(position);
+        if (_preparingToken != null) {
+          if (position != null) _pendingSeekPosition = position;
+          return null;
         }
-        await _retirePrevious();
-        if (!_disposed && player == _activePlayer) await player.resume();
+        final player = _player;
+        if (player == null) return null;
+        if (position != null && position > Duration.zero)
+          await _seekCurrent(player, position);
+        _startPlaying(player);
         return null;
       case "resume":
-        final player = _activePlayer;
-        if (player == null) return null;
-        await _retirePrevious();
-        if (!_disposed && player == _activePlayer) await player.resume();
+        _playbackWanted = true;
+        _retainPlayback();
+        if (_preparingToken == null && _player != null) _startPlaying(_player!);
         return null;
       case "pause":
-        await Future.wait([
-          if (_activePlayer != null) _activePlayer!.pause(),
-          if (_retiringPlayer != null) _retiringPlayer!.pause(),
-        ]);
-        await _retirePrevious();
+        _playbackWanted = false;
+        if (_player != null) await _player!.pause();
         return null;
       case "seek":
         final position = parseDuration(args["position"]);
-        final player = _activePlayer;
-        if (position != null && player != null) await player.seek(position);
+        if (_preparingToken != null) {
+          _pendingSeekPosition = position;
+        } else if (position != null && _player != null) {
+          await _seekCurrent(_player!, position);
+        }
         return null;
-      case "get_duration":
-        return await _activePlayer?.getDuration();
-      case "get_current_position":
-        return await _activePlayer?.getCurrentPosition();
+      case "stop":
+        await handleMediaAction("stop");
+        return null;
+      case "skip_next":
+        await handleMediaAction("skipToNext");
+        return null;
+      case "skip_previous":
+        await handleMediaAction("skipToPrevious");
+        return null;
       default:
         throw ArgumentError("Unknown ManagedAudio method: $name");
     }
   }
+}
+
+/// Only this command bridge follows the Flet page lifecycle.
+class ManagedAudioService extends FletService {
+  ManagedAudioService({required super.control});
+
+  final NativeAudioRuntime _runtime = NativeAudioRuntime.instance;
+
+  @override
+  void init() {
+    super.init();
+    control.addInvokeMethodListener(_runtime.invokeMethod);
+    _runtime.attach(control);
+  }
+
+  @override
+  void update() => _runtime.setVolume(control.getDouble("volume", 1)!);
 
   @override
   void dispose() {
-    _disposed = true;
-    if (identical(activeNativePlaybackEngine, this)) {
-      activeNativePlaybackEngine = null;
-    }
-    _loadToken++;
-    _preloadToken++;
-    control.removeInvokeMethodListener(_invokeMethod);
-    unawaited(_clearSource().catchError((Object _) {}));
+    control.removeInvokeMethodListener(_runtime.invokeMethod);
+    _runtime.detach(control);
     super.dispose();
   }
 }

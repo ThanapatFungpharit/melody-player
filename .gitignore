@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 build/
+/artifacts/
 dist/
 wheels/
 *.egg-info/
@@ -47,3 +48,5 @@ Thumbs.db
 /src/musicplayer/bin/*/*/ffmpeg.exe
 /src/musicplayer/bin/*/*/ffprobe.exe
 /src/musicplayer/bin/*/*/bundle.json
+
+signing/

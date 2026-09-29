@@ -1,8 +1,9 @@
 """Durable, offline-first thumbnail storage.
 
 The authoritative artwork is embedded in each downloaded media file. The UI
-also renders a URL-keyed copy of those verified embedded bytes directly, which
-works on desktop and mobile without repeatedly parsing the media container.
+renders a URL-keyed copy. Native Flet images receive the cache file path so
+Flutter can load it without Python reading and sending every image on the UI
+thread. Web images still receive bytes for access to the private cache.
 Native media sessions receive a file URI for the same derived cache entry.
 """
 
@@ -40,6 +41,7 @@ class ThumbnailCache:
         self._key_locks: dict[str, tuple[threading.Lock, int]] = {}
         self._memory: OrderedDict[str, bytes] = OrderedDict()
         self._memory_bytes = 0
+        self.native_image_sources = False
 
     def cached_path(self, url: str) -> Path | None:
         """Return the durable entry for a remote URL without touching network."""
@@ -78,6 +80,13 @@ class ThumbnailCache:
             return source
         self._remember(key, data)
         return data
+
+    def display_source(self, source: str | bytes) -> str | bytes:
+        """Use a local file on native UI; retain byte sources for web clients."""
+        if not self.native_image_sources or isinstance(source, bytes) or not source:
+            return self.image_source(source)
+        path = self.cached_path(source)
+        return str(path.absolute()) if path is not None else source
 
     def artwork_uri(self, source: str) -> str:
         """Resolve artwork for an operating-system media session."""

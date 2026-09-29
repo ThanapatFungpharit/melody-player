@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class ManagedAudioBackend:
     """Lifecycle-safe adapter around the package-owned managed track player.
 
-    One service stays mounted for the page lifetime. Candidate sources prepare
+    One command bridge stays mounted for the page lifetime. Candidate sources prepare
     beside the active decoder and swap only after native readiness. Transport
     and source RPCs use separate locks so pause remains responsive during a
     handoff, and every operation is bounded at this final player boundary.
@@ -46,6 +46,7 @@ class ManagedAudioBackend:
         self.on_stopped: Callable[[], None] | None = None
         self.on_error: Callable[[str], None] | None = None
         self.on_media_action: Callable[[str, int | None], None] | None = None
+        self.on_native_reattach: Callable[[dict[str, Any]], None] | None = None
         self._volume = 1.0
         self._generation = 0
         self._completed_generation = -1
@@ -53,9 +54,6 @@ class ManagedAudioBackend:
         self._has_active_source = False
         self._closing = False
         self._service_failed = False
-        self._foreground = True
-        self._foreground_generation = 0
-        self._lifecycle_lock = asyncio.Lock()
         self._pending_play_position: int | None = None
         self._pending_seek_position: int | None = None
         self._load_watchdog: Future[Any] | None = None
@@ -92,7 +90,7 @@ class ManagedAudioBackend:
         )
         audio.on_track_change = self._track_changed
         audio.on_error = lambda event: self._source_error(
-            event.message, self._generation
+            event.message, event.generation
         )
 
     async def publish_to_music(self, source: str | Path) -> Path:
@@ -116,6 +114,7 @@ class ManagedAudioBackend:
         on_stopped: Callable[[], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_media_action: Callable[[str, int | None], None] | None = None,
+        on_native_reattach: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.on_position = on_position
         self.on_loaded = on_loaded
@@ -126,6 +125,37 @@ class ManagedAudioBackend:
         self.on_stopped = on_stopped
         self.on_error = on_error
         self.on_media_action = on_media_action
+        self.on_native_reattach = on_native_reattach
+
+    async def reattach_native_state(self) -> None:
+        """Adopt playback retained by the native runtime after a page remount."""
+        if self._closing:
+            return
+        state: dict[str, Any] | None = None
+        for attempt in range(3):
+            try:
+                state = await asyncio.wait_for(
+                    self.audio.get_playback_state(),
+                    timeout=self._OPERATION_TIMEOUT_SECONDS,
+                )
+                break
+            except Exception:
+                if attempt == 2 or self._closing:
+                    logger.debug(
+                        "Native playback reattachment is unavailable", exc_info=True
+                    )
+                    return
+                await asyncio.sleep(0.2)
+        if state is None:
+            return
+        if self._closing or not state.get("source"):
+            return
+        self._generation = int(state.get("generation") or 0)
+        self._loaded = True
+        self._has_active_source = True
+        self._media_reattach_pending = True
+        if self.on_native_reattach:
+            self.on_native_reattach(state)
 
     def sync_media_session(
         self,
@@ -134,6 +164,7 @@ class ManagedAudioBackend:
         artist: str = "",
         album: str = "",
         artwork_uri: str = "",
+        auto_focal_point_live_notifications: bool = False,
         duration_ms: int = 0,
         position_ms: int = 0,
         playing: bool = False,
@@ -141,15 +172,17 @@ class ManagedAudioBackend:
         has_next: bool = True,
         has_previous: bool = True,
         repeat_mode: str = "off",
-        shuffle: bool = False,
+        can_repeat: bool = False,
+        can_shuffle: bool = False,
+        can_favorite: bool = False,
+        favorite: bool = False,
+        notification_action_pair: str = "shuffle_favorite",
         keep_alive: bool = False,
     ) -> None:
-        """Publish a throttled, coherent snapshot to native system controls.
+        """Publish a coherent snapshot to native system controls.
 
-        Flet already sends one position event per second. The native media
-        panel extrapolates a playing timeline, so a five-second correction is
-        sufficient and avoids a second high-frequency platform-channel stream
-        while the display is off.
+        Flet sends one position event per second. Publish each event to keep
+        the media notification current while the app is visible or hidden.
         """
         clean_title = title.strip()
         duration = max(0, int(duration_ms))
@@ -158,14 +191,18 @@ class ManagedAudioBackend:
         is_loading = bool(loading)
         can_skip_next = bool(has_next)
         can_skip_previous = bool(has_previous)
-        is_shuffled = bool(shuffle)
+        can_cycle_repeat = bool(can_repeat)
+        can_shuffle_upcoming = bool(can_shuffle)
+        can_toggle_favorite = bool(can_favorite)
+        is_favorite = bool(favorite)
         should_keep_alive = bool(keep_alive)
-        position_marker = position // 5_000 if is_playing else position
+        position_marker = position
         snapshot: tuple[object, ...] = (
             clean_title,
             artist,
             album,
             artwork_uri,
+            bool(auto_focal_point_live_notifications),
             duration,
             position_marker,
             is_playing,
@@ -173,11 +210,15 @@ class ManagedAudioBackend:
             can_skip_next,
             can_skip_previous,
             repeat_mode,
-            is_shuffled,
+            can_cycle_repeat,
+            can_shuffle_upcoming,
+            can_toggle_favorite,
+            is_favorite,
+            notification_action_pair,
             should_keep_alive,
         )
         if (
-            snapshot == self._media_snapshot
+            (snapshot == self._media_snapshot and self._media_pending_snapshot is None)
             or snapshot == self._media_pending_snapshot
             or self._closing
             or self._service_failed
@@ -196,6 +237,9 @@ class ManagedAudioBackend:
             "artist": artist,
             "album": album,
             "artwork_uri": artwork_uri,
+            "auto_focal_point_live_notifications": bool(
+                auto_focal_point_live_notifications
+            ),
             "duration_ms": duration,
             "position_ms": position,
             "playing": is_playing,
@@ -203,7 +247,11 @@ class ManagedAudioBackend:
             "has_next": can_skip_next,
             "has_previous": can_skip_previous,
             "repeat_mode": repeat_mode,
-            "shuffle": is_shuffled,
+            "can_repeat": can_cycle_repeat,
+            "can_shuffle": can_shuffle_upcoming,
+            "can_favorite": can_toggle_favorite,
+            "favorite": is_favorite,
+            "notification_action_pair": notification_action_pair,
             "keep_alive": should_keep_alive,
             "reattach": self._media_reattach_pending,
         }
@@ -239,7 +287,8 @@ class ManagedAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
+        autoplay: bool = False,
+        position_ms: int = 0,
     ) -> None:
         """Install and prepare the native authoritative playback queue.
 
@@ -252,7 +301,7 @@ class ManagedAudioBackend:
             return
         self._service_failed = False
         self._cancel_load_watchdog()
-        self._generation += 1
+        self._next_python_generation()
         self._cancel_operations()
         generation = self._generation
         self._loaded = False
@@ -264,7 +313,8 @@ class ManagedAudioBackend:
             int(current_index),
             generation,
             repeat_mode,
-            bool(shuffle),
+            autoplay,
+            max(0, int(position_ms)),
             generation=generation,
         )
         try:
@@ -281,7 +331,6 @@ class ManagedAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
     ) -> None:
         """Update native queue policy without interrupting the active decoder."""
         if self._closing or self._service_failed:
@@ -291,18 +340,19 @@ class ManagedAudioBackend:
             items,
             int(current_index),
             repeat_mode,
-            bool(shuffle),
             generation=self._generation,
         )
 
-    def load(self, source: AudioSource) -> None:
+    def load(
+        self, source: AudioSource, *, autoplay: bool = False, position_ms: int = 0
+    ) -> None:
         if self._closing:
             return
         # A new explicit source selection is the retry boundary after a
         # disconnected or failed player service.
         self._service_failed = False
         self._cancel_load_watchdog()
-        self._generation += 1
+        self._next_python_generation()
         self._cancel_operations()
         generation = self._generation
         self._loaded = False
@@ -310,7 +360,12 @@ class ManagedAudioBackend:
         self._pending_seek_position = None
 
         self._schedule(
-            self.audio.load_source, source, generation, generation=generation
+            self.audio.load_source,
+            source,
+            generation,
+            autoplay,
+            max(0, int(position_ms)),
+            generation=generation,
         )
         try:
             self._load_watchdog = self.page.run_task(self._watch_load, generation)
@@ -331,16 +386,14 @@ class ManagedAudioBackend:
     def pause(self) -> None:
         if not self._loaded:
             self._pending_play_position = None
-            if self._has_active_source:
-                self._schedule_transport(self.audio.pause, generation=self._generation)
+            self._schedule_transport(self.audio.pause, generation=self._generation)
             return
         self._schedule_transport(self.audio.pause, generation=self._generation)
 
     def resume(self) -> None:
         if not self._loaded:
             self._pending_play_position = self._pending_seek_position or 0
-            if self._has_active_source:
-                self._schedule_transport(self.audio.resume, generation=self._generation)
+            self._schedule_transport(self.audio.resume, generation=self._generation)
             return
         self._schedule_transport(self.audio.resume, generation=self._generation)
 
@@ -359,7 +412,7 @@ class ManagedAudioBackend:
         # "Session closed" errors, so shutdown is deliberately local-only.
         self._closing = True
         self._service_failed = True
-        self._generation += 1
+        self._next_python_generation()
         self._media_generation += 1
         self._media_pending_snapshot = None
         self._cancel_load_watchdog()
@@ -370,10 +423,8 @@ class ManagedAudioBackend:
     def refresh_state(self) -> None:
         """Reconcile the Python UI with the native player after app resume.
 
-        Position events are intentionally sparse while the app is backgrounded.
-        Querying the native player when the page becomes visible prevents the
-        slider and system-session timeline from jumping back to their last
-        foreground value.
+        Querying the native player when the page becomes visible corrects any
+        position drift accumulated while the page was suspended.
         """
         if self._closing or not self._loaded:
             return
@@ -381,35 +432,6 @@ class ManagedAudioBackend:
             self.page.run_task(self._refresh_state, self._generation)
         except Exception:
             logger.debug("Audio state refresh could not be scheduled", exc_info=True)
-
-    def set_foreground(self, foreground: bool) -> None:
-        """Reduce native-to-Python progress traffic while the UI is hidden."""
-        value = bool(foreground)
-        if self._closing or value == self._foreground:
-            return
-        self._foreground = value
-        self._foreground_generation += 1
-        generation = self._foreground_generation
-        try:
-            self.page.run_task(self._set_foreground, value, generation)
-        except Exception:
-            logger.debug("Audio lifecycle update could not be scheduled", exc_info=True)
-
-    async def _set_foreground(self, foreground: bool, generation: int) -> None:
-        if self._closing:
-            return
-        try:
-            async with self._lifecycle_lock:
-                if self._closing or generation != self._foreground_generation:
-                    return
-                await asyncio.wait_for(
-                    self.audio.set_foreground(foreground),
-                    timeout=self._OPERATION_TIMEOUT_SECONDS,
-                )
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.debug("Native audio lifecycle update failed", exc_info=True)
 
     async def _refresh_state(self, generation: int) -> None:
         if self._closing or generation != self._generation:
@@ -424,6 +446,7 @@ class ManagedAudioBackend:
                 )
                 position = state.get("position_ms")
                 duration = state.get("duration_ms")
+                playing = state.get("playing")
         except asyncio.CancelledError:
             return
         except Exception:
@@ -439,6 +462,8 @@ class ManagedAudioBackend:
             self.on_position(int(position))
         if duration is not None and self.on_duration:
             self.on_duration(int(duration))
+        if playing is not None and self.on_playing:
+            self.on_playing(bool(playing))
 
     def set_volume(self, value: float) -> None:
         gain = max(0.0, min(1.0, value))
@@ -614,6 +639,11 @@ class ManagedAudioBackend:
         if watchdog is not None:
             watchdog.cancel()
 
+    def _next_python_generation(self) -> None:
+        # Native queue transitions use odd generations. Explicit Python
+        # requests use even ones, including after adopting a native track.
+        self._generation = (self._generation + 2) & ~1
+
     def _cancel_operations(self) -> None:
         for future in tuple(self._operations):
             future.cancel()
@@ -626,7 +656,7 @@ class ManagedAudioBackend:
         """Supersede native preparation while leaving the active source intact."""
         if self._closing:
             return
-        self._generation += 1
+        self._next_python_generation()
         self._loaded = self._has_active_source
         self._pending_play_position = None
         self._pending_seek_position = None
@@ -643,7 +673,7 @@ class ManagedAudioBackend:
 
     def discard_source(self) -> None:
         """Invalidate callbacks and release native decoders without unmounting."""
-        self._generation += 1
+        self._next_python_generation()
         self._loaded = False
         self._has_active_source = False
         self._pending_play_position = self._pending_seek_position = None

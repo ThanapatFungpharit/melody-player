@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import asyncio
+import itertools
+import threading
 import unittest
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock, call
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 import flet as ft
 
-from musicplayer.app import MusicPlayerApp
+from musicplayer.app import (
+    _STARTUP_QUOTES,
+    MusicPlayerApp,
+    _apply_startup_appearance,
+    _cycle_startup_quotes,
+    _next_startup_quote,
+    _quote_display_seconds,
+    _show_startup_loading,
+    main,
+)
 from musicplayer.application.models import (
     AppSettings,
     DownloadRecord,
@@ -110,6 +122,193 @@ class _Store:
 
 
 class AppLayoutTests(unittest.TestCase):
+    def test_startup_loading_fills_safe_area_and_centers_content(self) -> None:
+        snapshot: dict[str, object] = {}
+        page = SimpleNamespace(controls=[], update=Mock())
+
+        def add(control: ft.Control) -> None:
+            snapshot["control"] = control
+            snapshot["vertical_alignment"] = page.vertical_alignment
+            snapshot["horizontal_alignment"] = page.horizontal_alignment
+            page.controls.append(control)
+
+        page.add = add
+        with (
+            patch(
+                "musicplayer.app.AppServices.load",
+                return_value=SimpleNamespace(
+                    store=SimpleNamespace(settings=AppSettings())
+                ),
+            ),
+            patch("musicplayer.app.MusicPlayerApp") as app_class,
+            patch("musicplayer.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        ):
+            app_class.return_value.backend.reattach_native_state = AsyncMock()
+            asyncio.run(main(page))  # ty: ignore[invalid-argument-type]
+
+        delays = [awaited.args[0] for awaited in sleep.await_args_list]
+        self.assertEqual(len(delays), 3)
+        self.assertGreater(delays[0], 2.5)
+        self.assertLessEqual(delays[0], 3.0)
+        self.assertEqual(delays[1:], [0.22, 0.05])
+
+        loading = cast(ft.SafeArea, snapshot["control"])
+        self.assertIsInstance(loading, ft.SafeArea)
+        self.assertTrue(loading.expand)
+        self.assertTrue(loading.avoid_intrusions_top)
+        self.assertTrue(loading.avoid_intrusions_bottom)
+        self.assertEqual(snapshot["vertical_alignment"], ft.MainAxisAlignment.CENTER)
+        self.assertEqual(snapshot["horizontal_alignment"], ft.CrossAxisAlignment.CENTER)
+        content = cast(ft.Container, loading.content)
+        self.assertIsInstance(content, ft.Container)
+        self.assertEqual(content.alignment, ft.Alignment.CENTER)
+        self.assertTrue(content.expand)
+        layout = cast(ft.Column, content.content)
+        self.assertEqual(len(layout.controls), 3)
+        self.assertEqual(cast(ft.Container, layout.controls[0]).expand, 1)
+        centerpiece = cast(ft.Column, layout.controls[1])
+        mark = cast(ft.Stack, centerpiece.controls[0])
+        self.assertIsInstance(mark, ft.Stack)
+        self.assertEqual(mark.width, 280)
+        glow = cast(ft.Container, mark.controls[0])
+        self.assertEqual(glow.bgcolor, ft.Colors.PRIMARY_CONTAINER)
+        ring = cast(ft.ProgressRing, mark.controls[1])
+        self.assertIsInstance(ring, ft.ProgressRing)
+        self.assertEqual(ring.color, ft.Colors.PRIMARY)
+        lines = cast(ft.Row, mark.controls[2])
+        self.assertEqual(len(lines.controls), 4)
+        self.assertTrue(
+            all(
+                cast(ft.Container, bar).bgcolor == ft.Colors.PRIMARY
+                for bar in lines.controls
+            )
+        )
+        caption = cast(ft.Column, cast(ft.Container, centerpiece.controls[1]).content)
+        self.assertEqual(cast(ft.Text, caption.controls[0]).value, "Melody")
+        quote = cast(ft.Container, layout.controls[2])
+        self.assertEqual(quote.alignment, ft.Alignment.BOTTOM_CENTER)
+        self.assertEqual(quote.expand, 1)
+        self.assertIn(cast(ft.Text, quote.content).value, _STARTUP_QUOTES)
+        self.assertEqual(page.vertical_alignment, ft.MainAxisAlignment.START)
+        self.assertEqual(loading.opacity, 0)
+        self.assertIsNone(page.on_resize)
+
+    def test_startup_loading_mark_scales_with_viewport(self) -> None:
+        page = SimpleNamespace(
+            width=390,
+            height=844,
+            controls=[],
+            update=Mock(),
+        )
+        page.add = page.controls.append
+        loading, _ = _show_startup_loading(page)  # ty: ignore[invalid-argument-type]
+        layout = cast(ft.Column, cast(ft.Container, loading.content).content)
+        centerpiece = cast(ft.Column, layout.controls[1])
+        mark = cast(ft.Stack, centerpiece.controls[0])
+
+        self.assertEqual(mark.width, 172)
+        page.on_resize(SimpleNamespace(width=900, height=650))
+        self.assertEqual(mark.width, 280)
+        self.assertEqual(mark.height, 280)
+        page.on_resize(SimpleNamespace(width=320, height=568))
+        self.assertEqual(mark.width, 141)
+        self.assertEqual(mark.height, 141)
+        ring = cast(ft.ProgressRing, mark.controls[1])
+        self.assertEqual(ring.width, 141)
+        lines = cast(ft.Row, mark.controls[2])
+        self.assertEqual(lines.width, round(141 * 0.78))
+
+    def test_startup_quotes_allow_more_time_for_more_words_and_do_not_repeat(
+        self,
+    ) -> None:
+        self.assertGreater(
+            _quote_display_seconds("“A longer quote takes more time to read.”"),
+            _quote_display_seconds("“Short quote.”"),
+        )
+        for previous in _STARTUP_QUOTES:
+            self.assertNotEqual(_next_startup_quote(previous), previous)
+
+    def test_startup_quotes_stop_updating_after_loading(self) -> None:
+        async def run_cycle() -> tuple[list[str], int]:
+            updates: list[str] = []
+            quote = ft.Text(_STARTUP_QUOTES[0])
+            page = SimpleNamespace(update=lambda control: updates.append(control.value))
+            stop = asyncio.Event()
+            with patch("musicplayer.app._quote_display_seconds", return_value=0.01):
+                task = asyncio.create_task(
+                    _cycle_startup_quotes(page, quote, stop)  # ty: ignore[invalid-argument-type]
+                )
+                await asyncio.sleep(0.04)
+                stop.set()
+                await task
+            before = len(updates)
+            await asyncio.sleep(0.02)
+            return updates, before
+
+        updates, before = asyncio.run(run_cycle())
+        self.assertGreaterEqual(before, 1)
+        self.assertEqual(len(updates), before)
+        self.assertTrue(all(a != b for a, b in itertools.pairwise(updates)))
+
+    def test_startup_opens_immediately_after_load_when_delay_is_disabled(self) -> None:
+        page = SimpleNamespace(controls=[], update=Mock())
+        page.add = page.controls.append
+        services = SimpleNamespace(
+            store=SimpleNamespace(settings=AppSettings(skip_loading_delay=True))
+        )
+        with (
+            patch("musicplayer.app.AppServices.load", return_value=services),
+            patch("musicplayer.app.MusicPlayerApp"),
+            patch("musicplayer.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        ):
+            asyncio.run(main(page))  # ty: ignore[invalid-argument-type]
+
+        self.assertEqual(
+            [awaited.args[0] for awaited in sleep.await_args_list], [0.22, 0.05]
+        )
+
+    def test_loading_view_uses_saved_accent_while_library_loads(self) -> None:
+        page = SimpleNamespace(controls=[], update=Mock())
+        page.add = page.controls.append
+        settings = AppSettings(
+            accent_color="ocean", theme="dark", skip_loading_delay=True
+        )
+        services = SimpleNamespace(store=SimpleNamespace(settings=settings))
+        finish_load = threading.Event()
+
+        def load(*, on_settings_loaded):
+            on_settings_loaded(settings)
+            finish_load.wait(timeout=3)
+            return services
+
+        async def check() -> None:
+            applied = asyncio.Event()
+
+            def observe_appearance(page, settings) -> None:
+                _apply_startup_appearance(page, settings)
+                applied.set()
+
+            with (
+                patch("musicplayer.app.AppServices.load", side_effect=load),
+                patch("musicplayer.app.MusicPlayerApp"),
+                patch(
+                    "musicplayer.app._apply_startup_appearance",
+                    side_effect=observe_appearance,
+                ),
+            ):
+                task = asyncio.create_task(main(page))  # ty: ignore[invalid-argument-type]
+                try:
+                    await asyncio.wait_for(applied.wait(), timeout=3)
+                    self.assertFalse(task.done())
+                    self.assertIsInstance(page.controls[0], ft.SafeArea)
+                    self.assertEqual(page.theme_mode, ft.ThemeMode.DARK)
+                    self.assertEqual(page.theme.color_scheme_seed, "#0EA5E9")
+                finally:
+                    finish_load.set()
+                    await task
+
+        asyncio.run(check())
+
     def _app(self) -> MusicPlayerApp:
         app = MusicPlayerApp.__new__(MusicPlayerApp)
         app.shell = DesktopShell(app)
@@ -142,8 +341,9 @@ class AppLayoutTests(unittest.TestCase):
             media_session_active=True,
             snapshot=SimpleNamespace(loading=False),
             queue=SimpleNamespace(
+                items=["track"],
+                upcoming_count=2,
                 repeat=SimpleNamespace(value="none"),
-                shuffle=False,
                 peek_next=lambda **_: "next",
             ),
         )
@@ -153,7 +353,7 @@ class AppLayoutTests(unittest.TestCase):
         )
         app.library = Mock()
         app.library.details.return_value = SimpleNamespace(
-            uploader="Artist", thumbnail="artwork", source_name="YouTube"
+            uploader="Artist", thumbnail="artwork", source_name="YouTube", favorite=True
         )
         app.backend = Mock()
         app._system_media_key = None
@@ -170,6 +370,21 @@ class AppLayoutTests(unittest.TestCase):
             app.backend.sync_media_session.call_args_list[-1].kwargs["position_ms"],
             2000,
         )
+        self.assertTrue(
+            app.backend.sync_media_session.call_args_list[-1].kwargs["keep_alive"]
+        )
+        self.assertTrue(
+            app.backend.sync_media_session.call_args_list[-1].kwargs["can_repeat"]
+        )
+        self.assertTrue(
+            app.backend.sync_media_session.call_args_list[-1].kwargs["can_shuffle"]
+        )
+        self.assertTrue(
+            app.backend.sync_media_session.call_args_list[-1].kwargs["can_favorite"]
+        )
+        self.assertTrue(
+            app.backend.sync_media_session.call_args_list[-1].kwargs["favorite"]
+        )
 
     def test_foreground_resume_reconciles_native_playback_state(self) -> None:
         app = self._app()
@@ -182,10 +397,9 @@ class AppLayoutTests(unittest.TestCase):
                 SimpleNamespace(state=ft.AppLifecycleState.PAUSE),
             )
         )
-        app.backend.set_foreground.assert_called_once_with(False)
         app.backend.refresh_state.assert_not_called()
         app.backend.invalidate_media_session.assert_not_called()
-        app._sync_system_media.assert_not_called()
+        app._sync_system_media.assert_called_once_with(refresh_metadata=False)
 
         app._app_lifecycle_changed(
             cast(
@@ -194,13 +408,9 @@ class AppLayoutTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(
-            app.backend.set_foreground.call_args_list,
-            [call(False), call(True)],
-        )
         app.backend.refresh_state.assert_called_once_with()
         app.backend.invalidate_media_session.assert_called_once_with()
-        app._sync_system_media.assert_called_once_with(refresh_metadata=False)
+        self.assertEqual(app._sync_system_media.call_count, 2)
 
     def test_settings_uses_responsive_sections_and_fixed_footer(self) -> None:
         app = self._app()
@@ -210,28 +420,36 @@ class AppLayoutTests(unittest.TestCase):
         sections = view.controls[1]  # ty: ignore[unresolved-attribute]
         footer = view.controls[-1]  # ty: ignore[unresolved-attribute]
 
-        self.assertIsInstance(header, ft.Row)
+        self.assertIsInstance(header, ft.Container)
+        self.assertIsInstance(header.content, ft.Row)
+        self.assertIsNotNone(header.gradient)
         self.assertIsInstance(sections, ft.ResponsiveRow)
         self.assertEqual(sections.columns, 12)
-        self.assertEqual(len(sections.controls), 4)
-        self.assertEqual(sections.controls[0].col, {"xs": 12, "lg": 6, "xl": 4})
-        self.assertEqual(sections.controls[2].col, {"xs": 12, "lg": 12, "xl": 4})
-        youtube_access_header = sections.controls[2].content.controls[0]
+        self.assertEqual(len(sections.controls), 2)
+        self.assertEqual(sections.controls[0].col, {"xs": 12, "lg": 5})
+        self.assertEqual(sections.controls[1].col, {"xs": 12, "lg": 7})
+        self.assertIsInstance(sections.controls[0], ft.Column)
+        self.assertIsInstance(sections.controls[1], ft.Column)
+        self.assertEqual(len(sections.controls[0].controls), 2)
+        self.assertEqual(len(sections.controls[1].controls), 2)
+        youtube_access = sections.controls[0].controls[1]
+        youtube_access_header = youtube_access.content.controls[0]
         self.assertEqual(
             youtube_access_header.controls[1].controls[0].value,
             "YouTube Music access",
         )
-        self.assertFalse(self._contains_control(sections.controls[2], ft.Checkbox))
-        self.assertEqual(sections.controls[3].col, {"xs": 12})
-        reset_everything = sections.controls[3].content.controls[-1]
+        self.assertFalse(self._contains_control(youtube_access, ft.Checkbox))
+        data_management = sections.controls[1].controls[1]
+        reset_everything = data_management.content.controls[-1]
         self.assertEqual(reset_everything.bgcolor, ft.Colors.ERROR_CONTAINER)
         reset_button = reset_everything.content.controls[-1].content
         self.assertEqual(reset_button.bgcolor, ft.Colors.ERROR)
         self.assertTrue(sections.expand)
-        self.assertIsInstance(footer, ft.ResponsiveRow)
-        self.assertEqual(footer.columns, 12)
+        self.assertIsInstance(footer, ft.Container)
+        self.assertIsInstance(footer.content, ft.ResponsiveRow)
+        self.assertEqual(footer.content.columns, 12)
         self.assertEqual(
-            footer.controls[-1].content.controls[-1].content,
+            footer.content.controls[-1].content.controls[-1].content,
             "Save settings",
         )
 
@@ -365,6 +583,33 @@ class AppLayoutTests(unittest.TestCase):
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
         self._assert_wrapping_rows_are_flex_safe(app.playlists_page._playlists_view())
 
+    def test_long_lists_build_offscreen_controls_on_demand(self) -> None:
+        from musicplayer.ui.mobile.controls import scroll_page
+        from musicplayer.ui.mobile.library import _library_view as mobile_library_view
+
+        app = self._app()
+        app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
+        app.library = _Library()  # ty: ignore[invalid-assignment]
+        app.store = _Store()  # ty: ignore[invalid-assignment]
+
+        desktop_home = app.home_page._home_view()
+        app.search_page._search_view()
+        app.library_page._library_view()
+        desktop_library_list = app.library_page.track_list
+        mobile_page = scroll_page([ft.Text("First"), ft.Text("Later")])
+        mobile_library_view(app)
+
+        for control in (
+            desktop_home,
+            app.search_page.result_list,
+            desktop_library_list,
+            app.library_page.track_list,
+            mobile_page,
+        ):
+            self.assertIsInstance(control, ft.ListView)
+            if isinstance(control, ft.ListView):
+                self.assertTrue(control.build_controls_on_demand)
+
     def test_search_has_no_source_selector_and_uses_youtube(self) -> None:
         app = self._app()
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
@@ -405,12 +650,12 @@ class AppLayoutTests(unittest.TestCase):
         self.assertIn("Focus playlist", app.search_page.status.value)
         self.assertIn("1 result", app.search_page.status.value)
 
-    def test_library_auto_loads_bounded_batches_near_scroll_end(self) -> None:
+    def test_library_paging_keeps_rendered_tracks_bounded(self) -> None:
         app = self._app()
         app.manager = _PlaylistManager(())  # ty: ignore[invalid-assignment]
         tracks = tuple(
             Track(UUID(int=index + 1), f"track-{index}.mp3", title=f"Track {index}")
-            for index in range(75)
+            for index in range(125)
         )
         library = _Library(tracks)
         app.library = library  # ty: ignore[invalid-assignment]
@@ -422,19 +667,19 @@ class AppLayoutTests(unittest.TestCase):
         self.assertTrue(has_tracks)
         self.assertEqual(library.last_limit, 51)
         self.assertEqual(library.details_requested, 50)
-        self.assertEqual(len(app.library_page.track_list.controls), 50)
+        self.assertEqual(len(app.library_page.track_list.controls), 51)
 
-        app.library_page._library_scrolled(
-            cast(
-                ft.OnScrollEvent,
-                SimpleNamespace(pixels=700, max_scroll_extent=1000),
-            )
-        )
+        app.library_page._change_library_page(1)
 
         self.assertEqual(library.last_limit, 51)
         self.assertEqual(library.last_offset, 50)
-        self.assertEqual(library.details_requested, 75)
-        self.assertEqual(len(app.library_page.track_list.controls), 75)
+        self.assertEqual(library.details_requested, 100)
+        self.assertEqual(len(app.library_page.track_list.controls), 51)
+
+        app.library_page._change_library_page(1)
+        self.assertEqual(library.last_offset, 100)
+        self.assertEqual(library.details_requested, 125)
+        self.assertEqual(len(app.library_page.track_list.controls), 26)
 
     def test_search_submits_background_work_through_app_tasks(self) -> None:
         app = self._app()

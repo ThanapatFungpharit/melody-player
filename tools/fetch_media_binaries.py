@@ -4,108 +4,118 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
+import platform
 import shutil
 import stat
+import subprocess
+import sys
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+VERSION = "v9.0.1"
+RELEASE_ROOT = f"https://github.com/binmgr/ffmpeg/releases/download/{VERSION}"
+BTBN_RELEASE_ROOT = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+ANDROID_VERSION = "build-264"
+ANDROID_RELEASE_ROOT = (
+    f"https://github.com/rhythmcache/ffmpeg-android/releases/download/{ANDROID_VERSION}"
+)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BINARY_ROOT = PROJECT_ROOT / "src" / "musicplayer" / "bin"
+REQUIRED_AUDIO_ENCODERS = frozenset({"libmp3lame", "aac", "libopus"})
 
 
 @dataclass(frozen=True)
 class Archive:
-    """A stable selector for an asset in a provider's latest GitHub release."""
-
-    repository: str
-    filename: str | None = None
-    filename_suffix: str | None = None
+    filename: str
+    sha256: str | None
+    release_root: str = RELEASE_ROOT
+    version: str = VERSION
     license: str = "GPL-2.0-or-later"
+    source_code: str = f"https://github.com/binmgr/ffmpeg/tree/{VERSION}"
+    repository: str | None = None
 
     @property
-    def selector(self) -> str:
-        if self.filename is not None:
-            return self.filename
-        if self.filename_suffix is not None:
-            return f"*{self.filename_suffix}"
-        raise ValueError("An FFmpeg archive needs an asset filename selector")
-
-
-@dataclass(frozen=True)
-class ReleaseAsset:
-    filename: str
-    url: str
-    sha256: str
+    def url(self) -> str:
+        return f"{self.release_root}/{self.filename}"
 
 
 @dataclass(frozen=True)
 class ResolvedArchive:
-    archive: Archive
-    filename: str
     url: str
     sha256: str
     version: str
-
-    @property
-    def source_code(self) -> str:
-        return f"https://github.com/{self.archive.repository}/tree/{self.version}"
+    source_code: str
 
 
 ARCHIVES: dict[tuple[str, str], Archive] = {
     ("windows", "x86_64"): Archive(
-        "binmgr/ffmpeg",
-        "ffmpeg-windows-amd64.zip",
+        "ffmpeg-n9.0-latest-win64-gpl-9.0.zip",
+        None,
+        release_root=BTBN_RELEASE_ROOT,
+        version="latest",
+        license="GPL-3.0-or-later",
+        repository="BtbN/FFmpeg-Builds",
     ),
     ("windows", "arm64"): Archive(
-        "binmgr/ffmpeg",
-        "ffmpeg-windows-arm64.zip",
+        "ffmpeg-n9.0-latest-winarm64-gpl-9.0.zip",
+        None,
+        release_root=BTBN_RELEASE_ROOT,
+        version="latest",
+        license="GPL-3.0-or-later",
+        repository="BtbN/FFmpeg-Builds",
     ),
     ("linux", "x86_64"): Archive(
-        "binmgr/ffmpeg",
         "ffmpeg-linux-amd64.tar.gz",
+        "981493cde0bd9303129e6a7bef1a22bb65089bd8e04fd96622878a865761d706",
     ),
     ("linux", "arm64"): Archive(
-        "binmgr/ffmpeg",
         "ffmpeg-linux-arm64.tar.gz",
+        "4fdc66bd708aef86f4e431f52f72bb26ce49eb9e12d34ff92c069e04dabc2df5",
     ),
     ("macos", "x86_64"): Archive(
-        "binmgr/ffmpeg",
         "ffmpeg-darwin-amd64.tar.gz",
+        "a58d579615e8bfd54cb063e208d9c6c33b6ed81a8030885347167ff86ba43148",
     ),
     ("macos", "arm64"): Archive(
-        "binmgr/ffmpeg",
         "ffmpeg-darwin-arm64.tar.gz",
+        "5e28fe92746c35be5a5c0c7bffe8397c36e9bf75867eb28992c69fcfb69be155",
     ),
     ("android", "arm64"): Archive(
-        "rhythmcache/ffmpeg-android",
-        filename_suffix="-Static-android-arm64-v8a.zip",
+        "ffmpeg-8.0-ee2eb6c-Static-android-arm64-v8a.zip",
+        "a18551c916b3cb60c41930d0affdf44763497fe318ccec9555ab93097a9c28c8",
+        release_root=ANDROID_RELEASE_ROOT,
+        version=ANDROID_VERSION,
         license="GPL-3.0-or-later",
+        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
     ("android", "arm"): Archive(
-        "rhythmcache/ffmpeg-android",
-        filename_suffix="-Static-android-armeabi-v7a.zip",
+        "ffmpeg-8.0-ee2eb6c-Static-android-armeabi-v7a.zip",
+        "15fd326dd60cae3e444e33911663ba3bb37f2f9f1672581d09e1f4d4e4cf5b9f",
+        release_root=ANDROID_RELEASE_ROOT,
+        version=ANDROID_VERSION,
         license="GPL-3.0-or-later",
+        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
     ("android", "x86_64"): Archive(
-        "rhythmcache/ffmpeg-android",
-        filename_suffix="-Static-android-x86_64.zip",
+        "ffmpeg-8.0-ee2eb6c-Static-android-x86_64.zip",
+        "f41fb1339c4d609e376bc99ea0982a11db5cebeb2dce2e302c60cce9dd0ffe0e",
+        release_root=ANDROID_RELEASE_ROOT,
+        version=ANDROID_VERSION,
         license="GPL-3.0-or-later",
+        source_code="https://github.com/rhythmcache/ffmpeg-android/tree/0f21485",
     ),
 }
 
 
-@cache
-def _latest_release(repository: str) -> tuple[str, tuple[ReleaseAsset, ...]]:
-    """Read GitHub's current release manifest once for each artifact provider."""
+def _latest_release(repository: str) -> tuple[str, tuple[tuple[str, str, str], ...]]:
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repository}/releases/latest",
         headers={
@@ -113,54 +123,53 @@ def _latest_release(repository: str) -> tuple[str, tuple[ReleaseAsset, ...]]:
             "User-Agent": "Melody-build/1",
         },
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         payload: Any = json.load(response)
-
+    if not isinstance(payload, dict):
+        raise TypeError(f"GitHub returned an invalid release manifest for {repository}")
     tag = payload.get("tag_name")
     assets = payload.get("assets")
     if not isinstance(tag, str) or not isinstance(assets, list):
         raise TypeError(f"GitHub returned an invalid release manifest for {repository}")
-
-    resolved_assets: list[ReleaseAsset] = []
+    resolved_assets: list[tuple[str, str, str]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
         filename = asset.get("name")
         url = asset.get("browser_download_url")
         digest = asset.get("digest")
-        if not isinstance(filename, str) or not isinstance(url, str):
-            continue
-        if not isinstance(digest, str) or not digest.startswith("sha256:"):
-            continue
-        sha256 = digest.removeprefix("sha256:")
-        if len(sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in sha256
+        if (
+            isinstance(filename, str)
+            and isinstance(url, str)
+            and isinstance(digest, str)
+            and digest.startswith("sha256:")
         ):
-            continue
-        resolved_assets.append(ReleaseAsset(filename, url, sha256))
-
+            sha256 = digest.removeprefix("sha256:")
+            if len(sha256) == 64 and all(
+                character in "0123456789abcdef" for character in sha256
+            ):
+                resolved_assets.append((filename, url, sha256))
     return tag, tuple(resolved_assets)
 
 
 def _resolve_archive(archive: Archive) -> ResolvedArchive:
-    """Resolve a stable filename selector without embedding a release tag in code."""
+    if archive.sha256 is not None:
+        return ResolvedArchive(
+            archive.url, archive.sha256, archive.version, archive.source_code
+        )
+    if archive.repository is None:
+        raise ValueError(f"No release repository for {archive.filename}")
     version, assets = _latest_release(archive.repository)
-    if archive.filename is not None:
-        matches = [asset for asset in assets if asset.filename == archive.filename]
-    else:
-        suffix = archive.filename_suffix
-        matches = [
-            asset
-            for asset in assets
-            if suffix is not None and asset.filename.endswith(suffix)
-        ]
+    matches = [asset for asset in assets if asset[0] == archive.filename]
     if len(matches) != 1:
         raise RuntimeError(
-            f"Expected one asset matching {archive.selector!r} in "
+            f"Expected one {archive.filename!r} asset in "
             f"{archive.repository}'s latest release, found {len(matches)}"
         )
-    asset = matches[0]
-    return ResolvedArchive(archive, asset.filename, asset.url, asset.sha256, version)
+    _, url, sha256 = matches[0]
+    return ResolvedArchive(
+        url, sha256, version, f"https://github.com/{archive.repository}/tree/{version}"
+    )
 
 
 def fetch_bundle(
@@ -180,32 +189,39 @@ def fetch_bundle(
     suffix = ".exe" if platform_name == "windows" else ""
     expected = (target / f"ffmpeg{suffix}", target / f"ffprobe{suffix}")
     metadata_path = target / "bundle.json"
-    if all(path.is_file() for path in expected) and metadata_path.is_file():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if (
-            metadata.get("source_repository") == archive.repository
-            and metadata.get("asset_selector") == archive.selector
-            and isinstance(metadata.get("archive_sha256"), str)
+    try:
+        resolved = _resolve_archive(archive)
+    except urllib.error.URLError, TimeoutError:
+        if archive.repository is None or not _cache_valid(
+            metadata_path, archive, expected, resolved=None
         ):
-            print(f"Using cached media tools for {platform_name}/{architecture}")
-            return target
+            raise
+        print(f"Using cached media tools offline for {platform_name}/{architecture}")
+        return target
+    if _cache_valid(metadata_path, archive, expected, resolved=resolved):
+        print(f"Using cached media tools for {platform_name}/{architecture}")
+        return target
 
-    resolved = _resolve_archive(archive)
-    target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="melody-ffmpeg-") as temporary:
-        download = Path(temporary) / resolved.filename
+        download = Path(temporary) / archive.filename
         print(f"Downloading {resolved.url}")
         _download(resolved.url, download)
         actual_digest = _sha256(download)
         if actual_digest != resolved.sha256:
             raise RuntimeError(
-                f"Checksum mismatch for {resolved.filename}: expected "
+                f"Checksum mismatch for {archive.filename}: expected "
                 f"{resolved.sha256}, received {actual_digest}"
             )
         extracted = _extract_programs(download, Path(temporary) / "extracted")
+        if platform_name == "windows" and _can_run_target(platform_name, architecture):
+            _validate_audio_encoders(extracted[f"ffmpeg{suffix}"])
+
+        target.mkdir(parents=True, exist_ok=True)
+        program_hashes: dict[str, str] = {}
         for program in (f"ffmpeg{suffix}", f"ffprobe{suffix}"):
             source = extracted[program]
             destination = target / program
+            program_hashes[program] = _sha256(source)
             shutil.copy2(source, destination)
             if platform_name != "windows":
                 destination.chmod(
@@ -214,25 +230,115 @@ def fetch_bundle(
                     | stat.S_IXGRP
                     | stat.S_IXOTH
                 )
+            if _sha256(destination) != program_hashes[program]:
+                raise RuntimeError(
+                    f"Copied media program failed verification: {destination}"
+                )
 
-    metadata_path.write_text(
+    metadata_text = (
         json.dumps(
             {
                 "version": resolved.version,
-                "source_repository": archive.repository,
-                "asset_selector": archive.selector,
                 "source": resolved.url,
                 "archive_sha256": resolved.sha256,
+                "program_sha256": program_hashes,
                 "license": archive.license,
                 "source_code": resolved.source_code,
             },
             indent=2,
         )
-        + os.linesep,
-        encoding="utf-8",
+        + os.linesep
     )
+    pending_metadata = target / ".bundle.json.tmp"
+    try:
+        pending_metadata.write_text(metadata_text, encoding="utf-8")
+        os.replace(pending_metadata, metadata_path)
+    finally:
+        pending_metadata.unlink(missing_ok=True)
     print(f"Prepared media tools in {target}")
     return target
+
+
+def _cache_valid(
+    metadata_path: Path,
+    archive: Archive,
+    expected: tuple[Path, Path],
+    *,
+    resolved: ResolvedArchive | None,
+) -> bool:
+    if not metadata_path.is_file() or not all(path.is_file() for path in expected):
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return False
+        program_hashes = metadata.get("program_sha256")
+        if not isinstance(program_hashes, dict):
+            return False
+        source = resolved.url if resolved is not None else archive.url
+        if resolved is None:
+            archive_sha256 = metadata.get("archive_sha256")
+            valid_archive_sha256 = (
+                isinstance(archive_sha256, str)
+                and len(archive_sha256) == 64
+                and all(character in "0123456789abcdef" for character in archive_sha256)
+            )
+        else:
+            valid_archive_sha256 = (
+                metadata.get("archive_sha256") == resolved.sha256
+                and metadata.get("version") == resolved.version
+            )
+        return (
+            metadata.get("source") == source
+            and valid_archive_sha256
+            and all(
+                isinstance(program_hashes.get(path.name), str)
+                and _sha256(path) == program_hashes[path.name]
+                and (path.suffix == ".exe" or path.stat().st_mode & 0o111 != 0)
+                for path in expected
+            )
+        )
+    except OSError, UnicodeError, ValueError:
+        return False
+
+
+def _can_run_target(platform_name: str, architecture: str) -> bool:
+    host_platform = {"win32": "windows", "darwin": "macos"}.get(
+        sys.platform, "linux" if sys.platform.startswith("linux") else None
+    )
+    host_architecture = platform.machine().lower()
+    if host_architecture in {"amd64", "x86_64"}:
+        host_architecture = "x86_64"
+    elif host_architecture in {"aarch64", "arm64"}:
+        host_architecture = "arm64"
+    return platform_name == host_platform and architecture == host_architecture
+
+
+def _validate_audio_encoders(ffmpeg: Path) -> None:
+    try:
+        result = subprocess.run(
+            [str(ffmpeg), "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"Could not inspect {ffmpeg}: {error}") from error
+    if result.returncode != 0:
+        raise RuntimeError(f"Could not inspect {ffmpeg}: {result.stderr.strip()}")
+    encoders = {
+        fields[1]
+        for line in result.stdout.splitlines()
+        if len(fields := line.split()) >= 2 and fields[0].startswith("A")
+    }
+    missing = REQUIRED_AUDIO_ENCODERS - encoders
+    if missing:
+        raise RuntimeError(
+            f"{ffmpeg} is missing required audio encoders: {', '.join(sorted(missing))}"
+        )
 
 
 def _download(url: str, destination: Path) -> None:
@@ -262,14 +368,23 @@ def _extract_programs(archive: Path, destination: Path) -> dict[str, Path]:
             for member in package.infolist():
                 name = PurePosixPath(member.filename).name
                 if name.endswith(".tar.xz") and not member.is_dir():
-                    with package.open(member) as nested:
-                        nested_data = nested.read()
-                    with tarfile.open(
-                        fileobj=io.BytesIO(nested_data), mode="r:xz"
-                    ) as nested_package:
-                        _extract_tar_programs(
-                            nested_package, destination, expected_names, extracted
-                        )
+                    # Large Android bundles contain a compressed tar inside the
+                    # zip. Spool it in bounded chunks instead of holding the
+                    # entire compressed archive in RAM during extraction.
+                    with (
+                        package.open(member) as nested,
+                        tempfile.SpooledTemporaryFile(
+                            max_size=8 * 1024 * 1024
+                        ) as staged,
+                    ):
+                        shutil.copyfileobj(nested, staged, 1024 * 1024)
+                        staged.seek(0)
+                        with tarfile.open(
+                            fileobj=staged, mode="r:xz"
+                        ) as nested_package:
+                            _extract_tar_programs(
+                                nested_package, destination, expected_names, extracted
+                            )
                     continue
                 if name not in expected_names or member.is_dir():
                     continue
@@ -338,9 +453,17 @@ def main() -> None:
         if arguments.architecture == "all"
         else (arguments.architecture,)
     )
-    for platform_name, architecture in ARCHIVES:
-        if platform_name in platforms and architecture in architectures:
-            fetch_bundle(platform_name, architecture, binary_root=arguments.output)
+    selected = [
+        (platform_name, architecture)
+        for platform_name, architecture in ARCHIVES
+        if platform_name in platforms and architecture in architectures
+    ]
+    if not selected:
+        parser.error(
+            f"No supported media bundle for {arguments.platform}/{arguments.architecture}"
+        )
+    for platform_name, architecture in selected:
+        fetch_bundle(platform_name, architecture, binary_root=arguments.output)
 
 
 if __name__ == "__main__":

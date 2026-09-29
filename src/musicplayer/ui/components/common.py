@@ -8,6 +8,7 @@ import flet as ft
 
 from musicplayer.application.models import DownloadRecord, TrackDetails
 from musicplayer.core.library.models import Playlist, Track
+from musicplayer.ui.components.lazy_artwork import DeferredArtwork
 
 if TYPE_CHECKING:
     from musicplayer.app import MusicPlayerApp
@@ -22,11 +23,13 @@ class SharedUIComponents:
     def __init__(self, app: MusicPlayerApp) -> None:
         self.app = app
 
-    def _play_collection(
-        self, tracks: Sequence[Track], *, shuffle: bool = False
-    ) -> None:
+    def _play_collection(self, tracks: Sequence[Track]) -> None:
         ids = [str(track.id) for track in tracks]
-        self.app.playback.play_tracks(ids, shuffle=True if shuffle else None)
+        self.app.playback.play_tracks(ids)
+
+    def _shuffle_collection(self, tracks: Sequence[Track]) -> None:
+        ids = [str(track.id) for track in tracks]
+        self.app.playback.play_tracks_shuffled(ids)
 
     def _queue_collection(self, tracks: Sequence[Track]) -> None:
         count = self.app.playback.add_last_many(str(track.id) for track in tracks)
@@ -105,11 +108,11 @@ def _empty_state(
         ft.Column(
             [
                 ft.Container(
-                    ft.Icon(icon, size=36, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Icon(icon, size=36, color=ft.Colors.PRIMARY),
                     width=72,
                     height=72,
                     border_radius=36,
-                    bgcolor=ft.Colors.SURFACE_CONTAINER,
+                    bgcolor=ft.Colors.PRIMARY_CONTAINER,
                     alignment=ft.Alignment.CENTER,
                 ),
                 ft.Text(
@@ -140,14 +143,11 @@ def _artwork(
 ) -> ft.Control:
     radius = 14 if size >= 100 else 12
     if url:
-        source = cache.image_source(url) if cache is not None else url
-        return ft.Image(
-            src=source,
-            width=size,
-            height=size,
-            fit=ft.BoxFit.COVER,
-            border_radius=radius,
-            error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED),
+        return DeferredArtwork(
+            artwork_source=url,
+            artwork_size=size,
+            playlist_artwork=playlist,
+            artwork_cache=cache,
         )
     return ft.Container(
         ft.Icon(

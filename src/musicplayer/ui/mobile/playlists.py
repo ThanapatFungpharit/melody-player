@@ -4,6 +4,7 @@ import flet as ft
 
 from musicplayer.core.media import YOUTUBE_MUSIC_NAME
 from musicplayer.ui.components.common import _empty_state, _track_credit, _track_title
+from musicplayer.ui.components.track_pages import page_navigation
 from musicplayer.ui.mobile.controls import (
     heading,
     icon_button,
@@ -84,9 +85,11 @@ def _playlist_card(app, playlist) -> ft.Control:
 
 def _playlist_detail(app, playlist) -> ft.Control:
     tracks = app.manager.playlist_tracks(playlist.id)
+    start, end = app.playlists_page._visible_range(len(tracks))
     others = tuple(p for p in app.manager.list_playlists() if p.id != playlist.id)
     ids = tuple(str(t.id) for t in tracks)
-    details = app.library.details_many(track.id for track in tracks)
+    details = app.library.details_many(track.id for track in tracks[start:end])
+    pager = page_navigation(len(tracks), start, end, app.playlists_page._change_page)
     actions = [
         *(
             [
@@ -111,6 +114,11 @@ def _playlist_detail(app, playlist) -> ft.Control:
             ]
             if tracks
             else []
+        ),
+        ft.PopupMenuItem(
+            content="Export playlist",
+            icon=ft.Icons.IOS_SHARE_ROUNDED,
+            on_click=lambda _: app.playlists_page._export_playlist(playlist),
         ),
         ft.PopupMenuItem(
             content="Rename playlist",
@@ -159,8 +167,8 @@ def _playlist_detail(app, playlist) -> ft.Control:
                         icon=ft.Icons.SHUFFLE_ROUNDED,
                         height=48,
                         disabled=not tracks,
-                        on_click=lambda _: app.playlists_page._play_playlist(
-                            playlist, shuffle=True
+                        on_click=lambda _: app.playlists_page._shuffle_playlist(
+                            playlist
                         ),
                     ),
                 ]
@@ -175,8 +183,9 @@ def _playlist_detail(app, playlist) -> ft.Control:
                     ids,
                     details.get(str(track.id)),
                 )
-                for i, track in enumerate(tracks)
+                for i, track in enumerate(tracks[start:end], start=start)
             ],
+            *([pager] if pager is not None else []),
             *(
                 []
                 if tracks

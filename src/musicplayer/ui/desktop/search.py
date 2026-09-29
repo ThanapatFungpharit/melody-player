@@ -113,7 +113,9 @@ def _search_view(app: MusicPlayerApp) -> ft.Control:
         spacing=6,
         visible=bool(app.search_page.results) or app.search_page.page_number > 1,
     )
-    app.search_page.result_list = ft.Column(spacing=10)
+    app.search_page.result_list = ft.ListView(
+        spacing=10, build_controls_on_demand=True, cache_extent=300, expand=True
+    )
     if app.search_page.results:
         app.search_page._render_search_results(update=False)
         app.search_page._update_search_navigation()
@@ -140,13 +142,12 @@ def _search_view(app: MusicPlayerApp) -> ft.Control:
                 spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            ft.Column(
-                [app.search_page.result_list], scroll=ft.ScrollMode.AUTO, expand=True
-            ),
+            app.search_page.result_list,
             app.search_page.pagination,
         ],
         spacing=20,
         expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
 
 

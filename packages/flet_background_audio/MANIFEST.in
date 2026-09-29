@@ -1,0 +1,3 @@
+prune src/flutter/flet_background_audio/build
+prune src/flutter/flet_background_audio/.dart_tool
+prune src/flutter/flet_background_audio/test

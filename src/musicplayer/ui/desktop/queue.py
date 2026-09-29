@@ -14,6 +14,7 @@ from musicplayer.ui.components.queue_status import (
     queue_item_status,
     queue_mode_status,
 )
+from musicplayer.ui.components.track_pages import page_navigation
 from musicplayer.ui.desktop.controls import reorder_handle
 
 if TYPE_CHECKING:
@@ -23,8 +24,10 @@ if TYPE_CHECKING:
 def _queue_view(app: MusicPlayerApp) -> ft.Control:
     queue = app.playback.queue
     mode = queue_mode_status(queue)
+    start, end = app.queue_page._visible_range(len(queue.items), queue.current_index)
     queue_rows: list[ft.Control] = []
-    for index, track_id in enumerate(queue.items):
+    for index in range(start, end):
+        track_id = queue.items[index]
         try:
             track = app.manager.get_track(track_id)
         except KeyError, TypeError, ValueError:
@@ -82,12 +85,33 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
                                 pos
                             ),
                         ),
-                        ft.IconButton(
-                            ft.Icons.CLOSE_ROUNDED,
-                            tooltip="Remove from queue",
-                            on_click=lambda _, pos=index: (
-                                app.playback.remove_queue_item(pos)
-                            ),
+                        ft.PopupMenuButton(
+                            icon=ft.Icons.MORE_HORIZ_ROUNDED,
+                            items=[
+                                ft.PopupMenuItem(
+                                    content="Move up",
+                                    icon=ft.Icons.ARROW_UPWARD_ROUNDED,
+                                    disabled=index == 0,
+                                    on_click=lambda _, pos=index: (
+                                        app.playback.reorder_queue(pos, pos - 1)
+                                    ),
+                                ),
+                                ft.PopupMenuItem(
+                                    content="Move down",
+                                    icon=ft.Icons.ARROW_DOWNWARD_ROUNDED,
+                                    disabled=index == len(queue.items) - 1,
+                                    on_click=lambda _, pos=index: (
+                                        app.playback.reorder_queue(pos, pos + 2)
+                                    ),
+                                ),
+                                ft.PopupMenuItem(
+                                    content="Remove from queue",
+                                    icon=ft.Icons.REMOVE_CIRCLE_OUTLINE_ROUNDED,
+                                    on_click=lambda _, pos=index: (
+                                        app.playback.remove_queue_item(pos)
+                                    ),
+                                ),
+                            ],
                         ),
                     ]
                 ),
@@ -106,7 +130,7 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
             show_default_drag_handles=False,
             mouse_cursor=ft.MouseCursor.GRAB,
             on_reorder=lambda event: app.playback.reorder_queue(
-                event.old_index, event.new_index
+                start + event.old_index, start + event.new_index
             ),
             expand=True,
         )
@@ -116,10 +140,11 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
             "Your temporary playback queue is empty.",
             expand=True,
         )
+    pager = page_navigation(len(queue.items), start, end, app.queue_page._change_page)
     return ft.Column(
         [
             app.shared._context_header(
-                "Queue", f"{len(queue_rows)} tracks · {mode.label}"
+                "Queue", f"{len(queue.items)} tracks · {mode.label}"
             ),
             ft.Container(
                 ft.Row(
@@ -149,9 +174,10 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
             ft.Row(
                 [
                     ft.TextButton(
-                        "Shuffle on" if app.playback.queue.shuffle else "Shuffle off",
+                        "Shuffle upcoming",
                         icon=ft.Icons.SHUFFLE_ROUNDED,
-                        on_click=lambda _: app.playback.toggle_shuffle(),
+                        disabled=app.playback.queue.upcoming_count < 2,
+                        on_click=lambda _: app.playback.shuffle_upcoming(),
                     ),
                     ft.TextButton(
                         mode.label,
@@ -169,6 +195,7 @@ def _queue_view(app: MusicPlayerApp) -> ft.Control:
                 visible=bool(queue_rows),
             ),
             rows,
+            *([pager] if pager is not None else []),
         ],
         spacing=16,
         expand=True,

@@ -13,6 +13,7 @@ from musicplayer.ui.components.common import (
     _format_duration,
     _track_title,
 )
+from musicplayer.ui.components.track_pages import PAGE_SIZE
 from musicplayer.ui.tasks import page_action
 
 if TYPE_CHECKING:
@@ -20,12 +21,12 @@ if TYPE_CHECKING:
 
 
 class LibraryPage:
-    RENDER_BATCH_SIZE = 50
+    RENDER_BATCH_SIZE = PAGE_SIZE
     QUERY_DEBOUNCE_SECONDS = 0.15
 
     query: ft.TextField
     sort: ft.Dropdown
-    track_list: ft.Column
+    track_list: ft.Column | ft.ListView
 
     def __init__(self, app: MusicPlayerApp):
         self.app = app
@@ -39,10 +40,7 @@ class LibraryPage:
             pending.cancel()
         self._query_task = None
         self._query_generation = 0
-        self._visible_limit = self.RENDER_BATCH_SIZE
-        self._rendered_track_count = 0
-        self._has_more_tracks = False
-        self._loading_more_tracks = False
+        self._page_offset = 0
         self.mode = "tracks"
         self.query_text = ""
         self.sort_key = "recent"
@@ -57,10 +55,19 @@ class LibraryPage:
             fetched = self.app.library.tracks(
                 query=self.query_text,
                 sort=self.sort_key,
-                limit=self._visible_limit + 1,
+                offset=self._page_offset,
+                limit=self.RENDER_BATCH_SIZE + 1,
             )
-            has_more = len(fetched) > self._visible_limit
-            tracks = fetched[: self._visible_limit]
+            while not fetched and self._page_offset:
+                self._page_offset = max(0, self._page_offset - self.RENDER_BATCH_SIZE)
+                fetched = self.app.library.tracks(
+                    query=self.query_text,
+                    sort=self.sort_key,
+                    offset=self._page_offset,
+                    limit=self.RENDER_BATCH_SIZE + 1,
+                )
+            has_more = len(fetched) > self.RENDER_BATCH_SIZE
+            tracks = fetched[: self.RENDER_BATCH_SIZE]
             # Playlist menus share one immutable snapshot for the whole render;
             # fetching and copying the same collection once per row made large
             # libraries increasingly expensive to display.
@@ -74,11 +81,34 @@ class LibraryPage:
                 self._library_track_row(
                     track, index, playlists, details.get(str(track.id))
                 )
-                for index, track in enumerate(tracks)
+                for index, track in enumerate(tracks, start=self._page_offset)
             ]
-            self._rendered_track_count = len(tracks)
-            self._has_more_tracks = has_more
             has_items = bool(tracks)
+            if tracks and (self._page_offset or has_more):
+                controls.append(
+                    ft.Row(
+                        [
+                            ft.TextButton(
+                                "Previous",
+                                icon=ft.Icons.CHEVRON_LEFT_ROUNDED,
+                                disabled=self._page_offset == 0,
+                                on_click=lambda _: self._change_library_page(-1),
+                            ),
+                            ft.Text(
+                                f"{self._page_offset + 1}–{self._page_offset + len(tracks)}",
+                                expand=True,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.TextButton(
+                                "Next",
+                                icon=ft.Icons.CHEVRON_RIGHT_ROUNDED,
+                                disabled=not has_more,
+                                on_click=lambda _: self._change_library_page(1),
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    )
+                )
         elif self.mode == "playlists":
             search_term = self.query_text.casefold()
             controls: list[ft.Control] = [
@@ -87,8 +117,6 @@ class LibraryPage:
                 if not search_term or search_term in playlist.name.casefold()
             ]
             has_items = bool(controls)
-            self._rendered_track_count = 0
-            self._has_more_tracks = False
             if controls:
                 controls = [ft.Row(controls, wrap=True, spacing=14, run_spacing=14)]
         self.track_list.controls = controls
@@ -103,62 +131,41 @@ class LibraryPage:
             self.app.page.update(self.track_list)
         return has_items
 
-    def _library_scrolled(self, event: ft.OnScrollEvent) -> None:
-        """Append the next track batch as the active scroller nears its end."""
-        if (
-            self.mode != "tracks"
-            or not self._has_more_tracks
-            or self._loading_more_tracks
-            or event.max_scroll_extent - event.pixels > 400
-        ):
-            return
-        self._loading_more_tracks = True
-        try:
-            fetched = self.app.library.tracks(
-                query=self.query_text,
-                sort=self.sort_key,
-                offset=self._rendered_track_count,
-                limit=self.RENDER_BATCH_SIZE + 1,
-            )
-            new_tracks = fetched[: self.RENDER_BATCH_SIZE]
-            if new_tracks:
-                playlists = self.app.manager.list_playlists()
-                details = self.app.library.details_many(
-                    track.id for track in new_tracks
-                )
-                start = self._rendered_track_count
-                self.track_list.controls.extend(
-                    self._library_track_row(
-                        track,
-                        start + offset,
-                        playlists,
-                        details.get(str(track.id)),
-                    )
-                    for offset, track in enumerate(new_tracks)
-                )
-            self._visible_limit += len(new_tracks)
-            self._rendered_track_count += len(new_tracks)
-            self._has_more_tracks = len(fetched) > self.RENDER_BATCH_SIZE
-            if new_tracks:
-                self.app.page.update(self.track_list)
-        finally:
-            self._loading_more_tracks = False
+    def _change_library_page(self, direction: int) -> None:
+        self._page_offset = max(
+            0, self._page_offset + direction * self.RENDER_BATCH_SIZE
+        )
+        self._refresh_library_list()
 
     def _set_library_mode(self, selected: list[str]) -> None:
         self.mode = selected[0] if selected else "tracks"
-        self._visible_limit = self.RENDER_BATCH_SIZE
+        self._page_offset = 0
         self._refresh_library_list()
 
     def _visible_library_tracks(self) -> tuple[Track, ...]:
         return self.app.library.tracks(query=self.query_text, sort=self.sort_key)
 
-    def _play_visible_library(self, *, shuffle: bool = False) -> None:
-        self.app.shared._play_collection(
-            self._visible_library_tracks(), shuffle=shuffle
-        )
+    def _play_visible_library(self) -> None:
+        self.app.shared._play_collection(self._visible_library_tracks())
+
+    def _shuffle_visible_library(self) -> None:
+        self.app.shared._shuffle_collection(self._visible_library_tracks())
 
     def _queue_visible_library(self) -> None:
         self.app.shared._queue_collection(self._visible_library_tracks())
+
+    @page_action
+    async def _export_library(self, _: Any = None) -> None:
+        contents = await self.app.tasks.io(self.app.library.export_library_m3u8)
+        saved = await self.app.file_picker.save_file(
+            dialog_title="Export library playlist",
+            file_name="Melody Library.m3u8",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["m3u8"],
+            src_bytes=contents,
+        )
+        if saved:
+            self.app._show_message("Library playlist exported.")
 
     async def _pick_local_files(self, _: Any) -> None:
         files = await self.app.file_picker.pick_files(
@@ -225,6 +232,11 @@ class LibraryPage:
         elif self.app.selected_navigation == 3:
             self.app.navigation.navigate(3)
         self.app.player_bar._refresh_player()
+        if (
+            track_id == self.app.playback.current_track_id
+            and not self.app.playback.external_title
+        ):
+            self.app._sync_system_media(refresh_metadata=True)
 
     def _toggle_current_favorite(self, event: Any) -> None:
         if self.app.playback.current_track_id:
@@ -332,6 +344,7 @@ class LibraryPage:
                 self.app._show_error(
                     f"The track could not be deleted completely: {error}"
                 )
+                return
             self.app.page.pop_dialog()
             self.app.navigation.navigate(2)
 
@@ -422,7 +435,7 @@ class LibraryPage:
 
     def _library_query_changed(self, event) -> None:
         self.query_text = event.control.value or ""
-        self._visible_limit = self.RENDER_BATCH_SIZE
+        self._page_offset = 0
         self._query_generation += 1
         generation = self._query_generation
         pending = self._query_task
@@ -455,7 +468,7 @@ class LibraryPage:
 
     def _set_library_sort(self, value: str) -> None:
         self.sort_key = value
-        self._visible_limit = self.RENDER_BATCH_SIZE
+        self._page_offset = 0
         sort_control = getattr(self, "library_sort", None)
         if sort_control is not None:
             sort_control.value = value

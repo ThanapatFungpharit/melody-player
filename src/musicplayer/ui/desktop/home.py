@@ -66,7 +66,7 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
                                         color=ft.Colors.ON_PRIMARY,
                                         elevation=0,
                                         on_click=lambda _: (
-                                            app.home_page._play_library(shuffle=True)
+                                            app.home_page._shuffle_library()
                                             if track_count
                                             else app.navigation.navigate(1)
                                         ),
@@ -124,23 +124,28 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
         ),
         hero,
     ]
+    sections.append(
+        app.home_page._build_recommendation_section(
+            lambda: _recommendation_shelf(app), spacing=24
+        )
+    )
     sections.extend(
         app.home_page._track_shelf(
             "Recently played", recent, "Play a track to start your listening history."
         )
     )
-    sections.extend(_recommendation_shelf(app))
     sections.extend(
         app.home_page._track_shelf(
             "Favorites", favorites, "Favorite a track to keep it close."
         )
     )
-    return ft.Column(
+    return ft.ListView(
         sections,
         spacing=24,
+        build_controls_on_demand=True,
+        cache_extent=300,
         scroll=ft.ScrollMode.AUTO,
         expand=True,
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
 
 
@@ -156,7 +161,7 @@ def _recommendation_shelf(app: MusicPlayerApp) -> list[ft.Control]:
                         weight=ft.FontWeight.BOLD,
                     ),
                     ft.Text(
-                        "A related mix selected by YouTube Music",
+                        "A mix based on your recent and favorite tracks",
                         size=12,
                         color=ft.Colors.ON_SURFACE_VARIANT,
                     ),
@@ -190,7 +195,7 @@ def _recommendation_shelf(app: MusicPlayerApp) -> list[ft.Control]:
         body = ft.Row(
             [
                 app.search_page._search_result_card(result, playlists)
-                for result in home.recommendations
+                for result in home._visible_recommendations()
             ],
             scroll=ft.ScrollMode.AUTO,
             spacing=16,
@@ -200,7 +205,8 @@ def _recommendation_shelf(app: MusicPlayerApp) -> list[ft.Control]:
             ft.Icons.AUTO_AWESOME_ROUNDED,
             "Play a downloaded YouTube Music track to get recommendations.",
         )
-    return [header, body]
+    navigation = home._recommendation_navigation()
+    return [header, body, navigation] if navigation is not None else [header, body]
 
 
 def _track_shelf(

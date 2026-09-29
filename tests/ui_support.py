@@ -39,11 +39,25 @@ class TestPage:
         return self.dialogs.pop() if self.dialogs else None
 
 
-def make_app(page, directory: Path, *, mobile=True, populated=True) -> MusicPlayerApp:
+def make_app(
+    page,
+    directory: Path,
+    *,
+    mobile=True,
+    populated=True,
+    startup_transition=False,
+    theme="system",
+    accent="violet",
+) -> MusicPlayerApp:
     directory.mkdir(parents=True, exist_ok=True)
     music = directory / "music"
     music.mkdir(exist_ok=True)
-    settings = AppSettings(download_directory=str(music), notifications=False)
+    settings = AppSettings(
+        download_directory=str(music),
+        notifications=False,
+        theme=theme,
+        accent_color=accent,
+    )
     store = ApplicationStore(directory / "state.json")
     store.save_settings(settings)
     manager = MusicManager(directory / "library.mmdb", music)
@@ -76,7 +90,7 @@ def make_app(page, directory: Path, *, mobile=True, populated=True) -> MusicPlay
         patch.object(MusicPlayerApp, "_is_mobile_platform", return_value=mobile),
         patch.object(MusicPlayerApp, "_is_android_platform", return_value=False),
     ):
-        app = MusicPlayerApp(page)
+        app = MusicPlayerApp(page, startup_transition=startup_transition)
     app.search_page.results = [
         SearchResult(
             id="preview",

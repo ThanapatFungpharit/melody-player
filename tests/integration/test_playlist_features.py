@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -43,6 +44,9 @@ class _Page:
 class _Library:
     def details(self, _: object) -> TrackDetails:
         return TrackDetails(uploader="Local artist")
+
+    def details_many(self, track_ids: Iterable[UUID | str]) -> dict[str, TrackDetails]:
+        return {str(track_id): self.details(track_id) for track_id in track_ids}
 
 
 class _Downloads:
@@ -193,10 +197,10 @@ class PlaylistFeatureTests(unittest.TestCase):
         )
 
         dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
-        select_all = dialog.content.controls[1]
-        track_list = dialog.content.controls[3]
+        select_all = dialog.content.controls[2]
+        track_list = dialog.content.controls[4]
         add_button = dialog.actions[-1]
-        self.assertEqual(select_all.label, "Select all")
+        self.assertEqual(select_all.label, "Select all tracks")
         self.assertEqual(len(track_list.controls), 2)
         self.assertTrue(
             all(isinstance(item, ft.Checkbox) for item in track_list.controls)
@@ -220,7 +224,7 @@ class PlaylistFeatureTests(unittest.TestCase):
             self.manager.get_playlist(playlist_id)
         )
         repeated_dialog = self.app.page.dialogs[-1]  # ty: ignore[unresolved-attribute]
-        self.assertTrue(repeated_dialog.content.controls[1].disabled)
+        self.assertTrue(repeated_dialog.content.controls[2].disabled)
         self.assertTrue(repeated_dialog.actions[-1].disabled)
 
     def test_import_dialog_explains_deduplication_and_validates_the_url(self) -> None:

@@ -13,6 +13,11 @@ THEME_PALETTES: dict[str, str] = {
     "emerald": "#10B981",
     "amber": "#F59E0B",
     "slate": "#64748B",
+    "blue": "#2563EB",
+    "teal": "#0D9488",
+    "coral": "#F97316",
+    "magenta": "#D946EF",
+    "lime": "#84CC16",
 }
 
 DEFAULT_PALETTE = "violet"

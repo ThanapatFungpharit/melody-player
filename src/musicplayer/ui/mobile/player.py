@@ -36,7 +36,8 @@ class MobilePlayer(PlaybackBindings):
         self.mini_next = self.button(
             ft.Icons.SKIP_NEXT_ROUNDED, "Next track", lambda _: app.playback.next()
         )
-        self.mini_progress = ft.ProgressBar(value=0, height=2)
+        self.mini_progress = ft.ProgressBar(value=0, height=3, color=ft.Colors.PRIMARY)
+        self._mini_progress_changed = False
         self.root = ft.Container(
             ft.Column(
                 [
@@ -74,13 +75,19 @@ class MobilePlayer(PlaybackBindings):
             padding=ft.Padding.symmetric(horizontal=12),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
         )
-        self.art.width = 180
-        self.art.height = 180
+        self.resize(float(app.page.width or 390), float(app.page.height or 844))
+        self.mini_play.bgcolor = ft.Colors.PRIMARY_CONTAINER
+        self.mini_play.icon_color = ft.Colors.ON_PRIMARY_CONTAINER
         self.play.width = self.play.height = 64
         self.play.icon_size = 38
         self.play.bgcolor = ft.Colors.PRIMARY_CONTAINER
 
     def now_playing(self) -> ft.Control:
+        self.resize(
+            float(self.app.page.width or 390),
+            float(self.app.page.height or 844),
+        )
+        self.refresh()
         self.full_player = ft.Column(
             [
                 ft.Row(
@@ -111,6 +118,7 @@ class MobilePlayer(PlaybackBindings):
                     [
                         self.favorite,
                         self.mute,
+                        self.stop,
                         ft.TextButton(
                             "Queue",
                             icon=ft.Icons.QUEUE_MUSIC_ROUNDED,
@@ -136,17 +144,34 @@ class MobilePlayer(PlaybackBindings):
         )
         return self.full_player
 
+    def resize(self, width: float, height: float) -> None:
+        cover_size = int(max(176, min(340, width - 64, height * 0.42)))
+        if self.art.width == cover_size:
+            return
+        self.art.width = self.art.height = cover_size
+        if self._player_is_mounted():
+            self.refresh()
+
     def _player_is_mounted(self) -> bool:
         history = getattr(self.app.shell, "panel_history", ())
         return any(name == "player" for name, _, _ in history)
 
     def state_controls(self) -> list[ft.Control]:
-        return (
-            [self.root, self.full_player] if self._player_is_mounted() else [self.root]
-        )
+        controls: list[ft.Control] = [
+            self.mini_title,
+            self.mini_credit,
+            self.mini_play,
+            self.mini_next,
+            self.mini_progress,
+        ]
+        if self._player_is_mounted():
+            controls.extend(super().state_controls())
+        return controls
 
     def progress_controls(self) -> list[ft.Control]:
-        controls: list[ft.Control] = [self.mini_progress]
+        controls: list[ft.Control] = (
+            [self.mini_progress] if self._mini_progress_changed else []
+        )
         if self._player_is_mounted():
             controls.extend(super().progress_controls())
         return controls
@@ -164,10 +189,12 @@ class MobilePlayer(PlaybackBindings):
         self.mini_next.disabled = self.next.disabled
 
     def refresh_progress(self) -> None:
+        previous = self.mini_progress.value
         super().refresh_progress()
         self.mini_progress.value = min(
             1, self.app.playback.position_ms / max(1, self.app.playback.duration_ms)
         )
+        self._mini_progress_changed = previous != self.mini_progress.value
 
     def refresh_volume(self) -> None:
         super().refresh_volume()

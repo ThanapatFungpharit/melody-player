@@ -170,7 +170,7 @@ jobs:
           path: build/melody-macos-${{ matrix.architecture }}-${{ needs.preflight.outputs.version }}.tar.gz
           if-no-files-found: error
 
-  android:
+  android-apk:
     needs: [preflight, validate-ui]
     environment: production
     runs-on: ubuntu-latest
@@ -187,6 +187,15 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
+      - name: Set up Java for Android
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK and accept licenses
+        uses: android-actions/setup-android@v4
+      - name: Install Android API 36 and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Configure Android release signing
         shell: bash
         env:
@@ -213,34 +222,115 @@ jobs:
         run: >-
           uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android apk
           -- --yes --split-per-abi
-      - name: Build Android App Bundle
-        run: >-
-          uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab
-          -- --yes
-      - name: Verify production artifacts
-        run: |
-          uv run --locked --python 3.14 --no-dev --group build python tools/verify_production_artifact.py --target apk build/apk
-          uv run --locked --python 3.14 --no-dev --group build python tools/verify_production_artifact.py --target aab build/aab
+      - name: Verify Android APKs
+        run: uv run --locked --python 3.14 --no-dev --group build python tools/verify_production_artifact.py --target apk build/apk
       - name: Upload Android arm64-v8a APK
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v7
         with:
           name: melody-android-arm64-v8a-${{ needs.preflight.outputs.version }}
           path: build/apk/melody-arm64-v8a.apk
           if-no-files-found: error
+      - name: Upload Android arm64-v8a APK with act
+        if: ${{ env.ACT }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: melody-android-arm64-v8a-${{ needs.preflight.outputs.version }}
+          path: build/apk/melody-arm64-v8a.apk
+          if-no-files-found: error
       - name: Upload Android armeabi-v7a APK
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v7
         with:
           name: melody-android-armeabi-v7a-${{ needs.preflight.outputs.version }}
           path: build/apk/melody-armeabi-v7a.apk
           if-no-files-found: error
+      - name: Upload Android armeabi-v7a APK with act
+        if: ${{ env.ACT }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: melody-android-armeabi-v7a-${{ needs.preflight.outputs.version }}
+          path: build/apk/melody-armeabi-v7a.apk
+          if-no-files-found: error
       - name: Upload Android x86_64 APK
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v7
         with:
           name: melody-android-x86_64-${{ needs.preflight.outputs.version }}
           path: build/apk/melody-x86_64.apk
           if-no-files-found: error
+      - name: Upload Android x86_64 APK with act
+        if: ${{ env.ACT }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: melody-android-x86_64-${{ needs.preflight.outputs.version }}
+          path: build/apk/melody-x86_64.apk
+          if-no-files-found: error
+
+  android-aab:
+    needs: [preflight, validate-ui]
+    environment: production
+    runs-on: ubuntu-latest
+    env:
+      MELODY_ENV: production
+      MELODY_DEBUG: "0"
+      FLET_DEBUG: "0"
+      PYTHONDEVMODE: "0"
+      PYTHONASYNCIODEBUG: "0"
+      PYTHONOPTIMIZE: "2"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+      - name: Set up Java for Android
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK and accept licenses
+        uses: android-actions/setup-android@v4
+      - name: Install Android API 36 and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Configure Android release signing
+        shell: bash
+        env:
+          ANDROID_KEY_STORE_BASE64: ${{ secrets.ANDROID_KEY_STORE_BASE64 }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          for name in ANDROID_KEY_STORE_BASE64 ANDROID_KEY_STORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required production secret: ${name}" >&2
+              exit 1
+            fi
+          done
+          key_store="$RUNNER_TEMP/melody-upload.jks"
+          printf '%s' "$ANDROID_KEY_STORE_BASE64" | base64 --decode --ignore-garbage > "$key_store"
+          echo "FLET_ANDROID_SIGNING_KEY_STORE=$key_store" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD=$ANDROID_KEY_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "FLET_ANDROID_SIGNING_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+      - name: Install isolated release toolchain
+        run: uv sync --locked --python 3.14 --no-dev --group build
+      - name: Build Android App Bundle
+        run: >-
+          uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab
+          -- --yes
+      - name: Verify Android App Bundle
+        run: uv run --locked --python 3.14 --no-dev --group build python tools/verify_production_artifact.py --target aab build/aab
       - name: Upload Android App Bundle
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v7
+        with:
+          name: melody-android-aab-${{ needs.preflight.outputs.version }}
+          path: build/aab/melody.aab
+          if-no-files-found: error
+      - name: Upload Android App Bundle with act
+        if: ${{ env.ACT }}
+        uses: actions/upload-artifact@v5
         with:
           name: melody-android-aab-${{ needs.preflight.outputs.version }}
           path: build/aab/melody.aab
@@ -248,7 +338,7 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [windows, linux, macos, android]
+    needs: [windows, linux, macos, android-apk, android-aab]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

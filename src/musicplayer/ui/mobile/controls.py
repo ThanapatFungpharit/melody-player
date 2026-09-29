@@ -21,6 +21,12 @@ def heading(title: str, subtitle: str = "", *actions: ft.Control) -> ft.Control:
         [
             ft.Row(
                 [
+                    ft.Container(
+                        width=4,
+                        height=24,
+                        border_radius=2,
+                        bgcolor=ft.Colors.PRIMARY,
+                    ),
                     ft.Text(
                         title,
                         size=24,
@@ -30,7 +36,7 @@ def heading(title: str, subtitle: str = "", *actions: ft.Control) -> ft.Control:
                     ),
                     *actions,
                 ],
-                spacing=4,
+                spacing=10,
             ),
             *(
                 [ft.Text(subtitle, color=ft.Colors.ON_SURFACE_VARIANT, size=13)]
@@ -154,13 +160,14 @@ def track_row(
     )
 
 
-def scroll_page(controls: list[ft.Control], *, on_scroll=None) -> ft.Column:
-    return ft.Column(
+def scroll_page(controls: list[ft.Control], *, on_scroll=None) -> ft.ListView:
+    return ft.ListView(
         controls,
         spacing=14,
+        build_controls_on_demand=True,
+        cache_extent=300,
         scroll=ft.ScrollMode.AUTO,
         scroll_interval=100,
         on_scroll=on_scroll,
         expand=True,
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )

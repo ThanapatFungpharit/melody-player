@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import flet as ft
 
 from musicplayer.application.downloads import DownloadCoordinator
 from musicplayer.application.library_service import LibraryService
-from musicplayer.application.models import DownloadRecord
+from musicplayer.application.models import AppSettings, DownloadRecord
 from musicplayer.application.playback import PlaybackController
 from musicplayer.application.playback_persistence import PlaybackPersistence
 from musicplayer.application.providers import ProviderRegistry
@@ -25,6 +26,7 @@ from musicplayer.platform_runtime import (
     current_platform,
     public_music_directory,
 )
+from musicplayer.quotes import _STARTUP_QUOTES
 from musicplayer.runtime_environment import public_error_message
 from musicplayer.ui.audio_backend import ManagedAudioBackend
 from musicplayer.ui.components import (
@@ -53,6 +55,9 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_DOWNLOAD_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _EMPTY_MEDIA_METADATA = ("", "", "", "")
+_MINIMUM_LOADING_SECONDS = 3.0
+_LOADING_FADE_SECONDS = 0.22
+_APP_REVEAL_FRAME_SECONDS = 0.05
 
 __all__ = [
     "AppServices",
@@ -82,8 +87,15 @@ class MusicPlayerApp:
 
         return desktop
 
-    def __init__(self, page: ft.Page, services: AppServices | None = None) -> None:
+    def __init__(
+        self,
+        page: ft.Page,
+        services: AppServices | None = None,
+        *,
+        startup_transition: bool = False,
+    ) -> None:
         self.page = page
+        self.startup_transition = startup_transition
         services = services or AppServices.load()
         self._attach_services(services)
         self._create_task_runtime()
@@ -105,6 +117,9 @@ class MusicPlayerApp:
         self.library = services.library
         self.providers = services.providers
         self.thumbnails = services.thumbnails
+        self.thumbnails.native_image_sources = not bool(
+            getattr(self.page, "web", False)
+        )
         self.downloads = services.downloads
 
     def _create_task_runtime(self) -> None:
@@ -125,6 +140,7 @@ class MusicPlayerApp:
         """Wire the playback controller to its Flet/native backend."""
         self._system_media_key: tuple[str, ...] | None = None
         self._system_media_metadata = _EMPTY_MEDIA_METADATA
+        self._system_media_favorite = False
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
         self.backend = ManagedAudioBackend(
@@ -150,6 +166,7 @@ class MusicPlayerApp:
             on_stopped=self.playback.on_stopped,
             on_error=self.playback.on_backend_error,
             on_media_action=self._media_action,
+            on_native_reattach=self.playback.on_native_reattach,
         )
         self.downloads.on_change = lambda record: self.tasks.dispatch(
             self._download_changed, record
@@ -217,19 +234,16 @@ class MusicPlayerApp:
         self.page.on_disconnect = self._close
 
     def _app_lifecycle_changed(self, event: ft.AppLifecycleStateChangeEvent) -> None:
-        """Refresh native playback state after the page returns to the foreground."""
+        """Sync system controls on lifecycle changes and refresh on resume."""
         foreground = event.state in (
             ft.AppLifecycleState.SHOW,
             ft.AppLifecycleState.RESUME,
         )
-        self.backend.set_foreground(foreground)
-        if not foreground:
-            return
-        self.backend.refresh_state()
-        self.backend.invalidate_media_session()
-        # Refresh the session immediately with the current controller state;
-        # the native position query above will publish a precise correction as
-        # soon as it completes.
+        if foreground:
+            self.backend.refresh_state()
+            self.backend.invalidate_media_session()
+        # Keep the notification synchronized across both lifecycle states.
+        # On resume, the native position query publishes a precise correction.
         self._sync_system_media(refresh_metadata=False)
 
     def _playback_changed(self, change: str = "state") -> None:
@@ -265,15 +279,26 @@ class MusicPlayerApp:
         media_key = self._system_media_identity()
         if refresh_metadata or media_key != self._system_media_key:
             self._system_media_key = media_key
-            self._system_media_metadata = self._resolve_system_media_metadata()
+            (
+                self._system_media_metadata,
+                self._system_media_favorite,
+            ) = self._resolve_system_media_metadata()
         title, artist, album, artwork_uri = self._system_media_metadata
 
         has_media = bool(title) and self.playback.media_session_active
+        is_library_track = (
+            has_media
+            and bool(self.playback.current_track_id)
+            and not bool(self.playback.external_title)
+        )
         self.backend.sync_media_session(
             title=title if has_media else "",
             artist=artist,
             album=album,
             artwork_uri=artwork_uri,
+            auto_focal_point_live_notifications=(
+                getattr(self.settings, "auto_focal_point_live_notifications", False)
+            ),
             duration_ms=self.playback.duration_ms,
             position_ms=self.playback.position_ms,
             playing=self.playback.playing,
@@ -282,12 +307,14 @@ class MusicPlayerApp:
             and self.playback.queue.peek_next(automatic=True) is not None,
             has_previous=has_media,
             repeat_mode=self.playback.queue.repeat.value,
-            shuffle=self.playback.queue.shuffle,
-            # A paused Android MediaSessionService is otherwise allowed to
-            # disappear with its notification when the app task is removed.
-            # Preserve it while Melody still owns a resumable queue; explicit
-            # Stop clears has_media and remains the teardown boundary.
-            keep_alive=has_media and bool(getattr(self.playback.queue, "items", ())),
+            can_repeat=is_library_track and bool(self.playback.queue.items),
+            can_shuffle=is_library_track and self.playback.queue.upcoming_count >= 2,
+            can_favorite=is_library_track,
+            favorite=is_library_track and self._system_media_favorite,
+            notification_action_pair=self.settings.notification_action_pair,
+            # Keep the notification visible for any active media, including a
+            # paused stream without a queue. Explicit Stop clears has_media.
+            keep_alive=has_media,
         )
 
     def _system_media_identity(self) -> tuple[str, ...] | None:
@@ -303,32 +330,40 @@ class MusicPlayerApp:
             return ("track", self.playback.current_track_id)
         return None
 
-    def _resolve_system_media_metadata(self) -> tuple[str, str, str, str]:
-        """Resolve display metadata only when the active media identity changes."""
+    def _resolve_system_media_metadata(
+        self,
+    ) -> tuple[tuple[str, str, str, str], bool]:
+        """Resolve display metadata and favorite state when media changes."""
         if self.playback.external_title:
             return (
-                self.playback.external_title,
-                self.playback.external_uploader,
-                "",
-                self._artwork_uri(self.playback.external_thumbnail),
+                (
+                    self.playback.external_title,
+                    self.playback.external_uploader,
+                    "",
+                    self._artwork_uri(self.playback.external_thumbnail),
+                ),
+                False,
             )
         if not self.playback.current_track_id:
-            return _EMPTY_MEDIA_METADATA
+            return _EMPTY_MEDIA_METADATA, False
 
         try:
             track = self.manager.get_track(self.playback.current_track_id)
             details = self.library.details(self.playback.current_track_id)
         except KeyError, OSError, ValueError:
             logger.debug("Could not resolve system media metadata", exc_info=True)
-            return _EMPTY_MEDIA_METADATA
+            return _EMPTY_MEDIA_METADATA, False
 
         return (
-            track.title or Path(track.filename).stem,
-            details.uploader,
-            # Melody does not currently persist album tags. The source name is
-            # still useful context without pretending it is an album title.
-            details.source_name,
-            self._artwork_uri(details.thumbnail),
+            (
+                track.title or Path(track.filename).stem,
+                details.uploader,
+                # Melody does not currently persist album tags. The source
+                # name is useful context without pretending it is an album.
+                details.source_name,
+                self._artwork_uri(details.thumbnail),
+            ),
+            bool(getattr(details, "favorite", False)),
         )
 
     def _artwork_uri(self, source: str) -> str:
@@ -336,7 +371,7 @@ class MusicPlayerApp:
         return cache.artwork_uri(source) if cache is not None else source
 
     def _media_action(self, action: str, seek_position_ms: int | None) -> None:
-        """Apply an idempotent command received from native media controls."""
+        """Apply a command received from native media controls."""
         command = action.casefold()
         if command == "play":
             if not self.playback.playing:
@@ -356,6 +391,23 @@ class MusicPlayerApp:
             self.playback.seek(self.playback.position_ms - 10_000)
         elif command == "fastforward":
             self.playback.seek(self.playback.position_ms + 10_000)
+        elif command == "cyclerepeat":
+            if self.playback.media_session_active and self.playback.queue.items:
+                self.playback.cycle_repeat()
+        elif command in {"shuffleupcoming", "shuffle"}:
+            if (
+                self.playback.media_session_active
+                and not self.playback.external_title
+                and self.playback.current_track_id
+            ):
+                self.playback.shuffle_upcoming()
+        elif (
+            command == "togglefavorite"
+            and self.playback.media_session_active
+            and not self.playback.external_title
+            and self.playback.current_track_id
+        ):
+            self.library_page._toggle_favorite(self.playback.current_track_id)
 
     def _download_changed(self, record: DownloadRecord) -> None:
         self.context_panel._refresh_download_badge()
@@ -578,11 +630,15 @@ class AppServices:
     available_track_ids: set[str]
 
     @classmethod
-    def load(cls) -> AppServices:
+    def load(
+        cls, *, on_settings_loaded: Callable[[AppSettings], None] | None = None
+    ) -> AppServices:
         """Load only state required to render and resume the local application."""
         directory = application_data_directory()
         store = ApplicationStore(directory / "state.json")
         settings = store.settings
+        if on_settings_loaded is not None:
+            on_settings_loaded(settings)
         platform_name = current_platform()
         manager = MusicManager(
             directory / "library.mmdb",
@@ -593,6 +649,9 @@ class AppServices:
         providers = ProviderRegistry(settings=settings)
         thumbnails = ThumbnailCache(directory / "thumbnails")
         downloads = DownloadCoordinator(manager, store, settings, thumbnails=thumbnails)
+        available_track_ids = _available_resume_tracks(
+            manager, store, resume_session=settings.resume_session
+        )
         return cls(
             directory=directory,
             store=store,
@@ -601,11 +660,7 @@ class AppServices:
             providers=providers,
             thumbnails=thumbnails,
             downloads=downloads,
-            available_track_ids=_available_resume_tracks(
-                manager,
-                store,
-                resume_session=settings.resume_session,
-            ),
+            available_track_ids=available_track_ids,
         )
 
 
@@ -636,23 +691,253 @@ def _available_resume_tracks(
     }
 
 
-async def main(page: ft.Page) -> None:
-    page.title = "Melody — Loading library"
-    loading = ft.Column(
-        [ft.ProgressRing(), ft.Text("Loading your library…")],
+def _apply_startup_appearance(page: ft.Page, settings: AppSettings) -> None:
+    """Apply saved appearance while the loading view is still visible."""
+    seed = accent_color(settings.accent_color)
+    page.theme_mode = _theme_mode(settings.theme)
+    page.theme = build_theme(seed)
+    page.dark_theme = build_theme(seed)
+    page.update()
+
+
+def _startup_mark_size(
+    page: ft.Page,
+    viewport_width: float | None = None,
+    viewport_height: float | None = None,
+) -> int:
+    window = getattr(page, "window", None)
+    mobile = (
+        presentation_kind(getattr(page, "platform", None)) is PresentationKind.MOBILE
+    )
+    fallback_width, fallback_height = (390, 844) if mobile else (1440, 900)
+    width = (
+        viewport_width
+        or getattr(page, "width", None)
+        or getattr(window, "width", None)
+        or fallback_width
+    )
+    height = (
+        viewport_height
+        or getattr(page, "height", None)
+        or getattr(window, "height", None)
+        or fallback_height
+    )
+    shortest = min(float(width), float(height))
+    return round(min(shortest * 0.7, max(140, min(280, shortest * 0.44))))
+
+
+def _next_startup_quote(previous: str | None = None) -> str:
+    """Choose a quote without immediately repeating the current one."""
+    return random.choice([quote for quote in _STARTUP_QUOTES if quote != previous])
+
+
+def _quote_display_seconds(quote: str) -> float:
+    """Give longer quotes more reading time without stalling the loading view."""
+    return min(5.5, max(1.8, 0.8 + 0.28 * len(quote.split())))
+
+
+async def _cycle_startup_quotes(
+    page: ft.Page, quote: ft.Text, stop: asyncio.Event
+) -> None:
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(
+                stop.wait(), timeout=_quote_display_seconds(str(quote.value))
+            )
+        except TimeoutError:
+            if stop.is_set():
+                break
+            quote.value = _next_startup_quote(str(quote.value))
+            page.update(quote)
+
+
+async def _stop_startup_quotes(stop: asyncio.Event, task: asyncio.Task[None]) -> None:
+    stop.set()
+    try:
+        await task
+    except Exception:
+        logger.exception("Could not update the startup quote")
+
+
+def _show_startup_loading(
+    page: ft.Page,
+    *,
+    viewport_width: float | None = None,
+    viewport_height: float | None = None,
+) -> tuple[ft.SafeArea, ft.Text]:
+    """Mount the loading view used by both the app and UI preview."""
+    page.padding = 0
+    page.spacing = 0
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    size = _startup_mark_size(page, viewport_width, viewport_height)
+    ring = ft.ProgressRing(
+        width=size,
+        height=size,
+        stroke_width=max(4, round(size * 0.025)),
+        stroke_cap=ft.StrokeCap.ROUND,
+        color=ft.Colors.PRIMARY,
+        semantics_label="Loading Melody",
+    )
+    glow = ft.Container(
+        bgcolor=ft.Colors.PRIMARY_CONTAINER,
+        border_radius=1000,
+        opacity=0.5,
+    )
+    bars = [
+        ft.Container(bgcolor=ft.Colors.PRIMARY, border_radius=100) for _ in range(4)
+    ]
+
+    def size_mark(mark_size: int) -> None:
+        bar_width = max(8, round(mark_size * 0.11))
+        for bar, height_ratio in zip(bars, (0.38, 0.56, 0.48, 0.38), strict=True):
+            bar.width = bar_width
+            bar.height = round(mark_size * height_ratio)
+        lines.width = round(mark_size * 0.78)
+        lines.height = round(mark_size * 0.78)
+        lines.spacing = round(mark_size * 0.045)
+        glow.width = glow.height = round(mark_size * 0.84)
+        ring.width = ring.height = mark_size
+        ring.stroke_width = max(4, round(mark_size * 0.025))
+        mark.width = mark.height = mark_size
+
+    lines = ft.Row(
+        cast(list[ft.Control], bars),
+        alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    mark = ft.Stack(
+        [glow, ring, lines],
+        alignment=ft.Alignment.CENTER,
+        width=size,
+        height=size,
+    )
+    size_mark(size)
+    caption = ft.Column(
+        [
+            ft.Text(
+                "Melody",
+                size=23,
+                weight=ft.FontWeight.W_600,
+                color=ft.Colors.ON_SURFACE,
+            ),
+            ft.Text(
+                "Getting your library ready",
+                size=13,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+        ],
+        spacing=4,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    centerpiece = ft.Column(
+        [mark, ft.Container(caption, padding=ft.Padding.only(top=22))],
+        spacing=0,
         alignment=ft.MainAxisAlignment.CENTER,
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    quote_text = ft.Text(
+        _next_startup_quote(),
+        size=14,
+        italic=True,
+        color=ft.Colors.ON_SURFACE_VARIANT,
+        text_align=ft.TextAlign.CENTER,
+    )
+    quote = ft.Container(
+        quote_text,
+        alignment=ft.Alignment.BOTTOM_CENTER,
+        padding=ft.Padding.only(left=24, right=24, bottom=28),
+        expand=1,
+    )
+    layout = ft.Column(
+        [ft.Container(expand=1), centerpiece, quote],
         expand=True,
+        spacing=0,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    loading = ft.SafeArea(
+        ft.Container(
+            layout,
+            alignment=ft.Alignment.CENTER,
+            expand=True,
+            bgcolor=ft.Colors.SURFACE,
+        ),
+        expand=True,
+        animate_opacity=ft.Animation(220, ft.AnimationCurve.EASE_IN_OUT),
+        avoid_intrusions_left=True,
+        avoid_intrusions_top=True,
+        avoid_intrusions_right=True,
+        avoid_intrusions_bottom=True,
+        maintain_bottom_view_padding=True,
     )
     page.add(loading)
+
+    def resize_loading(event: Any) -> None:
+        updated_size = _startup_mark_size(
+            page, getattr(event, "width", None), getattr(event, "height", None)
+        )
+        if updated_size == mark.width:
+            return
+        size_mark(updated_size)
+        page.update(mark)
+
+    page.on_resize = resize_loading
+    return loading, quote_text
+
+
+async def _fade_out_startup_loading(page: ft.Page, loading: ft.SafeArea) -> None:
+    loading.opacity = 0
+    page.update(loading)
+    await asyncio.sleep(_LOADING_FADE_SECONDS)
+
+
+async def _reveal_startup_app(page: ft.Page, app: MusicPlayerApp) -> None:
+    # Let the first frame mount at zero opacity before starting the reveal.
+    await asyncio.sleep(_APP_REVEAL_FRAME_SECONDS)
+    app.shell.root.opacity = 1
+    page.update(app.shell.root)
+
+
+async def main(page: ft.Page) -> None:
+    page.title = "Melody — Loading library"
+    loading, quote = _show_startup_loading(page)
+    quote_stop = asyncio.Event()
+    quote_task = asyncio.create_task(_cycle_startup_quotes(page, quote, quote_stop))
+    loop = asyncio.get_running_loop()
+    loading_started = loop.time()
+
+    def appearance_ready(settings: AppSettings) -> None:
+        loop.call_soon_threadsafe(_apply_startup_appearance, page, settings)
+
     try:
-        services = await asyncio.to_thread(AppServices.load)
+        services = await asyncio.to_thread(
+            AppServices.load,
+            on_settings_loaded=appearance_ready,
+        )
+        settings = services.store.settings
+        _apply_startup_appearance(page, settings)
+        if not settings.skip_loading_delay:
+            remaining = _MINIMUM_LOADING_SECONDS - (loop.time() - loading_started)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        await _stop_startup_quotes(quote_stop, quote_task)
+        await _fade_out_startup_loading(page, loading)
+        page.on_resize = None
         page.controls.clear()
-        MusicPlayerApp(page, services)
+        page.vertical_alignment = ft.MainAxisAlignment.START
+        page.horizontal_alignment = ft.CrossAxisAlignment.START
+        app = MusicPlayerApp(page, services, startup_transition=True)
+        await _reveal_startup_app(page, app)
+        await app.backend.reattach_native_state()
     except Exception:  # noqa: BLE001 - final UI boundary must stay user-safe
         logger.error("Melody failed to start")
+        await _stop_startup_quotes(quote_stop, quote_task)
+        page.on_resize = None
+        page.controls.clear()
         page.title = "Melody — Startup error"
         page.padding = 32
+        page.vertical_alignment = ft.MainAxisAlignment.START
+        page.horizontal_alignment = ft.CrossAxisAlignment.START
         page.add(
             ft.Column(
                 [

@@ -28,6 +28,8 @@ class MobileShell:
         self.bottom_nav = ft.NavigationBar(
             selected_index=0,
             height=64,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            indicator_color=ft.Colors.PRIMARY_CONTAINER,
             label_behavior=ft.NavigationBarLabelBehavior.ALWAYS_SHOW,
             destinations=[
                 ft.NavigationBarDestination(icon=o, selected_icon=f, label=n)
@@ -37,8 +39,21 @@ class MobileShell:
         )
         header = ft.Row(
             [
-                ft.Icon(ft.Icons.GRAPHIC_EQ_ROUNDED, color=ft.Colors.PRIMARY),
-                ft.Text("Melody", size=18, weight=ft.FontWeight.BOLD, expand=True),
+                ft.Container(
+                    ft.Icon(ft.Icons.GRAPHIC_EQ_ROUNDED, color=ft.Colors.PRIMARY),
+                    width=40,
+                    height=40,
+                    border_radius=12,
+                    bgcolor=ft.Colors.PRIMARY_CONTAINER,
+                    alignment=ft.Alignment.CENTER,
+                ),
+                ft.Text(
+                    "Melody",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PRIMARY,
+                    expand=True,
+                ),
                 self.downloads,
                 ft.IconButton(
                     ft.Icons.SETTINGS_ROUNDED,
@@ -50,27 +65,26 @@ class MobileShell:
             ],
             spacing=4,
         )
+        self.root = safe_area(
+            ft.Column(
+                [
+                    ft.Container(header, padding=ft.Padding.symmetric(horizontal=16)),
+                    app.content,
+                    app.player.root,
+                    self.bottom_nav,
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            expand=True,
+        )
+        self.root.opacity = 0 if getattr(app, "startup_transition", False) else 1
+        self.root.animate_opacity = ft.Animation(300, ft.AnimationCurve.EASE_OUT)
         self.root_view = ft.View(
             route="/",
             padding=0,
             spacing=0,
-            controls=[
-                safe_area(
-                    ft.Column(
-                        [
-                            ft.Container(
-                                header, padding=ft.Padding.symmetric(horizontal=16)
-                            ),
-                            app.content,
-                            app.player.root,
-                            self.bottom_nav,
-                        ],
-                        spacing=0,
-                        expand=True,
-                    ),
-                    expand=True,
-                )
-            ],
+            controls=[self.root],
         )
         app.page.views.clear()
         app.page.views.append(self.root_view)
@@ -133,19 +147,25 @@ class MobileShell:
             name, _, body = self.panel_history[-1]
             if name != "player":
                 body.content = self.app.context_panel._panel_view(name)
-            self.app.page.update()
+            self.app.page.update(body)
 
     def refresh_downloads(self) -> None:
         active = self.app.downloads.active_count()
-        self.downloads.badge = str(active) if active else None
-        self.downloads.tooltip = (
-            f"Downloads, {active} active" if active else "Downloads"
-        )
-        self.app.page.update()
+        badge = str(active) if active else None
+        tooltip = f"Downloads, {active} active" if active else "Downloads"
+        if self.downloads.badge == badge and self.downloads.tooltip == tooltip:
+            return
+        self.downloads.badge = badge
+        self.downloads.tooltip = tooltip
+        self.app.page.update(self.downloads)
 
     def resize(self, width: float, height: float) -> None:
+        self.app.player.resize(width, height)
         # Flex and scrolling handle orientation without recreating forms or state.
-        self.app.page.update()
+        controls = [self.app.player.root]
+        if self.app.player._player_is_mounted():
+            controls.append(self.app.player.full_player)
+        self.app.page.update(*controls)
 
     def keyboard(self, event) -> None:
         pass

@@ -35,7 +35,7 @@ class SearchPage:
     next_button: ft.IconButton
     page_number_label: ft.Text
     pagination: ft.Row
-    result_list: ft.Column
+    result_list: ft.Column | ft.ListView
 
     def __init__(self, app: MusicPlayerApp):
         self.app = app

@@ -35,6 +35,8 @@ class PlaybackBindings:
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
         self.art = ft.Container(width=48, height=48)
+        self._artwork_key: tuple[str | bytes, int] | None = None
+        self._changed_progress_controls: list[ft.Control] = []
         self.play = self.button(
             ft.Icons.PLAY_ARROW_ROUNDED, "Play", lambda _: app.playback.toggle()
         )
@@ -46,6 +48,12 @@ class PlaybackBindings:
         self.next = self.button(
             ft.Icons.SKIP_NEXT_ROUNDED, "Next track", lambda _: app.playback.next()
         )
+        self.stop = self.button(
+            ft.Icons.STOP_ROUNDED,
+            "Stop playback and clear notification",
+            lambda _: app.playback.stop(),
+        )
+        self.stop.disabled = not app.playback.media_session_active
         self.favorite = self.button(
             ft.Icons.FAVORITE_BORDER_ROUNDED,
             "Favorite",
@@ -53,8 +61,8 @@ class PlaybackBindings:
         )
         self.shuffle = self.button(
             ft.Icons.SHUFFLE_ROUNDED,
-            "Shuffle off",
-            lambda _: app.playback.toggle_shuffle(),
+            "Shuffle upcoming tracks",
+            lambda _: app.playback.shuffle_upcoming(),
         )
         self.repeat = self.button(
             ft.Icons.REPEAT_ROUNDED, "Repeat off", lambda _: app.playback.cycle_repeat()
@@ -115,11 +123,14 @@ class PlaybackBindings:
             if playback.snapshot.loading:
                 credit = "Preparing track…"
             self.title.value, self.credit.value = title, credit
-            self.art.content = _artwork(
-                thumbnail,
-                int(self.art.width or 48),
-                cache=getattr(self.app, "thumbnails", None),
-            )
+            artwork_key = (thumbnail, int(self.art.width or 48))
+            if artwork_key != self._artwork_key:
+                self.art.content = _artwork(
+                    thumbnail,
+                    artwork_key[1],
+                    cache=getattr(self.app, "thumbnails", None),
+                )
+                self._artwork_key = artwork_key
             self.favorite.icon = (
                 ft.Icons.FAVORITE_ROUNDED
                 if favorite
@@ -136,12 +147,9 @@ class PlaybackBindings:
             has_media = bool(playback.current_track_id or playback.external_title)
             for control in (self.play, self.previous, self.next):
                 control.disabled = not has_media
-            self.shuffle.icon_color = (
-                ft.Colors.PRIMARY if playback.queue.shuffle else None
-            )
-            self.shuffle.tooltip = (
-                "Shuffle on" if playback.queue.shuffle else "Shuffle off"
-            )
+            self.stop.disabled = not playback.media_session_active
+            self.shuffle.disabled = playback.queue.upcoming_count < 2
+            self.shuffle.tooltip = "Shuffle upcoming tracks"
             repeat = playback.queue.repeat
             self.repeat.icon = (
                 ft.Icons.REPEAT_ONE_ROUNDED
@@ -161,6 +169,9 @@ class PlaybackBindings:
 
     def refresh_progress(self) -> None:
         playback = self.app.playback
+        old_seek = (self.seek.max, self.seek.value, self.seek.disabled)
+        old_position = self.position.value
+        old_duration = self.duration.value
         if not self.seeking:
             self.seek.max = max(1, playback.duration_ms)
             self.seek.value = min(playback.position_ms, self.seek.max)
@@ -175,6 +186,18 @@ class PlaybackBindings:
             if playback.snapshot.loading
             else _format_duration(playback.duration_ms / 1000)
         )
+        self._changed_progress_controls = [
+            control
+            for changed, control in (
+                (
+                    old_seek != (self.seek.max, self.seek.value, self.seek.disabled),
+                    self.seek,
+                ),
+                (old_position != self.position.value, self.position),
+                (old_duration != self.duration.value, self.duration),
+            )
+            if changed
+        ]
 
     def refresh_volume(self) -> None:
         muted = self.app.playback.muted or self.app.playback.volume == 0
@@ -184,13 +207,28 @@ class PlaybackBindings:
         self.mute.tooltip = "Unmute" if muted else "Mute"
 
     def progress_controls(self) -> list[ft.Control]:
-        return [self.seek, self.position, self.duration]
+        return self._changed_progress_controls
 
     def volume_controls(self) -> list[ft.Control]:
         return [self.mute]
 
     def state_controls(self) -> list[ft.Control]:
-        return [self.root]
+        return [
+            self.title,
+            self.credit,
+            self.art,
+            self.play,
+            self.previous,
+            self.next,
+            self.stop,
+            self.favorite,
+            self.shuffle,
+            self.repeat,
+            self.seek,
+            self.position,
+            self.duration,
+            *self.volume_controls(),
+        ]
 
 
 class PlayerBar:
@@ -202,19 +240,56 @@ class PlayerBar:
     def _refresh_player(self) -> None:
         if "player" not in self.app.__dict__:
             return
+        before = {
+            id(control): self._control_state(control)
+            for control in self.app.player.state_controls()
+        }
         self.app.player.refresh()
-        self.app.page.update(*self.app.player.state_controls())
+        changed = [
+            control
+            for control in self.app.player.state_controls()
+            if before.get(id(control)) != self._control_state(control)
+        ]
+        if changed:
+            self.app.page.update(*changed)
+
+    @staticmethod
+    def _control_state(control: ft.Control) -> tuple[object, ...]:
+        """Only patch player controls whose displayed properties changed."""
+        return (
+            getattr(control, "value", None),
+            getattr(control, "max", None),
+            getattr(control, "disabled", None),
+            getattr(control, "icon", None),
+            getattr(control, "icon_color", None),
+            getattr(control, "tooltip", None),
+            getattr(control, "visible", None),
+            getattr(control, "bgcolor", None),
+            getattr(control, "width", None),
+            getattr(control, "height", None),
+            id(getattr(control, "content", None)),
+        )
 
     def _refresh_player_progress(self) -> None:
         if "player" not in self.app.__dict__:
             return
         self.app.player.refresh("progress")
-        self.app.page.update(*self.app.player.progress_controls())
+        controls = self.app.player.progress_controls()
+        if controls:
+            self.app.page.update(*controls)
 
     def _refresh_player_volume(self) -> None:
         if "player" not in self.app.__dict__:
             return
+        before = {
+            id(control): self._control_state(control)
+            for control in self.app.player.volume_controls()
+        }
         self.app.player.refresh("volume")
-        controls = self.app.player.volume_controls()
-        if controls:
-            self.app.page.update(*controls)
+        changed = [
+            control
+            for control in self.app.player.volume_controls()
+            if before.get(id(control)) != self._control_state(control)
+        ]
+        if changed:
+            self.app.page.update(*changed)

@@ -79,46 +79,57 @@ emitted sound. Consumers needing a consistent view can read the immutable
 Commands, queue mutations, and player callbacks share the controller's reentrant
 lock. The controller always gives the complete library path queue to the managed
 player. There is no capability probe, Python byte-loading fallback, playback
-worker, or Python preload cache. The player owns path validation, candidate
-preparation, successor preloading, decoder swaps, and generation-scoped events.
-The adapter mounts one managed player service for the page lifetime. Events from
+worker, or Python preload cache. The process-scoped `just_audio` player owns
+decoding, buffering, playlist transitions, and repeat. `audio_session`
+configures focus and interruption behavior. The bridge owns generation-scoped
+events and prepares replacement players for explicit selections.
+The adapter mounts a command bridge for the page lifetime. The decoder, live
+queue, playback position, and media session remain process-scoped when that
+bridge is disposed. A new page queries the native snapshot and adopts it before
+issuing a new playback command. Events from
 the retiring decoder are ignored, and completion is handled once per generation.
 Transport RPCs have their own lock, so Pause remains responsive while a candidate
 source is preparing. Callbacks must enqueue UI work or return promptly; do not
 wait for another thread that needs the controller lock.
 
 The backend owns transport mechanics and RPC ordering. The native engine owns a
-runtime copy of the queue, advances it on completion, preloads its predicted
-successor, and emits a generation-scoped track-change event that Python mirrors
+runtime copy of the queue, lets `just_audio` advance it on completion, and emits
+a generation-scoped track-change event that Python mirrors
 and persists. Python must not independently advance a native completion event.
-Visible UI queue mutations replace or update the native queue atomically. System
+Selecting a source sends autoplay and start position in the same native request;
+the decoder starts when ready without a later Python Play callback. Visible UI
+queue mutations replace or update the native queue atomically. System
 media controls operate that engine directly; only an action that cannot be
 satisfied by the installed native queue falls back to Python application policy.
 Returning from background queries the native player and reconciles observations.
 Suspending a page is not a request to stop playback. Pause preserves the active
-media session and exposes Play. On Android, a non-empty resumable queue keeps
-the foreground media service attached while paused; only explicit Stop discards
-the decoder, releases keep-alive resources, and deactivates system controls.
-The native decoder emits position updates once per second in the foreground and
-once per five seconds while the UI is hidden. Media-session synchronization
-skips unchanged metadata and action sets, leaving only the lightweight playback
-timeline correction on background progress ticks.
+media session and exposes Play. On Android, any active media keeps the foreground
+media service attached while paused; only explicit Stop discards the decoder,
+releases keep-alive resources, and deactivates system controls. The Android
+notification shows transport controls without Stop; Stop is available in
+Melody's player. For library tracks, the notification also offers Repeat and
+Favorite; their labels and icons follow the current queue and favorite state.
+The native decoder emits position updates once per second while the app is
+visible or hidden. Media-session synchronization skips unchanged metadata and
+action sets, leaving only playback timeline corrections on progress ticks.
 
 Android release builds patch the generated launcher activity to `singleTask`
 and disable document launching. Launcher and notification intents therefore
 route to the existing task rather than constructing a second Python/controller
-owner. Within that process, activation is idempotent, the native session stays
-mounted across activity detach/reattach, and foreground resume reconciles the
-player timeline. Full Android process death still destroys in-memory decoder
-identity; the persisted queue can be restored, but automatic continuation is not
-claimed. iOS background and lock-screen behavior and Android lifecycle behavior
-still require physical-device release testing; the headless suite cannot certify
+owner. The generated activity caches its Flutter engine, so removing the Android
+task does not destroy the Dart decoder while the foreground media service keeps
+the process alive. Reopening Melody attaches to that engine, and foreground
+resume reconciles the player timeline. Full Android process death still destroys
+in-memory decoder identity; the persisted queue can be restored, but automatic
+continuation is not claimed. iOS background and lock-screen behavior and Android
+lifecycle behavior still require physical-device release testing; the headless
+suite cannot certify
 operating-system policy.
 
 Shuffle is a one-time in-place reorder of the playback queue. Enabling it keeps
 the current track fixed and reorders only upcoming rows; starting a collection
 with Shuffle reorders the whole collection before selecting its first row.
-Next, Previous, repeat, preload prediction, persistence, and the queue UI then
+Next, Previous, repeat, persistence, and the queue UI then
 all follow that same visible order without making another random choice.
 Playlist order is separately authoritative in `MusicManager`: desktop drag/drop
 and mobile move actions persist a strict complete order without replacing or
@@ -139,9 +150,10 @@ embedded cover is a terminal post-processing failure. Mutagen is a direct depend
 for all selectable MP3, M4A, and Opus formats rather than relying on an optional
 yt-dlp extra. Only verified embedded bytes are copied into the URL-keyed UI
 cache. That derived cache is committed atomically, and a cache failure does not
-invalidate the authoritative media file. Flet receives cached bytes directly
-and native media sessions receive a file URI, avoiding connectivity probes and
-repeated container parsing while offline.
+invalidate the authoritative media file. Native Flet images receive the cached
+file path so Flutter loads artwork without Python reading and transporting it
+on the UI thread. Browser views receive cached bytes, and native media sessions
+receive a file URI. Neither view needs to parse audio containers while offline.
 
 Startup loads only durable state needed for the first view. It does not run the
 network updater, fetch development media tools, reconcile unregistered files, or

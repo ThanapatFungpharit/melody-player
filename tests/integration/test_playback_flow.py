@@ -35,9 +35,13 @@ class FlowAudioBackend:
         self.loaded = Event()
         self.played_at: list[int] = []
 
-    def load(self, source: str | bytes) -> None:
+    def load(
+        self, source: str | bytes, *, autoplay: bool = False, position_ms: int = 0
+    ) -> None:
         self.source = source
         self.loaded.set()
+        if autoplay:
+            self.played_at.append(position_ms)
 
     def play(self, position_ms: int = 0) -> None:
         self.played_at.append(position_ms)
@@ -48,11 +52,14 @@ class FlowAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
+        autoplay: bool = False,
+        position_ms: int = 0,
     ) -> None:
         self.queue = items
         self.current_index = current_index
         self.loaded.set()
+        if autoplay:
+            self.played_at.append(position_ms)
 
     def update_queue(
         self,
@@ -60,7 +67,6 @@ class FlowAudioBackend:
         current_index: int,
         *,
         repeat_mode: str,
-        shuffle: bool,
     ) -> None:
         self.queue = items
         self.current_index = current_index
@@ -138,10 +144,10 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                 )
                 playback.play_track(track_id)
                 self.assertTrue(backend.loaded.wait(timeout=5))
-                self.assertEqual(
-                    backend.queue[backend.current_index],
-                    {"track_id": track_id, "source": str(path)},
-                )
+                selected = backend.queue[backend.current_index]
+                self.assertEqual(selected["track_id"], track_id)
+                self.assertEqual(selected["source"], str(path))
+                self.assertEqual(selected["title"], "New download")
                 self.assertEqual(backend.source, "")
                 self.assertEqual(backend.played_at, [0])
                 self.assertEqual(playback.current_track_id, track_id)
