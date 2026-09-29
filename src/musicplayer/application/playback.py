@@ -84,6 +84,7 @@ class PlaybackController:
         *,
         persistence: PlaybackPersistence | None = None,
         available_track_ids: set[str] | None = None,
+        artwork_uri: Callable[[str], str] | None = None,
         on_change: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
@@ -91,6 +92,7 @@ class PlaybackController:
         self.library = library
         self.store = store
         self.backend = backend
+        self._artwork_uri = artwork_uri or (lambda source: source)
         self.persistence = persistence
         self.on_change = on_change
         self.on_error = on_error
@@ -234,20 +236,22 @@ class PlaybackController:
         )
         selected = str(track_ids[selected_index]) if selected_index >= 0 else None
         available: list[str] = []
-        available_index: int | None = None
+        seen: set[str] = set()
         for item in track_ids:
             normalized = str(item)
-            if not self.manager.has_track(normalized):
+            if normalized in seen or not self.manager.has_track(normalized):
                 continue
-            if available_index is None and normalized == selected:
-                available_index = len(available)
+            seen.add(normalized)
             available.append(normalized)
 
         if not available:
             self._error("There are no available tracks to play.")
             return
-        if available_index is None:
-            available_index = min(max(0, selected_index), len(available) - 1)
+        available_index = (
+            available.index(selected)
+            if selected in seen
+            else min(max(0, selected_index), len(available) - 1)
+        )
         self.queue.replace(
             available,
             start_index=available_index,
@@ -361,6 +365,11 @@ class PlaybackController:
         if self.queue.next():
             self._load_current(autoplay=True)
         else:
+            if was_external:
+                # A stream has no queue selection to resume after Next.
+                self.stop()
+                self._notify("track")
+                return
             if source_was_loaded:
                 if was_playing:
                     self.backend.pause()
@@ -474,13 +483,11 @@ class PlaybackController:
             if self.queue.current:
                 self._load_current(autoplay=self._playing)
             else:
-                self._cancel_pending_load()
-                self._source_loaded = False
-                self._loaded_track_id = None
-                self._playing = False
-                self.position_ms = 0
-                self.duration_ms = 0
-                self._sync_queue()
+                # Updating an empty native queue preserves its active decoder.
+                # Release the source when its last visible row is removed.
+                self.stop()
+                self._notify("queue")
+                return
         else:
             self._sync_queue()
         self._persist()
@@ -521,18 +528,14 @@ class PlaybackController:
     def clear_library_state(self) -> None:
         """Drop queued library tracks and stop a loaded library source."""
         library_source_active = bool(
-            self.current_track_id or (self._source_loaded and not self.external_title)
+            not self.external_title and (self.current_track_id or self._source_loaded)
         )
-        if library_source_active:
-            self._cancel_pending_load()
-            self._source_loaded = False
-            self._loaded_track_id = None
-            self._playing = False
-            self.position_ms = 0
-            self.duration_ms = 0
         self.queue.clear()
-        self._sync_queue()
-        self._persist()
+        if library_source_active:
+            self.stop()
+        else:
+            self._sync_queue()
+            self._persist()
         self._notify("queue")
 
     @_serialized
@@ -721,7 +724,14 @@ class PlaybackController:
         self._loaded_track_id = None
         self._loading = False
         self._player_loading = False
+        self._media_session_active = False
         self._pending_play_record_id = None
+        if self.external_title:
+            self.external_title = ""
+            self.external_uploader = ""
+            self.external_thumbnail = ""
+            self.position_ms = 0
+            self.duration_ms = 0
         self._persist()
         self._notify()
         now = time.monotonic()
@@ -772,7 +782,7 @@ class PlaybackController:
                     "title": track.title or Path(track.filename).stem,
                     "artist": extra.uploader if extra else "",
                     "album": extra.source_name if extra else "",
-                    "artwork_uri": extra.thumbnail if extra else "",
+                    "artwork_uri": self._artwork_uri(extra.thumbnail) if extra else "",
                 }
             )
         return items

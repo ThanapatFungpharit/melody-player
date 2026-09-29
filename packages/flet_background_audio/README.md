@@ -123,9 +123,11 @@ after an activity or page reattachment to refresh metadata and action handling.
 
 `sync` requires `title`. Optional `artist`, `album`, and `artwork_uri` describe
 the current media. `auto_focal_point_live_notifications` prepares a square
-artwork copy in Flutter using the vertical center of local color differences;
-when false, Flutter crops around the center. The operating system still draws
-the media panel from the prepared artwork. `duration_ms` and `position_ms` are
+artwork copy in Flutter by finding the crop that retains the most local color
+and edge detail; equal-scoring crops favor the image center. This lightweight
+visual-detail estimate does not recognize faces. When false, Flutter crops
+around the center. The operating system still draws the media panel from the
+prepared artwork. `duration_ms` and `position_ms` are
 clamped to nonnegative integer milliseconds; `playing` and `loading` describe
 the current state.
 

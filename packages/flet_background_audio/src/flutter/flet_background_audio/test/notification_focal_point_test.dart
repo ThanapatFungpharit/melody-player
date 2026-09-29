@@ -83,6 +83,9 @@ void main() {
     expect(clampFocalY(4), 1);
     expect(focalCropRect(20, 60, -1), const ui.Rect.fromLTWH(0, 0, 20, 20));
     expect(focalCropRect(20, 60, 1), const ui.Rect.fromLTWH(0, 40, 20, 20));
+    expect(focalCropRect(20, 60, 0.25).top, 5);
+    expect(focalCropRect(20, 60, 0.5).top, 20);
+    expect(focalCropRect(20, 60, 0.75).top, 35);
     expect(focalCropRect(60, 20, 0), const ui.Rect.fromLTWH(20, 0, 20, 20));
   });
 

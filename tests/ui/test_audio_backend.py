@@ -472,10 +472,12 @@ class ManagedAudioBackendTests(unittest.TestCase):
         backend.sync_media_session(title="Track", playing=True)
 
         self.assertEqual(len(page.scheduled), 3)
-        asyncio.run(backend._run_media_sync(*page.scheduled[1][1]))
-        asyncio.run(backend._run_media_sync(*page.scheduled[2][1]))
+        stale_sync = page.scheduled[1][1]
+        latest_sync = page.scheduled[2][1]
+        asyncio.run(backend._run_media_sync(*stale_sync))
+        asyncio.run(backend._run_media_sync(*latest_sync))
         self.assertEqual(session.states, [True, True])
-        self.assertTrue(backend._media_snapshot[7])
+        self.assertEqual(backend._media_snapshot, latest_sync[2])
 
     def test_pause_keeps_media_session_metadata_until_explicit_stop(self) -> None:
         class SessionBackend:

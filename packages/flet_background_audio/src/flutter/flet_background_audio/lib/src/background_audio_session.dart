@@ -29,6 +29,8 @@ class NativeMediaSessionRuntime {
   bool _nativePlaying = false;
   MediaRepeatMode _nativeRepeatMode = MediaRepeatMode.none;
   int _nativeMetadataToken = 0;
+  bool _automaticFocalPoint = false;
+  String _sourceArtworkUri = "";
   int _syncRevision = 0;
   int _nativeStateRevision = 0;
   bool _nativeStateObserved = false;
@@ -181,6 +183,7 @@ class NativeMediaSessionRuntime {
     final artworkUri = (data["artwork_uri"] as String?)?.trim();
     final automaticFocalPoint =
         data["auto_focal_point_live_notifications"] as bool? ?? false;
+    _automaticFocalPoint = automaticFocalPoint;
     final nativeStateRevision = _nativeStateRevision;
     final preparedArtworkUri = artworkUri == null || artworkUri.isEmpty
         ? artworkUri
@@ -223,6 +226,7 @@ class NativeMediaSessionRuntime {
         ),
       );
       _metadataSnapshot = metadataSnapshot;
+      _sourceArtworkUri = artworkUri ?? "";
       _nativeMetadataToken++;
     }
     if (revision != _syncRevision) return;
@@ -387,6 +391,7 @@ class NativeMediaSessionRuntime {
     _nativePositionMs = 0;
     _nativeDurationMs = 0;
     _metadataSnapshot = (title, artist, album, artworkUri, 0);
+    _sourceArtworkUri = artworkUri;
     final token = ++_nativeMetadataToken;
     unawaited(_publishNativeMetadata(token).catchError(
       (Object error) => debugPrint("Native media metadata update failed: $error"),
@@ -396,10 +401,11 @@ class NativeMediaSessionRuntime {
   Future<void> _publishNativeMetadata(int token) async {
     final snapshot = _metadataSnapshot;
     if (!_active || snapshot == null || token != _nativeMetadataToken) return;
-    final artworkUri = snapshot.$4;
+    final artworkUri = _sourceArtworkUri;
     final preparedArtwork = artworkUri.isEmpty
         ? null
-        : await _notificationArtwork.prepare(artworkUri, automatic: false);
+        : await _notificationArtwork.prepare(
+            artworkUri, automatic: _automaticFocalPoint);
     if (!_active || token != _nativeMetadataToken) return;
     await FlutterMediaSessionPlatform.instance.updateMetadata(
       MediaMetadata(
@@ -454,6 +460,7 @@ class NativeMediaSessionRuntime {
     _nativeLoading = false;
     _nativePositionMs = 0;
     _nativeDurationMs = 0;
+    _sourceArtworkUri = "";
     if (!_active) return;
     _active = false;
     await _session.deactivate();

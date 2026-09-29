@@ -153,6 +153,7 @@ class MusicPlayerApp:
             self.backend,
             persistence=self.persistence,
             available_track_ids=available_track_ids,
+            artwork_uri=self._artwork_uri,
             on_change=self._playback_changed,
             on_error=self._show_error,
         )

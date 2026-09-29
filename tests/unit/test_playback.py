@@ -76,6 +76,32 @@ class FakeAudioBackend:
 
 
 class PlaybackControllerTests(unittest.TestCase):
+    def test_native_queue_uses_resolved_cached_artwork_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            manager = MusicManager(root / "library.mmdb", music)
+            path = music / "one.mp3"
+            path.write_bytes(b"audio")
+            track_id = str(manager.add_track(path, title="One"))
+            store = ApplicationStore(root / "state.json")
+            library = LibraryService(manager, store)
+            library.update_details(track_id, thumbnail="https://example.test/art.png")
+            backend = FakeAudioBackend()
+            resolved = (root / "cached.thumb").as_uri()
+            controller = PlaybackController(
+                manager,
+                library,
+                store,
+                backend,
+                artwork_uri=lambda source: resolved,
+            )
+
+            controller.play_track(track_id)
+
+            self.assertEqual(backend.queues[-1][0][0]["artwork_uri"], resolved)
+
     def test_native_queue_owns_completion_and_python_mirrors_track_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -363,6 +389,29 @@ class PlaybackControllerTests(unittest.TestCase):
 
             self.assertEqual(controller.current_track_id, ids[0])
 
+    def test_play_tracks_keeps_requested_start_after_duplicate_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            manager = MusicManager(root / "library.mmdb", music)
+            ids: list[str] = []
+            for name in ("one.mp3", "two.mp3", "three.mp3"):
+                path = music / name
+                path.write_bytes(name.encode())
+                ids.append(str(manager.add_track(path, title=name)))
+            store = ApplicationStore(root / "state.json")
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, FakeAudioBackend()
+            )
+
+            controller.play_tracks(
+                [ids[0], ids[0], ids[1], ids[2]], start_index=2
+            )
+
+            self.assertEqual(controller.queue.items, ids)
+            self.assertEqual(controller.current_track_id, ids[1])
+
     def test_next_at_queue_end_stops_and_rewinds_backend(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -385,6 +434,26 @@ class PlaybackControllerTests(unittest.TestCase):
             self.assertEqual(controller.position_ms, 0)
             self.assertEqual(backend.pause_count, 1)
             self.assertEqual(backend.seeked_to, [0])
+
+    def test_next_after_unqueued_stream_releases_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            manager = MusicManager(root / "library.mmdb", music)
+            store = ApplicationStore(root / "state.json")
+            backend = FakeAudioBackend()
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, backend
+            )
+            controller.play_stream("https://example.test/stream", title="Stream")
+
+            controller.next()
+
+            self.assertFalse(controller.playing)
+            self.assertFalse(controller.media_session_active)
+            self.assertEqual(controller.external_title, "")
+            self.assertEqual(backend.discarded_sources, 1)
 
     def test_clear_library_state_stops_audio_and_empties_persistent_queue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -412,8 +481,34 @@ class PlaybackControllerTests(unittest.TestCase):
             self.assertEqual(controller.position_ms, 0)
             self.assertEqual(controller.duration_ms, 0)
             self.assertEqual(backend.pause_count, 0)
-            self.assertEqual(backend.queue_updates[-1][0], [])
+            self.assertEqual(backend.discarded_sources, 1)
+            self.assertFalse(controller.media_session_active)
             self.assertEqual(store.get("playback")["queue"], [])
+
+    def test_clear_library_state_preserves_active_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            path = music / "song.mp3"
+            path.write_bytes(b"audio")
+            manager = MusicManager(root / "library.mmdb", music)
+            track_id = str(manager.add_track(path, title="Song"))
+            store = ApplicationStore(root / "state.json")
+            backend = FakeAudioBackend()
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, backend
+            )
+            controller.play_track(track_id)
+            controller.play_stream("https://example.test/stream", title="Stream")
+
+            controller.clear_library_state()
+
+            self.assertEqual(controller.queue.items, [])
+            self.assertEqual(controller.external_title, "Stream")
+            self.assertTrue(controller.playing)
+            self.assertTrue(controller.media_session_active)
+            self.assertEqual(backend.discarded_sources, 0)
 
     def test_native_missing_file_error_repairs_optimistic_play_intent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -521,7 +616,41 @@ class PlaybackControllerTests(unittest.TestCase):
             self.assertFalse(controller.playing)
             self.assertEqual(controller.position_ms, 0)
             self.assertEqual(backend.pause_count, 0)
-            self.assertEqual(backend.queue_updates[-1][0], [])
+            self.assertEqual(backend.discarded_sources, 1)
+            self.assertFalse(controller.media_session_active)
+
+    def test_clear_queue_then_remove_current_releases_audio_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            music.mkdir()
+            manager = MusicManager(root / "library.mmdb", music)
+            ids: list[str] = []
+            for name in ("one.mp3", "two.mp3"):
+                path = music / name
+                path.write_bytes(name.encode())
+                ids.append(str(manager.add_track(path, title=name)))
+            store = ApplicationStore(root / "state.json")
+            backend = FakeAudioBackend()
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, backend
+            )
+            controller.play_tracks(ids)
+
+            controller.clear_queue()
+
+            self.assertEqual(controller.queue.items, [ids[0]])
+            self.assertTrue(controller.playing)
+            self.assertEqual(backend.discarded_sources, 0)
+
+            controller.remove_queue_item(0)
+
+            self.assertEqual(controller.queue.items, [])
+            self.assertIsNone(controller.current_track_id)
+            self.assertFalse(controller.playing)
+            self.assertFalse(controller.media_session_active)
+            self.assertEqual(backend.discarded_sources, 1)
+            self.assertEqual(store.get("playback")["queue"], [])
 
     def test_drag_reorder_persists_and_preserves_current_track(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -733,6 +862,7 @@ class PlaybackControllerTests(unittest.TestCase):
 
             self.assertFalse(controller.playing)
             self.assertFalse(controller._source_loaded)
+            self.assertFalse(controller.media_session_active)
             self.assertEqual(errors, ["native load failed"])
             self.assertEqual(store.track_details(str(track_id)).play_count, 0)
             controller.toggle()
@@ -766,6 +896,24 @@ class PlaybackControllerTests(unittest.TestCase):
             self.assertFalse(controller._loading)
             self.assertFalse(controller.snapshot.loading)
             self.assertFalse(controller._source_loaded)
+
+    def test_failed_stream_clears_unresumable_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = MusicManager(root / "library.mmdb", root / "music")
+            store = ApplicationStore(root / "state.json")
+            backend = FakeAudioBackend()
+            controller = PlaybackController(
+                manager, LibraryService(manager, store), store, backend
+            )
+            controller.play_stream("https://example.test/stream", title="Stream")
+
+            controller.on_backend_error("native load failed")
+
+            self.assertEqual(controller.external_title, "")
+            self.assertFalse(controller.playing)
+            self.assertFalse(controller.media_session_active)
+            self.assertEqual(backend.discarded_sources, 1)
 
     def test_native_playing_event_clears_missing_loaded_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
