@@ -17,8 +17,8 @@ class Extension extends FletExtension {
     return switch (control.type) {
       "ManagedAudio" => ManagedAudioService(control: control),
       "BackgroundAudioSession" => BackgroundAudioSessionService(
-          control: control,
-        ),
+        control: control,
+      ),
       "SharedAudioStorage" => SharedAudioStorageService(control: control),
       _ => null,
     };

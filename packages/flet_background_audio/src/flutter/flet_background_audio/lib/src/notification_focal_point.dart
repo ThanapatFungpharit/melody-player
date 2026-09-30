@@ -29,8 +29,10 @@ double calculateFocalY(Uint8List rgba, int width, int height) {
     }
   }
   final totalWeight = rowWeights.fold<double>(0, (sum, value) => sum + value);
-  // Ignore codec noise and near-uniform artwork.
-  if (!totalWeight.isFinite || totalWeight < height * 0.004) return 0.5;
+  // Ignore codec noise and near-uniform artwork: the mean neighbor difference
+  // is independent of the sample size.
+  final comparisons = (width - 1) * height + width * (height - 1);
+  if (!totalWeight.isFinite || totalWeight < comparisons * 0.004) return 0.5;
   var weightedRows = 0.0;
   for (var y = 0; y < height; y++) {
     weightedRows += y * rowWeights[y];

@@ -28,8 +28,10 @@ Future<Uint8List> sourceArt() async {
   for (var x = 0; x < 20; x++) {
     canvas.drawRect(
       ui.Rect.fromLTWH(x.toDouble(), 0, 1, 16),
-      ui.Paint()..color = x.isEven
-          ? const ui.Color(0xffff0000) : const ui.Color(0xff00ff00),
+      ui.Paint()
+        ..color = x.isEven
+            ? const ui.Color(0xffff0000)
+            : const ui.Color(0xff00ff00),
     );
   }
   final picture = recorder.endRecording();
@@ -55,12 +57,17 @@ Future<int> centerRed(String uri) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test("top, middle and bottom visual detail move the normalized focal row", () {
-    expect(calculateFocalY(salientRow(32, 30, 2), 32, 30), lessThan(0.3));
-    expect(calculateFocalY(salientRow(32, 30, 15), 32, 30),
-        inInclusiveRange(0.4, 0.6));
-    expect(calculateFocalY(salientRow(32, 30, 27), 32, 30), greaterThan(0.7));
-  });
+  test(
+    "top, middle and bottom visual detail move the normalized focal row",
+    () {
+      expect(calculateFocalY(salientRow(32, 30, 2), 32, 30), lessThan(0.3));
+      expect(
+        calculateFocalY(salientRow(32, 30, 15), 32, 30),
+        inInclusiveRange(0.4, 0.6),
+      );
+      expect(calculateFocalY(salientRow(32, 30, 27), 32, 30), greaterThan(0.7));
+    },
+  );
 
   test("uniform, invalid and tiny-difference images use center", () {
     expect(calculateFocalY(Uint8List(16 * 16 * 4), 16, 16), 0.5);
@@ -89,32 +96,50 @@ void main() {
     expect(focalCropRect(60, 20, 0), const ui.Rect.fromLTWH(20, 0, 20, 20));
   });
 
-  test("prepared artwork uses detected Y, center mode, and cached results", () async {
-    final directory = await Directory.systemTemp.createTemp("melody-focal-test-");
-    try {
-      final source = File("${directory.path}/art.png");
-      await source.writeAsBytes(await sourceArt());
-      final processor = NotificationArtwork();
-      final automatic = await processor.prepare(source.uri.toString(), automatic: true);
-      final centered = await processor.prepare(source.uri.toString(), automatic: false);
-      expect(automatic, isNot(centered));
-      expect(await centerRed(automatic), greaterThan(50));
-      expect(await centerRed(centered), 0);
-      expect(await processor.prepare(source.uri.toString(), automatic: true), automatic);
-    } finally {
-      await directory.delete(recursive: true);
-    }
-  });
+  test(
+    "prepared artwork uses detected Y, center mode, and cached results",
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        "melody-focal-test-",
+      );
+      try {
+        final source = File("${directory.path}/art.png");
+        await source.writeAsBytes(await sourceArt());
+        final processor = NotificationArtwork();
+        final automatic = await processor.prepare(
+          source.uri.toString(),
+          automatic: true,
+        );
+        final centered = await processor.prepare(
+          source.uri.toString(),
+          automatic: false,
+        );
+        expect(automatic, isNot(centered));
+        expect(await centerRed(automatic), greaterThan(50));
+        expect(await centerRed(centered), 0);
+        expect(
+          await processor.prepare(source.uri.toString(), automatic: true),
+          automatic,
+        );
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 
   test("invalid and empty artwork falls back without throwing", () async {
-    final directory = await Directory.systemTemp.createTemp("melody-invalid-art-");
+    final directory = await Directory.systemTemp.createTemp(
+      "melody-invalid-art-",
+    );
     try {
       final invalid = File("${directory.path}/invalid.png");
       await invalid.writeAsBytes([0, 1, 2]);
       final processor = NotificationArtwork();
       expect(await processor.prepare("", automatic: true), "");
-      expect(await processor.prepare(invalid.uri.toString(), automatic: true),
-          invalid.uri.toString());
+      expect(
+        await processor.prepare(invalid.uri.toString(), automatic: true),
+        invalid.uri.toString(),
+      );
     } finally {
       await directory.delete(recursive: true);
     }

@@ -102,7 +102,9 @@ class FletBackgroundAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler
                 "name" to publishedName,
             )
         } catch (error: Throwable) {
-            resolver.delete(uri, null, null)
+            // Report the copy failure, not a secondary cleanup failure.
+            runCatching { resolver.delete(uri, null, null) }
+                .onFailure { error.addSuppressed(it) }
             throw error
         }
     }

@@ -18,6 +18,7 @@ from flet_background_audio import (
 )
 
 from musicplayer.app import MusicPlayerApp
+from musicplayer.application.models import AppSettings
 from musicplayer.ui.audio_backend import ManagedAudioBackend
 
 
@@ -63,6 +64,29 @@ class ManagedAudioBackendTests(unittest.TestCase):
             ValueError, "Queue item 0 requires a nonempty track_id"
         ):
             asyncio.run(audio.update_queue(malformed, 0, "off"))
+
+    def test_package_rejects_malformed_payloads_before_invoking_dart(self) -> None:
+        audio = ManagedAudio()
+        session = BackgroundAudioSession()
+        invoke = AsyncMock()
+        with (
+            patch.object(audio, "_invoke_method", invoke),
+            patch.object(session, "_invoke_method", invoke),
+        ):
+            with self.assertRaisesRegex(TypeError, "Queue item 0 must be a mapping"):
+                asyncio.run(audio.set_queue(cast(Any, ["one.mp3"]), 0, 2, "off"))
+            for source in ("", "  ", b""):
+                with self.assertRaises(ValueError):
+                    asyncio.run(audio.load_source(source, 2))
+            with self.assertRaisesRegex(TypeError, "path, URL, or bytes"):
+                asyncio.run(audio.load_source(cast(Any, None), 2))
+            with self.assertRaisesRegex(ValueError, "notification action pair"):
+                asyncio.run(
+                    session.sync(title="Track", notification_action_pair="nope")
+                )
+            with self.assertRaisesRegex(ValueError, "Invalid repeat mode"):
+                asyncio.run(session.sync(title="Track", repeat_mode="all"))
+        invoke.assert_not_awaited()
 
     def test_managed_queue_rejects_invalid_repeat_and_generation(self) -> None:
         audio = ManagedAudio()
@@ -506,7 +530,7 @@ class ManagedAudioBackendTests(unittest.TestCase):
         )
         app = object.__new__(MusicPlayerApp)
         app.playback = playback  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
-        app.settings = SimpleNamespace(notification_action_pair="shuffle_favorite")  # ty: ignore[invalid-assignment]
+        app.settings = AppSettings()
         session_backend = SessionBackend()
         app.backend = session_backend  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
         app._system_media_key = None

@@ -82,7 +82,6 @@ class NativeAudioRuntime implements NativePlaybackEngine {
   int _playlistIndex = -1;
   int _generation = 0;
   int _loadToken = 0;
-  int? _preparingToken;
   int? _pendingLoadedGeneration;
   int? _reportedErrorGeneration;
   int _positionBucket = -1;
@@ -157,7 +156,12 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     _ => LoopMode.off,
   };
 
-  Future<void> _select({
+  /// Prepares [sources] beside the active decoder and swaps them in when ready.
+  ///
+  /// Returns false, without swapping, when a queue edit that transfers the
+  /// playhead raced a native track transition. The caller must rebuild the
+  /// edit around the new active track.
+  Future<bool> _select({
     required List<AudioSource> sources,
     required List<_NativeQueueItem> queue,
     required List<int> queueIndexes,
@@ -168,18 +172,12 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     required String repeatMode,
     required bool autoplay,
     required Duration position,
-    required bool preserveMetadata,
+    required bool transferPlayhead,
   }) async {
     final token = ++_loadToken;
-    final previousPlaybackWanted = _playbackWanted;
-    _preparingToken = token;
     _pendingSeekPosition = null;
     _playbackWanted = autoplay;
     if (autoplay) _retainPlayback();
-    if (sources.isEmpty) {
-      await _clearSource();
-      return;
-    }
     final candidate = AudioPlayer();
     _preparingPlayer = candidate;
     try {
@@ -195,13 +193,16 @@ class NativeAudioRuntime implements NativePlaybackEngine {
             initialPosition: position,
           )
           .timeout(const Duration(seconds: 20));
-      if (token != _loadToken) return;
+      if (token != _loadToken) return true;
       final previous = _player;
-      if (preserveMetadata && previous != null) {
+      if (transferPlayhead && previous != null) {
         // Queue edits prepare while the old player is still moving. Transfer
         // its latest playhead rather than the position captured at request time.
         await candidate.seek(previous.position);
-        if (token != _loadToken) return;
+        if (token != _loadToken) return true;
+        // The edit was laid out around the track that was active when it was
+        // requested. A native transition since then would revert the queue.
+        if (_generation != generation) return false;
       }
       _preparingPlayer = null;
       _cancelSubscriptionsSoon();
@@ -214,13 +215,12 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       _activeSource = activeSource;
       _activeTrackId = activeTrackId;
       _generation = generation;
-      _preparingToken = null;
       _reportedErrorGeneration = null;
       _pendingLoadedGeneration = null;
       _positionBucket = -1;
       _listen(candidate);
 
-      if (!preserveMetadata && _queueIndex >= 0) {
+      if (!transferPlayhead && _queueIndex >= 0) {
         _announceTrack(queue[_queueIndex]);
       }
       if (previous != null) {
@@ -241,18 +241,11 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       final pendingSeek = _pendingSeekPosition;
       _pendingSeekPosition = null;
       if (pendingSeek != null) await _seekCurrent(candidate, pendingSeek);
-      if (token == _loadToken) {
-        await candidate.setVolume(_volume);
-        if (_playbackWanted) _startPlaying(candidate);
-      }
+      if (token == _loadToken && _playbackWanted) _startPlaying(candidate);
+      return true;
     } catch (_) {
-      if (token == _loadToken) {
-        _preparingToken = null;
-        if (!identical(_player, candidate)) {
-          _playbackWanted = previousPlaybackWanted;
-        }
-      }
-      if (token != _loadToken) return;
+      if (token != _loadToken) return true;
+      if (!identical(_player, candidate)) _restorePlaybackIntent();
       rethrow;
     } finally {
       if (identical(_preparingPlayer, candidate)) _preparingPlayer = null;
@@ -367,13 +360,14 @@ class NativeAudioRuntime implements NativePlaybackEngine {
   }
 
   Future<void> _removeGhost(AudioPlayer player) async {
-    if (player != _player || _playlistQueueIndexes.isEmpty) return;
+    final ghost = _playlistQueueIndexes.indexOf(-1);
+    if (player != _player || ghost < 0) return;
     _removingGhost = true;
     try {
-      await player.removeAudioSourceAt(0);
+      await player.removeAudioSourceAt(ghost);
       if (player != _player) return;
-      _playlistQueueIndexes = _playlistQueueIndexes.sublist(1);
-      _playlistIndex = player.currentIndex ?? 0;
+      _playlistQueueIndexes = List.of(_playlistQueueIndexes)..removeAt(ghost);
+      if (ghost < _playlistIndex) _playlistIndex--;
       await player.setLoopMode(_loopMode(_repeatMode));
     } catch (error) {
       _playerError(player, error);
@@ -409,6 +403,23 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     );
   }
 
+  /// Starts the active decoder. just_audio ignores play() on a completed
+  /// source, so a Play press after completion restarts it like a new request.
+  Future<void> _resume(AudioPlayer player, {Duration? position}) async {
+    if (position != null && position > Duration.zero) {
+      await _seekCurrent(player, position);
+    } else if (player.processingState == ProcessingState.completed) {
+      await _seekCurrent(player, Duration.zero);
+    }
+    _startPlaying(player);
+  }
+
+  /// Play intent of an abandoned selection must not leak into later queue
+  /// edits, which rebuild the retained decoder with the current intent.
+  void _restorePlaybackIntent() {
+    _playbackWanted = _player?.playing ?? false;
+  }
+
   int? _manualRelativeIndex(AudioPlayer player, int offset) {
     final current = player.currentIndex ?? _playlistIndex;
     if (current < 0 || current >= _playlistQueueIndexes.length) return null;
@@ -442,13 +453,26 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       position: Duration(
         milliseconds: (data["position_ms"] as num?)?.toInt() ?? 0,
       ),
-      preserveMetadata: false,
+      transferPlayhead: false,
     );
   }
 
   Future<void> _updateQueue(Map<String, dynamic> data) async {
     final items = _parseQueue(data["items"]);
     final repeatMode = data["repeat_mode"] as String? ?? "off";
+    final requestedIndex = (data["current_index"] as num?)?.toInt() ?? 0;
+    // Each retry follows a native track transition during preparation.
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (await _editQueue(items, requestedIndex, repeatMode)) return;
+    }
+    throw StateError("The native queue kept advancing during a queue update");
+  }
+
+  Future<bool> _editQueue(
+    List<_NativeQueueItem> items,
+    int requestedIndex,
+    String repeatMode,
+  ) async {
     final old = _queue;
     final unchanged =
         old.length == items.length &&
@@ -457,62 +481,47 @@ class NativeAudioRuntime implements NativePlaybackEngine {
               old[index].trackId == items[index].trackId &&
               old[index].source == items[index].source,
         );
-    if (unchanged && _player != null && !_playlistQueueIndexes.contains(-1)) {
-      _queue = items;
-      _repeatMode = repeatMode;
-      await _player!.setLoopMode(_loopMode(repeatMode));
-      return;
-    }
     final player = _player;
-    if (player == null || _activeSource == null) {
+    if (unchanged && player != null && !_playlistQueueIndexes.contains(-1)) {
       _queue = items;
       _repeatMode = repeatMode;
-      return;
+      await player.setLoopMode(_loopMode(repeatMode));
+      return true;
     }
-    final position = reconcileNativeQueue(
-      items.map((item) => item.trackId).toList(growable: false),
-      _activeTrackId,
-      (data["current_index"] as num?)?.toInt() ?? 0,
+    final activeSource = _activeSource;
+    if (player == null || activeSource == null) {
+      _queue = items;
+      _repeatMode = repeatMode;
+      return true;
+    }
+    final layout = nativePlaylistLayout(
+      items.length,
+      reconcileNativeQueue(
+        items.map((item) => item.trackId).toList(growable: false),
+        _activeTrackId,
+        requestedIndex,
+      ),
     );
-    final sources = <AudioSource>[];
-    final indexes = <int>[];
-    var initialIndex = position.activeIndex;
-    if (initialIndex < 0) {
-      sources.add(_source(_activeSource!));
-      indexes.add(-1);
-      initialIndex = 0;
-      if (items.isNotEmpty) {
-        for (var offset = 0; offset < items.length; offset++) {
-          final index =
-              (position.detachedSuccessorIndex + offset) % items.length;
-          sources.add(_source(items[index].source));
-          indexes.add(index);
-        }
-      }
-    } else {
-      for (var index = 0; index < items.length; index++) {
-        sources.add(_source(items[index].source));
-        indexes.add(index);
-      }
-    }
-    await _select(
-      sources: sources,
+    return _select(
+      sources: [
+        for (final index in layout.queueIndexes)
+          _source(index < 0 ? activeSource : items[index].source),
+      ],
       queue: items,
-      queueIndexes: indexes,
-      initialIndex: initialIndex,
-      activeSource: _activeSource,
+      queueIndexes: layout.queueIndexes,
+      initialIndex: layout.initialIndex,
+      activeSource: activeSource,
       activeTrackId: _activeTrackId,
       generation: _generation,
       repeatMode: repeatMode,
       autoplay: _playbackWanted,
       position: player.position,
-      preserveMetadata: true,
+      transferPlayhead: true,
     );
   }
 
   Future<void> _clearSource() async {
     _loadToken++;
-    _preparingToken = null;
     _pendingSeekPosition = null;
     _playbackWanted = false;
     final player = _player;
@@ -527,6 +536,13 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     _activeTrackId = null;
     _pendingLoadedGeneration = null;
     _cancelSubscriptionsSoon();
+    if (player != null) {
+      // The released decoder can no longer report its own final state, and
+      // system controls must not keep advertising it as playing.
+      NativeMediaSessionRuntime.instance.onNativePlaybackEvent("state_change", {
+        "state": "stopped",
+      });
+    }
     for (final decoder in <AudioPlayer>{
       if (player != null) player,
       if (preparing != null) preparing,
@@ -563,7 +579,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
   }
 
   Future<void> _seekCurrent(AudioPlayer player, Duration position) async {
-    await player.seek(position);
+    await player.seek(position < Duration.zero ? Duration.zero : position);
     // A paused seek can remain in the same one-second bucket. Publish its
     // exact position instead of waiting for the next periodic decoder tick.
     _publishPosition(player);
@@ -594,10 +610,8 @@ class NativeAudioRuntime implements NativePlaybackEngine {
         if (player == null) return false;
         _playbackWanted = true;
         _retainPlayback();
-        if (player.processingState == ProcessingState.completed) {
-          await _seekCurrent(player, Duration.zero);
-        }
-        _startPlaying(player);
+        // A preparing selection starts itself when ready, like Python resume.
+        if (_preparingPlayer == null) await _resume(player);
         return true;
       case "pause":
         _playbackWanted = false;
@@ -632,12 +646,8 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       case "rewind":
       case "fastForward":
         if (player == null) return false;
-        final delta = action == "rewind" ? -10000 : 10000;
-        final position = player.position.inMilliseconds + delta;
-        await _seekCurrent(
-          player,
-          Duration(milliseconds: position < 0 ? 0 : position),
-        );
+        final delta = Duration(seconds: action == "rewind" ? -10 : 10);
+        await _seekCurrent(player, player.position + delta);
         return true;
       case "stop":
         final generation = _generation;
@@ -673,7 +683,8 @@ class NativeAudioRuntime implements NativePlaybackEngine {
           position: Duration(
             milliseconds: (data["position_ms"] as num?)?.toInt() ?? 0,
           ),
-          preserveMetadata: true,
+          // A new source starts at its own position, never the old playhead.
+          transferPlayhead: false,
         );
         return null;
       case "set_queue":
@@ -684,11 +695,11 @@ class NativeAudioRuntime implements NativePlaybackEngine {
         return null;
       case "cancel_load":
         _loadToken++;
-        _preparingToken = null;
         _pendingSeekPosition = null;
         final candidate = _preparingPlayer;
         _preparingPlayer = null;
         if (candidate != null) {
+          _restorePlaybackIntent();
           unawaited(candidate.dispose().catchError((Object _) {}));
         }
         return null;
@@ -710,32 +721,34 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       case "play":
         _playbackWanted = true;
         _retainPlayback();
-        final position = parseDuration(args["position"]);
-        if (_preparingToken != null) {
-          if (position != null) _pendingSeekPosition = position;
+        final position = parseDuration((args as Map?)?["position"]);
+        if (_preparingPlayer != null) {
+          // Zero means "no seek" and must not override the load position.
+          if (position != null && position > Duration.zero) {
+            _pendingSeekPosition = position;
+          }
           return null;
         }
         final player = _player;
-        if (player == null) return null;
-        if (position != null && position > Duration.zero)
-          await _seekCurrent(player, position);
-        _startPlaying(player);
+        if (player != null) await _resume(player, position: position);
         return null;
       case "resume":
         _playbackWanted = true;
         _retainPlayback();
-        if (_preparingToken == null && _player != null) _startPlaying(_player!);
+        final player = _player;
+        if (_preparingPlayer == null && player != null) await _resume(player);
         return null;
       case "pause":
         _playbackWanted = false;
-        if (_player != null) await _player!.pause();
+        await _player?.pause();
         return null;
       case "seek":
-        final position = parseDuration(args["position"]);
-        if (_preparingToken != null) {
+        final position = parseDuration((args as Map?)?["position"]);
+        final player = _player;
+        if (_preparingPlayer != null) {
           _pendingSeekPosition = position;
-        } else if (position != null && _player != null) {
-          await _seekCurrent(_player!, position);
+        } else if (position != null && player != null) {
+          await _seekCurrent(player, position);
         }
         return null;
       case "stop":

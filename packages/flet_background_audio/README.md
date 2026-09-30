@@ -62,8 +62,10 @@ intent travels with source selection. Replace the paths with existing files.
 runtime; `volume` defaults to `1.0`.
 `load_source` accepts a local path, an HTTP(S) URL, or bytes. A queue row must
 have nonempty string `track_id` and `source` keys. Queue sources are paths or
-HTTP(S) URLs; Dart treats other strings as device file paths. Python rejects
-malformed rows with `ValueError` before sending them to Dart.
+HTTP(S) URLs; Dart treats other strings as device file paths. Before sending
+anything to Dart, Python raises `TypeError` for a source or row of the wrong
+type and `ValueError` for an empty source, a row without those keys, or an
+invalid repeat mode, generation, or notification action pair.
 Optional `title`, `artist`, `album`, and `artwork_uri` fields let the native
 session update notification metadata when it advances the queue while Python
 is suspended.
@@ -74,14 +76,14 @@ For `play(position)` and `seek(position)`, an integer is milliseconds; Flet
 | --- | --- |
 | `load_source(source, generation, autoplay=False, position_ms=0)` | Select one source and clear the live queue. Autoplay starts it when ready. |
 | `set_queue(items, current_index, generation, repeat_mode, autoplay=False, position_ms=0)` | Replace the live queue and select its current row. Autoplay starts it when ready. An empty list clears the source. |
-| `update_queue(items, current_index, repeat_mode)` | Change ordering and repeat policy without reloading. If the active track is removed, it continues until completion and then advances to `current_index`. An empty list leaves the current track playing until completion. |
-| `play(position=0)` | Start the prepared decoder, seeking first if `position` is positive. |
-| `pause()` / `resume()` | Pause or resume while retaining the source. |
-| `seek(position)` | Seek the current decoder. |
+| `update_queue(items, current_index, repeat_mode)` | Change ordering and repeat policy without reloading. If the active track is removed, it continues until completion and then advances to `current_index`; Skip Previous from it reaches the row before `current_index`. An empty list leaves the current track playing until completion. |
+| `play(position=0)` | Start the prepared decoder, seeking first if `position` is positive. A completed source restarts from the beginning. |
+| `pause()` / `resume()` | Pause or resume while retaining the source. Resume restarts a completed source. |
+| `seek(position)` | Seek the current decoder; negative positions clamp to the start. |
 | `stop()` | Stop playback, release the source, and remove native media controls. |
 | `skip_next()` / `skip_previous()` | Move within the installed native queue. |
 | `get_playback_state()` | Return native source, track ID, generation, metadata, position, duration, and playing state for reattachment. |
-| `cancel_load()` | Invalidate pending preparation without discarding the active decoder. |
+| `cancel_load()` | Invalidate pending preparation without discarding the active decoder. The active decoder keeps its own play state. |
 | `clear_source()` | Clear the queue and release the decoders. |
 
 `repeat_mode` accepts `"off"`, `"track"`, or `"playlist"`. Track repeat

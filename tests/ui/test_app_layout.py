@@ -27,6 +27,7 @@ from musicplayer.application.models import (
     SearchResult,
     TrackDetails,
 )
+from musicplayer.application.yt_dlp_runtime import YtDlpStatus
 from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.components import ContextPanel, SharedUIComponents
 from musicplayer.ui.desktop.shell import DesktopShell
@@ -133,12 +134,13 @@ class AppLayoutTests(unittest.TestCase):
             page.controls.append(control)
 
         page.add = add
+        services = SimpleNamespace(
+            store=SimpleNamespace(settings=AppSettings()), yt_dlp=Mock()
+        )
         with (
             patch(
                 "musicplayer.app.AppServices.load",
-                return_value=SimpleNamespace(
-                    store=SimpleNamespace(settings=AppSettings())
-                ),
+                return_value=services,
             ),
             patch("musicplayer.app.MusicPlayerApp") as app_class,
             patch("musicplayer.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
@@ -151,6 +153,7 @@ class AppLayoutTests(unittest.TestCase):
         self.assertGreater(delays[0], 2.5)
         self.assertLessEqual(delays[0], 3.0)
         self.assertEqual(delays[1:], [0.22, 0.05])
+        services.yt_dlp.start.assert_called_once_with()
 
         loading = cast(ft.SafeArea, snapshot["control"])
         self.assertIsInstance(loading, ft.SafeArea)
@@ -254,18 +257,22 @@ class AppLayoutTests(unittest.TestCase):
         page = SimpleNamespace(controls=[], update=Mock())
         page.add = page.controls.append
         services = SimpleNamespace(
-            store=SimpleNamespace(settings=AppSettings(skip_loading_delay=True))
+            store=SimpleNamespace(settings=AppSettings(skip_loading_delay=True)),
+            yt_dlp=Mock(),
         )
         with (
             patch("musicplayer.app.AppServices.load", return_value=services),
-            patch("musicplayer.app.MusicPlayerApp"),
+            patch("musicplayer.app.MusicPlayerApp") as app_class,
             patch("musicplayer.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
         ):
+            reattach = app_class.return_value.backend.reattach_native_state
+            reattach.side_effect = AsyncMock()
             asyncio.run(main(page))  # ty: ignore[invalid-argument-type]
 
         self.assertEqual(
             [awaited.args[0] for awaited in sleep.await_args_list], [0.22, 0.05]
         )
+        reattach.assert_called_once_with()
 
     def test_loading_view_uses_saved_accent_while_library_loads(self) -> None:
         page = SimpleNamespace(controls=[], update=Mock())
@@ -273,7 +280,9 @@ class AppLayoutTests(unittest.TestCase):
         settings = AppSettings(
             accent_color="ocean", theme="dark", skip_loading_delay=True
         )
-        services = SimpleNamespace(store=SimpleNamespace(settings=settings))
+        services = SimpleNamespace(
+            store=SimpleNamespace(settings=settings), yt_dlp=Mock()
+        )
         finish_load = threading.Event()
 
         def load(*, on_settings_loaded):
@@ -290,12 +299,14 @@ class AppLayoutTests(unittest.TestCase):
 
             with (
                 patch("musicplayer.app.AppServices.load", side_effect=load),
-                patch("musicplayer.app.MusicPlayerApp"),
+                patch("musicplayer.app.MusicPlayerApp") as app_class,
                 patch(
                     "musicplayer.app._apply_startup_appearance",
                     side_effect=observe_appearance,
                 ),
             ):
+                reattach = app_class.return_value.backend.reattach_native_state
+                reattach.side_effect = AsyncMock()
                 task = asyncio.create_task(main(page))  # ty: ignore[invalid-argument-type]
                 try:
                     await asyncio.wait_for(applied.wait(), timeout=3)
@@ -306,6 +317,7 @@ class AppLayoutTests(unittest.TestCase):
                 finally:
                     finish_load.set()
                     await task
+                reattach.assert_called_once_with()
 
         asyncio.run(check())
 
@@ -323,6 +335,7 @@ class AppLayoutTests(unittest.TestCase):
         app.playlists_page = PlaylistsPage(app)
         app.downloads_page = DownloadsPage(app)
         app.settings_page = SettingsPage(app)
+        app.yt_dlp = Mock(status=Mock(return_value=YtDlpStatus(preparing=True)))
         app.navigation = SimpleNamespace(navigate=Mock())  # ty: ignore[invalid-assignment]
         app.selected_navigation = 0
         app.active_panel = None
@@ -430,8 +443,12 @@ class AppLayoutTests(unittest.TestCase):
         self.assertEqual(sections.controls[1].col, {"xs": 12, "lg": 7})
         self.assertIsInstance(sections.controls[0], ft.Column)
         self.assertIsInstance(sections.controls[1], ft.Column)
-        self.assertEqual(len(sections.controls[0].controls), 2)
+        self.assertEqual(len(sections.controls[0].controls), 3)
         self.assertEqual(len(sections.controls[1].controls), 2)
+        maintenance_header = sections.controls[0].controls[2].content.controls[0]
+        self.assertEqual(
+            maintenance_header.controls[1].controls[0].value, "Maintenance"
+        )
         youtube_access = sections.controls[0].controls[1]
         youtube_access_header = youtube_access.content.controls[0]
         self.assertEqual(

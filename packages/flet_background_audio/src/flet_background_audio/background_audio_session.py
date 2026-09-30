@@ -2,6 +2,10 @@ from dataclasses import dataclass
 
 import flet as ft
 
+from .managed_audio import _validate_repeat_mode
+
+_NOTIFICATION_ACTION_PAIRS = ("shuffle_favorite", "shuffle_repeat", "repeat_favorite")
+
 
 @dataclass
 class MediaSessionActionEvent(ft.Event["BackgroundAudioSession"]):
@@ -41,8 +45,11 @@ class BackgroundAudioSession(ft.Service):
         reattach: bool = False,
     ) -> None:
         """Activate the native session and publish one coherent player snapshot."""
-        if repeat_mode not in ("off", "track", "playlist"):
-            raise ValueError(f"Invalid repeat mode: {repeat_mode!r}")
+        _validate_repeat_mode(repeat_mode)
+        if notification_action_pair not in _NOTIFICATION_ACTION_PAIRS:
+            raise ValueError(
+                f"Invalid notification action pair: {notification_action_pair!r}"
+            )
         await self._invoke_method(
             "sync",
             {

@@ -95,6 +95,27 @@ class RuntimePreparationTests(unittest.TestCase):
             )
             self.assertTrue(started.is_set())
 
+    def test_failed_preparation_is_retried_by_the_next_feature_request(self) -> None:
+        attempts: list[int] = []
+
+        def prepare() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError("network unavailable")
+            return "ready"
+
+        with (
+            patch.object(runtime_gate, "_PREPARATIONS", {}),
+            patch.object(runtime_gate, "_OPERATIONS", {}),
+        ):
+            runtime_gate.configure_runtime_preparation(prepare, key="media")
+            with self.assertRaises(OSError):
+                runtime_gate.wait_for_runtime_preparation(key="media")
+            self.assertEqual(
+                runtime_gate.wait_for_runtime_preparation(key="media"), "ready"
+            )
+            self.assertEqual(len(attempts), 2)
+
     def test_optional_runtime_work_starts_without_blocking_local_startup(self) -> None:
         started = Event()
         release = Event()

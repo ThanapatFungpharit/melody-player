@@ -17,7 +17,9 @@ class SharedAudioStorageService extends FletService {
   }
 
   Future<dynamic> _invokeMethod(String name, dynamic args) async {
-    if (name != "publish") return null;
+    if (name != "publish") {
+      throw ArgumentError("Unknown SharedAudioStorage method: $name");
+    }
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
       throw UnsupportedError("Shared audio publishing is Android-only");
     }

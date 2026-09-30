@@ -12,10 +12,11 @@ def _settings_view(app: MusicPlayerApp) -> ft.Control:
     download = app.settings_page._build_download_settings()
     appearance = app.settings_page._build_appearance_settings()
     youtube_access = app.settings_page._build_youtube_settings()
+    maintenance = app.settings_page._build_maintenance_settings()
     data_management = app.settings_page._build_data_management_settings()
     footer = app.settings_page._build_settings_footer()
     appearance_column = ft.Column(
-        [appearance, youtube_access],
+        [appearance, youtube_access, maintenance],
         spacing=16,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )

@@ -15,11 +15,12 @@ Future<Uint8List?> readNotificationArtwork(Uri uri) async {
     return file.readAsBytes().timeout(const Duration(seconds: 5));
   }
   if (uri.scheme != "https" && uri.scheme != "http") return null;
-  final client = HttpClient()
-    ..connectionTimeout = const Duration(seconds: 3);
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
   try {
-    return await _readRemoteArtwork(client, uri)
-        .timeout(const Duration(seconds: 8));
+    return await _readRemoteArtwork(
+      client,
+      uri,
+    ).timeout(const Duration(seconds: 8));
   } finally {
     client.close(force: true);
   }
@@ -46,7 +47,9 @@ Future<bool> preparedArtworkExists(String uri) async {
 }
 
 Future<String?> saveNotificationArtwork(Uint8List png, String key) async {
-  final directory = Directory("${Directory.systemTemp.path}/melody-notification-artwork");
+  final directory = Directory(
+    "${Directory.systemTemp.path}/melody-notification-artwork",
+  );
   await directory.create(recursive: true);
   final file = File("${directory.path}/$key.png");
   await file.writeAsBytes(png, flush: true);

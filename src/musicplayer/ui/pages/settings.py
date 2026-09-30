@@ -14,10 +14,13 @@ from musicplayer.application.cookie_files import (
     install_cookie_file,
     validate_cookie_file,
 )
+from musicplayer.application.library_service import LibraryReconciliation
 from musicplayer.application.models import AppSettings
 from musicplayer.application.providers import ProviderRegistry
+from musicplayer.application.yt_dlp_runtime import YtDlpStatus
 from musicplayer.core.media import YOUTUBE_MUSIC_NAME
 from musicplayer.platform_runtime import public_music_directory
+from musicplayer.runtime_environment import public_error_message
 from musicplayer.ui.components.common import _theme_mode
 from musicplayer.ui.tasks import page_action
 from musicplayer.ui.theme import THEME_PALETTES, card
@@ -39,6 +42,7 @@ class SettingsPage:
         self.pending_cookie_file: ValidatedCookieFile | None = None
         self.pending_cookie_name = ""
         self.remove_cookie_requested = False
+        self._yt_dlp_refresh_pending = False
 
     def _settings_view(self) -> ft.Control:
         return self.app.views._settings_view(self.app)
@@ -342,6 +346,220 @@ class SettingsPage:
                 ),
             ],
             columns={"xs": 12, "lg": 5},
+        )
+
+    def _build_maintenance_settings(self) -> ft.Container:
+        self.yt_dlp_status = ft.Text(
+            size=12, color=ft.Colors.ON_SURFACE_VARIANT, expand=True
+        )
+        self.yt_dlp_check = ft.OutlinedButton(
+            "Check for updates",
+            icon=ft.Icons.UPDATE_ROUNDED,
+            on_click=lambda _: self._check_yt_dlp_update(),
+        )
+        self.yt_dlp_install = ft.Button(
+            "Install update",
+            icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+            on_click=lambda _: self._install_yt_dlp_update(),
+        )
+        self.library_cleanup = ft.OutlinedButton(
+            "Clean up library",
+            icon=ft.Icons.CLEANING_SERVICES_ROUNDED,
+            on_click=lambda _: self._clean_up_library(),
+        )
+        self._show_yt_dlp_status(self.app.yt_dlp.status(), update=False)
+        return _settings_card(
+            [
+                self._settings_section_header(
+                    ft.Icons.BUILD_CIRCLE_ROUNDED,
+                    "Maintenance",
+                    "Keep the download engine and library records healthy.",
+                ),
+                ft.Text("Download engine (yt-dlp)", weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    ft.Row(
+                        [
+                            ft.Icon(
+                                ft.Icons.MEMORY_ROUNDED,
+                                size=20,
+                                color=ft.Colors.ON_SURFACE_VARIANT,
+                            ),
+                            self.yt_dlp_status,
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
+                    padding=12,
+                    border_radius=12,
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+                ),
+                ft.Row(
+                    [self.yt_dlp_check, self.yt_dlp_install],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Divider(height=18),
+                ft.Text("Library cleanup", weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Remove favorites and history that point to deleted tracks, and "
+                    "find audio files in the music folder that are not in your "
+                    "library. Files are never deleted.",
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                self.library_cleanup,
+            ],
+            columns={"xs": 12, "lg": 5},
+        )
+
+    def _show_yt_dlp_status(self, status: YtDlpStatus, *, update: bool = True) -> None:
+        if status.preparing:
+            text = "Preparing yt-dlp…"
+            self._refresh_yt_dlp_status_when_ready()
+        elif status.updated:
+            text = f"Updated to yt-dlp {status.active_version}."
+        else:
+            source = "bundled with Melody" if status.bundled else "installed update"
+            text = f"Using yt-dlp {status.active_version} ({source})."
+        if status.scheduled_version:
+            text += (
+                f" Version {status.scheduled_version} will be installed the next "
+                "time Melody starts."
+            )
+        elif status.available_version:
+            text += f" Version {status.available_version} is available."
+        if status.problem and not status.preparing:
+            text += f" Last issue: {public_error_message(status.problem)}"
+        self.yt_dlp_status.value = text
+        self.yt_dlp_install.visible = bool(
+            status.available_version
+            and status.available_version != status.scheduled_version
+        )
+        if update:
+            self.app.page.update(
+                self.yt_dlp_status, self.yt_dlp_check, self.yt_dlp_install
+            )
+
+    def _refresh_yt_dlp_status_when_ready(self) -> None:
+        # A launch that installs a scheduled update can take several seconds;
+        # replace "Preparing" without requiring the user to leave Settings.
+        if self._yt_dlp_refresh_pending:
+            return
+        self._yt_dlp_refresh_pending = True
+        self.app.yt_dlp.when_ready(
+            lambda: self.app.tasks.dispatch(self._refresh_yt_dlp_status)
+        )
+
+    def _refresh_yt_dlp_status(self) -> None:
+        self._yt_dlp_refresh_pending = False
+        try:
+            self._show_yt_dlp_status(self.app.yt_dlp.status())
+        except RuntimeError:
+            # The Settings view was replaced; a rebuilt view reads fresh status.
+            logger.debug("yt-dlp status refresh skipped for a detached view")
+
+    @page_action
+    async def _check_yt_dlp_update(self) -> None:
+        self.yt_dlp_check.disabled = True
+        self.yt_dlp_status.value = "Checking for yt-dlp updates…"
+        self.app.page.update(self.yt_dlp_check, self.yt_dlp_status)
+        try:
+            status = await self.app.tasks.io(self.app.yt_dlp.check_for_update)
+        except RuntimeError as error:
+            # YtDlpUpdateError or a full worker pool; the active package is
+            # unaffected either way.
+            self.app._show_error(str(error))
+            status = self.app.yt_dlp.status()
+        else:
+            self.app._show_message(
+                f"yt-dlp {status.available_version} is available."
+                if status.available_version
+                else "yt-dlp is up to date."
+            )
+        finally:
+            self.yt_dlp_check.disabled = False
+        self._show_yt_dlp_status(status)
+
+    @page_action
+    async def _install_yt_dlp_update(self) -> None:
+        try:
+            status = await self.app.tasks.io(self.app.yt_dlp.request_update)
+        except RuntimeError as error:
+            self.app._show_error(str(error))
+            return
+        self._show_yt_dlp_status(status)
+        self.app._show_message(
+            f"Restart Melody to install yt-dlp {status.scheduled_version}. "
+            "The current version stays in use until then."
+        )
+
+    @page_action
+    async def _clean_up_library(self) -> None:
+        self.library_cleanup.disabled = True
+        self.app.page.update(self.library_cleanup)
+        try:
+            report = await self.app.tasks.io(self.app.library.reconcile)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.app._show_error(f"Library cleanup could not be completed: {error}")
+            return
+        finally:
+            self.library_cleanup.disabled = False
+            self.app.page.update(self.library_cleanup)
+        if report.stale_references_removed:
+            # Home and library views may show the removed favorites/history.
+            self.app.navigation.navigate(self.app.selected_navigation)
+        self._show_cleanup_report(report)
+
+    def _show_cleanup_report(self, report: LibraryReconciliation) -> None:
+        removed = report.stale_references_removed
+        missing = len(report.missing_track_ids)
+        stray = report.unregistered_files
+        if not (removed or missing or stray):
+            self.app._show_message(
+                "Library cleanup found nothing to fix. No stale references or "
+                "stray audio files."
+            )
+            return
+        lines = [
+            f"Removed references to {removed} deleted track"
+            f"{'s' if removed != 1 else ''}."
+            if removed
+            else "No stale references were found."
+        ]
+        if missing:
+            lines.append(
+                f"{missing} library track{'s have' if missing != 1 else ' has'} "
+                "no audio file on disk. Restore or re-download it to play it again."
+            )
+        if stray:
+            lines.append(
+                f"Found {len(stray)} audio file{'s' if len(stray) != 1 else ''} in "
+                "the music folder that "
+                f"{'are' if len(stray) != 1 else 'is'} not in your library. "
+                "Nothing was deleted:"
+            )
+        controls: list[ft.Control] = [ft.Text(line) for line in lines]
+        controls.extend(
+            ft.Text(path, size=12, selectable=True, color=ft.Colors.ON_SURFACE_VARIANT)
+            for path in stray[:_CLEANUP_LISTED_FILES]
+        )
+        if len(stray) > _CLEANUP_LISTED_FILES:
+            controls.append(
+                ft.Text(f"…and {len(stray) - _CLEANUP_LISTED_FILES} more.", size=12)
+            )
+        self.app.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                scrollable=True,
+                icon=ft.Icon(ft.Icons.CLEANING_SERVICES_ROUNDED, size=32),
+                title=ft.Text("Library cleanup complete"),
+                content=ft.Column(controls, tight=True, spacing=8),
+                actions=[
+                    ft.TextButton(
+                        "Close", on_click=lambda _: self.app.page.pop_dialog()
+                    )
+                ],
+            )
         )
 
     def _build_data_management_settings(self) -> ft.Container:
@@ -867,6 +1085,12 @@ class SettingsPage:
     @page_action
     async def _save_settings(self) -> None:
         settings = replace(self.app.settings)
+        # The playback controller owns volume and persists it on its own path.
+        # Never write back the value this settings object held at startup.
+        playback = self.app.playback
+        settings.volume = playback.volume
+        settings.previous_volume = playback.previous_volume
+        settings.muted = playback.muted
         folder_text = self.path.value or ""
         pending = self.pending_cookie_file
         remove_cookie = self.remove_cookie_requested
@@ -983,6 +1207,9 @@ class SettingsPage:
             if restart
             else "Settings saved."
         )
+
+
+_CLEANUP_LISTED_FILES = 50
 
 
 def _settings_card(

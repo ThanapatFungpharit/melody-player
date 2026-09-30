@@ -22,12 +22,6 @@ class PlaybackQueue:
         return None
 
     @property
-    def upcoming(self) -> tuple[str, ...]:
-        if self.current_index < 0:
-            return tuple(self.items)
-        return tuple(self.items[self.current_index + 1 :])
-
-    @property
     def upcoming_count(self) -> int:
         return len(self.items) - max(0, self.current_index + 1)
 

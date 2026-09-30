@@ -116,7 +116,7 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                 audio_extensions=frozenset({".wav"}),
             )
             try:
-                task = coordinator.start_url("https://youtu.be/clean-flow")
+                (task,) = coordinator.start_urls(("https://youtu.be/clean-flow",)).tasks
                 job = coordinator._downloader._jobs[task.id]
                 job.future.result(timeout=5)  # ty: ignore[unresolved-attribute]
 
@@ -147,7 +147,7 @@ class CleanDownloadPlaybackFlowTests(unittest.TestCase):
                 selected = backend.queue[backend.current_index]
                 self.assertEqual(selected["track_id"], track_id)
                 self.assertEqual(selected["source"], str(path))
-                self.assertEqual(selected["title"], "New download")
+                self.assertEqual(selected["title"], "Song 1 of 1")
                 self.assertEqual(backend.source, "")
                 self.assertEqual(backend.played_at, [0])
                 self.assertEqual(playback.current_track_id, track_id)

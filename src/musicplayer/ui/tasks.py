@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from concurrent.futures import Future
-from functools import partial, wraps
+from functools import wraps
 from typing import Any, Protocol
 
 from musicplayer.core.concurrency import LazyBoundedExecutor
@@ -219,17 +219,3 @@ def run_io(
 ) -> bool:
     """The single I/O boundary used by presentation actions."""
     return app.tasks.submit(operation, done, **options)
-
-
-def ui_callback(app: _TaskOwner, callback: Callable[..., Any], *args: Any) -> None:
-    app.tasks.dispatch(callback, *args)
-
-
-def call_io(
-    app: _TaskOwner,
-    operation: Callable[..., Any],
-    *args: Any,
-    done: Callable[[Any], None] | None = None,
-    **options: Any,
-) -> bool:
-    return run_io(app, partial(operation, *args), done or (lambda _: None), **options)

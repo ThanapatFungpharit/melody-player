@@ -17,6 +17,10 @@ from musicplayer.core.media import (
     youtube_music_radio_url,
     youtube_music_track_url,
 )
+from musicplayer.core.runtime_gate import (
+    YT_DLP_PREPARATION,
+    wait_for_runtime_preparation,
+)
 from musicplayer.platform_runtime import yt_dlp_binary_options
 from musicplayer.runtime_environment import public_error_message
 
@@ -35,19 +39,15 @@ def __getattr__(name: str) -> Any:
 
 
 def _yt_dlp_symbols() -> dict[str, Any]:
-    """Resolve the current yt-dlp implementation at the point of use.
+    """Resolve yt-dlp at the point of use, after runtime selection finishes.
 
-    Keeping these names on the module also lets a runtime updater (and tests)
-    replace the implementation. Caching the imported classes made stream
-    resolution keep using a stale downloader after an update.
+    Names patched onto this module (tests) take precedence. ``globals().get``
+    intentionally avoids invoking ``__getattr__``.
     """
-    # ``globals().get`` intentionally avoids invoking ``__getattr__``.  A
-    # replacement installed by the runtime updater is honoured, while the
-    # normal path imports the current yt-dlp package each time rather than
-    # retaining a stale class object.
     youtube_dl = globals().get("YoutubeDL")
     cookie_load_error = globals().get("CookieLoadError")
     if youtube_dl is None or cookie_load_error is None:
+        wait_for_runtime_preparation(key=YT_DLP_PREPARATION)
         from yt_dlp import CookieLoadError as loaded_cookie_error
         from yt_dlp import YoutubeDL as loaded_youtube_dl
 

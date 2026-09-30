@@ -124,6 +124,11 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
         ),
         hero,
     ]
+    sections.extend(
+        app.home_page._track_shelf(
+            "Favorites", favorites, "Favorite a track to keep it close."
+        )
+    )
     sections.append(
         app.home_page._build_recommendation_section(
             lambda: _recommendation_shelf(app), spacing=24
@@ -132,11 +137,6 @@ def _home_view(app: MusicPlayerApp) -> ft.Control:
     sections.extend(
         app.home_page._track_shelf(
             "Recently played", recent, "Play a track to start your listening history."
-        )
-    )
-    sections.extend(
-        app.home_page._track_shelf(
-            "Favorites", favorites, "Favorite a track to keep it close."
         )
     )
     return ft.ListView(

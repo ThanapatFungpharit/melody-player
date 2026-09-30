@@ -11,7 +11,8 @@ import "notification_artwork.dart";
 class NativeMediaSessionRuntime {
   NativeMediaSessionRuntime._();
 
-  static final NativeMediaSessionRuntime instance = NativeMediaSessionRuntime._();
+  static final NativeMediaSessionRuntime instance =
+      NativeMediaSessionRuntime._();
   Control? _actionControl;
 
   final FlutterMediaSession _session = FlutterMediaSession();
@@ -59,29 +60,26 @@ class NativeMediaSessionRuntime {
   Future<void> _installActionHandler() async {
     await _actionSubscription?.cancel();
     if (_disposed) return;
-    _actionSubscription =
-        FlutterMediaSessionPlatform.instance.onMediaAction.listen((action) {
-      unawaited(_handleAction(action.name, seekPosition: action.seekPosition));
-    });
+    _actionSubscription = FlutterMediaSessionPlatform.instance.onMediaAction
+        .listen((action) {
+          unawaited(
+            _handleAction(action.name, seekPosition: action.seekPosition),
+          );
+        });
   }
 
-  Future<void> _handleAction(
-    String action, {
-    Duration? seekPosition,
-  }) async {
+  Future<void> _handleAction(String action, {Duration? seekPosition}) async {
     if (_disposed) return;
     try {
-      final handled = await activeNativePlaybackEngine?.handleMediaAction(
+      final handled =
+          await activeNativePlaybackEngine?.handleMediaAction(
             action,
             seekPosition: seekPosition,
           ) ??
           false;
-      if (handled) {
-        // A native Stop event is also reported to the Python controller. Let
-        // its normal state sync remove the session after this callback returns;
-        // stopping the Android service here can terminate the background app.
-        return;
-      }
+      // The engine applied the action. Its Stop also releases this session
+      // after the decoder is cleared and reports "stopped" to Python.
+      if (handled) return;
     } catch (error) {
       debugPrint("BackgroundAudioSession: native action failed: $error");
     }
@@ -118,10 +116,7 @@ class NativeMediaSessionRuntime {
     await _session.activate();
     // Match Melody's transport controls and keep skip behavior consistent on
     // Android notification controls, iOS lock screen, and desktop SMTC.
-    await _session.setSkipIntervals(
-      forwardSeconds: 10,
-      backwardSeconds: 10,
-    );
+    await _session.setSkipIntervals(forwardSeconds: 10, backwardSeconds: 10);
     // just_audio and audio_session handle audio focus. Enabling the media
     // session's focus handler as well would make the two native focus requests
     // interrupt one another.
@@ -187,9 +182,9 @@ class NativeMediaSessionRuntime {
     final nativeStateRevision = _nativeStateRevision;
     final preparedArtworkUri = artworkUri == null || artworkUri.isEmpty
         ? artworkUri
-        : await _notificationArtwork.prepare(artworkUri,
-            automatic: automaticFocalPoint)
-            .timeout(const Duration(seconds: 2), onTimeout: () => artworkUri);
+        : await _notificationArtwork
+              .prepare(artworkUri, automatic: automaticFocalPoint)
+              .timeout(const Duration(seconds: 2), onTimeout: () => artworkUri);
     if (revision != _syncRevision) return;
     final reportedDurationMs = (data["duration_ms"] as num?)?.toInt() ?? 0;
     final reportedPositionMs = (data["position_ms"] as num?)?.toInt() ?? 0;
@@ -261,33 +256,39 @@ class NativeMediaSessionRuntime {
       for (final shortcut in orderedShortcuts) {
         if (shortcuts.length == 2) break;
         if (shortcut == "shuffle" && canShuffle) {
-          shortcuts.add(MediaAction.custom(
-            name: "shuffleUpcoming",
-            customLabel: "Shuffle upcoming tracks",
-            customIconResource: "ic_melody_shuffle",
-          ));
+          shortcuts.add(
+            MediaAction.custom(
+              name: "shuffleUpcoming",
+              customLabel: "Shuffle upcoming tracks",
+              customIconResource: "ic_melody_shuffle",
+            ),
+          );
         } else if (shortcut == "repeat" && canRepeat) {
-          shortcuts.add(MediaAction.custom(
-            name: "cycleRepeat",
-            customLabel: switch (repeat) {
-              "track" => "Repeat track",
-              "playlist" => "Repeat queue",
-              _ => "Repeat off",
-            },
-            customIconResource: switch (repeat) {
-              "track" => "ic_melody_repeat_one",
-              "playlist" => "ic_melody_repeat_all",
-              _ => "ic_melody_repeat_off",
-            },
-          ));
+          shortcuts.add(
+            MediaAction.custom(
+              name: "cycleRepeat",
+              customLabel: switch (repeat) {
+                "track" => "Repeat track",
+                "playlist" => "Repeat queue",
+                _ => "Repeat off",
+              },
+              customIconResource: switch (repeat) {
+                "track" => "ic_melody_repeat_one",
+                "playlist" => "ic_melody_repeat_all",
+                _ => "ic_melody_repeat_off",
+              },
+            ),
+          );
         } else if (shortcut == "favorite" && canFavorite) {
-          shortcuts.add(MediaAction.custom(
-            name: "toggleFavorite",
-            customLabel: favorite ? "Remove favorite" : "Add favorite",
-            customIconResource: favorite
-                ? "ic_melody_favorite_filled"
-                : "ic_melody_favorite_outline",
-          ));
+          shortcuts.add(
+            MediaAction.custom(
+              name: "toggleFavorite",
+              customLabel: favorite ? "Remove favorite" : "Add favorite",
+              customIconResource: favorite
+                  ? "ic_melody_favorite_filled"
+                  : "ic_melody_favorite_outline",
+            ),
+          );
         }
       }
       final actions = <MediaAction>{
@@ -300,8 +301,9 @@ class NativeMediaSessionRuntime {
         if (defaultTargetPlatform != TargetPlatform.android)
           MediaAction.fastForward,
       };
-      await FlutterMediaSessionPlatform.instance
-          .updateAvailableActions(actions);
+      await FlutterMediaSessionPlatform.instance.updateAvailableActions(
+        actions,
+      );
       _actionsSnapshot = actionsSnapshot;
     }
     if (revision != _syncRevision) return;
@@ -319,15 +321,19 @@ class NativeMediaSessionRuntime {
   /// suspended or a Flet page is being replaced.
   void onNativePlaybackEvent(String name, dynamic value) {
     if (!_active || value is! Map) return;
-    _nativeStateRevision++;
     final data = Map<String, dynamic>.from(value);
     if (name == "position_change") {
-      _nativePositionMs = (data["position"] as num?)?.toInt() ?? _nativePositionMs;
+      _nativePositionMs =
+          (data["position"] as num?)?.toInt() ?? _nativePositionMs;
     } else if (name == "duration_change") {
-      _nativeDurationMs = (data["duration"] as num?)?.toInt() ?? _nativeDurationMs;
-      unawaited(_publishNativeMetadata(_nativeMetadataToken).catchError(
-        (Object error) => debugPrint("Native media metadata update failed: $error"),
-      ));
+      _nativeDurationMs =
+          (data["duration"] as num?)?.toInt() ?? _nativeDurationMs;
+      unawaited(
+        _publishNativeMetadata(_nativeMetadataToken).catchError(
+          (Object error) =>
+              debugPrint("Native media metadata update failed: $error"),
+        ),
+      );
     } else if (name == "state_change") {
       final state = data["state"] as String?;
       if (state == "playing") {
@@ -346,16 +352,23 @@ class NativeMediaSessionRuntime {
       _nativePositionMs = 0;
       _nativeDurationMs = 0;
     } else {
+      // Other events such as "loaded" carry no timeline state and must not
+      // make an in-flight Python snapshot look superseded.
       return;
     }
+    _nativeStateRevision++;
     _nativeStateObserved = true;
-    unawaited(_queuePlaybackState().catchError((Object error) {
-      debugPrint("Native media state update failed: $error");
-    }));
+    unawaited(
+      _queuePlaybackState().catchError((Object error) {
+        debugPrint("Native media state update failed: $error");
+      }),
+    );
   }
 
   Future<void> _queuePlaybackState() {
-    final update = _playbackStateTail.then((_) => _publishNativePlaybackState());
+    final update = _playbackStateTail.then(
+      (_) => _publishNativePlaybackState(),
+    );
     _playbackStateTail = update.catchError((Object _) {});
     return update;
   }
@@ -367,8 +380,8 @@ class NativeMediaSessionRuntime {
         status: _nativeLoading && _nativePlaying
             ? PlaybackStatus.buffering
             : _nativePlaying
-                ? PlaybackStatus.playing
-                : PlaybackStatus.paused,
+            ? PlaybackStatus.playing
+            : PlaybackStatus.paused,
         position: Duration(milliseconds: _nativePositionMs),
         // Media3 requires a positive playback speed even when paused. The
         // status freezes its timeline; a zero speed rejects the state update.
@@ -393,9 +406,12 @@ class NativeMediaSessionRuntime {
     _metadataSnapshot = (title, artist, album, artworkUri, 0);
     _sourceArtworkUri = artworkUri;
     final token = ++_nativeMetadataToken;
-    unawaited(_publishNativeMetadata(token).catchError(
-      (Object error) => debugPrint("Native media metadata update failed: $error"),
-    ));
+    unawaited(
+      _publishNativeMetadata(token).catchError(
+        (Object error) =>
+            debugPrint("Native media metadata update failed: $error"),
+      ),
+    );
   }
 
   Future<void> _publishNativeMetadata(int token) async {
@@ -405,7 +421,9 @@ class NativeMediaSessionRuntime {
     final preparedArtwork = artworkUri.isEmpty
         ? null
         : await _notificationArtwork.prepare(
-            artworkUri, automatic: _automaticFocalPoint);
+            artworkUri,
+            automatic: _automaticFocalPoint,
+          );
     if (!_active || token != _nativeMetadataToken) return;
     await FlutterMediaSessionPlatform.instance.updateMetadata(
       MediaMetadata(
@@ -461,13 +479,14 @@ class NativeMediaSessionRuntime {
     _nativePositionMs = 0;
     _nativeDurationMs = 0;
     _sourceArtworkUri = "";
+    // Clear before the platform call: if it fails, the next activation must
+    // still republish metadata and actions instead of trusting stale caches.
+    _metadataSnapshot = null;
+    _actionsSnapshot = null;
     if (!_active) return;
     _active = false;
     await _session.deactivate();
-    _metadataSnapshot = null;
-    _actionsSnapshot = null;
   }
-
 }
 
 /// Only the Flet command and event bridge follows the page lifecycle.

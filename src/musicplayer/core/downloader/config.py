@@ -23,5 +23,3 @@ OPTS = {
     "quiet": False,
     "noprogress": False,
 }
-
-TIMEOUT = 10

@@ -155,7 +155,6 @@ class PlaybackController:
         self._last_persisted_position = 0.0
         self._last_backend_error_at: float | None = None
         self._pending_play_record_id: str | None = None
-        self._loaded_track_id: str | None = None
         self._media_session_active = False
         self.backend.set_volume(0.0 if self.muted else self.volume / 100)
         if self.queue.items != original_items:
@@ -192,10 +191,8 @@ class PlaybackController:
         track_id = state.get("track_id")
         if isinstance(track_id, str) and track_id in self.queue.items:
             self.queue.select(self.queue.items.index(track_id))
-            self._loaded_track_id = track_id
             self._clear_external()
         else:
-            self._loaded_track_id = None
             source = str(state.get("source") or "")
             self.external_title = str(state.get("title") or Path(source).stem)
             self.external_uploader = str(state.get("artist") or "")
@@ -274,7 +271,6 @@ class PlaybackController:
         self.external_uploader = uploader
         self.external_thumbnail = thumbnail
         self._source_loaded = True
-        self._loaded_track_id = None
         self._player_loading = True
         self.position_ms = 0
         self.duration_ms = 0
@@ -374,11 +370,8 @@ class PlaybackController:
                 if was_playing:
                     self.backend.pause()
                 self.backend.seek(0)
-            self._source_loaded = source_was_loaded and not was_external
             self._playing = False
             self.position_ms = 0
-            if was_external:
-                self.duration_ms = 0
             self._persist()
             self._notify("track")
 
@@ -402,7 +395,6 @@ class PlaybackController:
         """
         self._cancel_pending_load(discard_source=True)
         self._source_loaded = False
-        self._loaded_track_id = None
         self._playing = False
         self._player_loading = False
         self._media_session_active = False
@@ -494,15 +486,6 @@ class PlaybackController:
         self._notify("queue")
 
     @_serialized
-    def move_queue_item(self, index: int, offset: int) -> None:
-        target = index + offset
-        if 0 <= target < len(self.queue.items):
-            self.queue.move(index, target)
-            self._sync_queue()
-            self._persist()
-            self._notify("queue")
-
-    @_serialized
     def reorder_queue(self, old_index: int | None, new_index: int | None) -> None:
         """Apply a direct drag-and-drop reorder and persist it immediately."""
         if old_index is None or new_index is None:
@@ -573,10 +556,6 @@ class PlaybackController:
         if persist:
             self._save_volume()
         self._notify("volume")
-
-    @_serialized
-    def adjust_volume(self, delta: int) -> None:
-        self.set_volume(self.volume + delta)
 
     @_serialized
     def toggle_mute(self) -> None:
@@ -682,7 +661,6 @@ class PlaybackController:
         self.external_uploader = ""
         self.external_thumbnail = ""
         self._source_loaded = True
-        self._loaded_track_id = normalized
         self._player_loading = True
         self._loading = False
         self._playing = True
@@ -699,7 +677,6 @@ class PlaybackController:
         if self._closed:
             return
         self._source_loaded = False
-        self._loaded_track_id = None
         self._player_loading = False
         self._loading = False
         self._playing = False
@@ -721,7 +698,6 @@ class PlaybackController:
         self._cancel_pending_load(discard_source=True)
         self._playing = False
         self._source_loaded = False
-        self._loaded_track_id = None
         self._loading = False
         self._player_loading = False
         self._media_session_active = False
@@ -761,7 +737,6 @@ class PlaybackController:
         except (OSError, KeyError, ValueError, RuntimeError) as error:
             self._playing = False
             self._source_loaded = False
-            self._loaded_track_id = None
             self._error(f"This track is unavailable: {error}")
             self._persist()
             self._notify("track")
@@ -797,7 +772,6 @@ class PlaybackController:
         items = self._queue_items()
         current_index = self.queue.items.index(track_id)
         self._source_loaded = True
-        self._loaded_track_id = track_id
         self._player_loading = True
         self.position_ms = position_ms
         self.duration_ms = 0
@@ -886,7 +860,6 @@ class PlaybackController:
         self._cancel_pending_load()
         self.backend.pause()
         self._source_loaded = False
-        self._loaded_track_id = None
         self.external_title = title
         self.external_uploader = ""
         self.external_thumbnail = ""

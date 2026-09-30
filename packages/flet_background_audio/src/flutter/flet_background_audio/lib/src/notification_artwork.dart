@@ -1,7 +1,8 @@
 import "dart:ui" as ui;
 
 import "notification_artwork_web.dart"
-    if (dart.library.io) "notification_artwork_io.dart" as artwork_io;
+    if (dart.library.io) "notification_artwork_io.dart"
+    as artwork_io;
 import "notification_focal_point.dart";
 
 /// Prepares square media-session art in Flutter before the OS renders its panel.
@@ -36,7 +37,12 @@ class NotificationArtwork {
     }
   }
 
-  Future<String> _prepare(Uri uri, String source, String key, bool automatic) async {
+  Future<String> _prepare(
+    Uri uri,
+    String source,
+    String key,
+    bool automatic,
+  ) async {
     final bytes = await artwork_io.readNotificationArtwork(uri);
     if (bytes == null || bytes.isEmpty) return source;
     ui.ImmutableBuffer? buffer;
@@ -52,21 +58,32 @@ class NotificationArtwork {
       if (descriptor.width < 1 || descriptor.height < 1) return source;
       var focalY = 0.5;
       if (automatic) {
-        final scale = 128 / (descriptor.width > descriptor.height
-            ? descriptor.width : descriptor.height);
+        final scale =
+            128 /
+            (descriptor.width > descriptor.height
+                ? descriptor.width
+                : descriptor.height);
         sampleCodec = await descriptor.instantiateCodec(
           targetWidth: (descriptor.width * scale).round().clamp(1, 128),
           targetHeight: (descriptor.height * scale).round().clamp(1, 128),
         );
         sample = (await sampleCodec.getNextFrame()).image;
-        final pixels = await sample.toByteData(format: ui.ImageByteFormat.rawRgba);
+        final pixels = await sample.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
         if (pixels != null) {
           focalY = calculateFocalY(
-            pixels.buffer.asUint8List(), sample.width, sample.height);
+            pixels.buffer.asUint8List(),
+            sample.width,
+            sample.height,
+          );
         }
       }
-      final renderScale = 512 / (descriptor.width > descriptor.height
-          ? descriptor.width : descriptor.height);
+      final renderScale =
+          512 /
+          (descriptor.width > descriptor.height
+              ? descriptor.width
+              : descriptor.height);
       renderCodec = await descriptor.instantiateCodec(
         targetWidth: (descriptor.width * renderScale).round().clamp(1, 512),
         targetHeight: (descriptor.height * renderScale).round().clamp(1, 512),
@@ -76,7 +93,9 @@ class NotificationArtwork {
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(recorder);
       canvas.drawImageRect(
-        full, rectangle, const ui.Rect.fromLTWH(0, 0, 512, 512),
+        full,
+        rectangle,
+        const ui.Rect.fromLTWH(0, 0, 512, 512),
         ui.Paint()..filterQuality = ui.FilterQuality.high,
       );
       final picture = recorder.endRecording();
@@ -90,7 +109,10 @@ class NotificationArtwork {
       // The cache key changes when local artwork content or mode changes.
       final name = _stableHash(key);
       return (await artwork_io.saveNotificationArtwork(
-            png.buffer.asUint8List(), name)) ?? source;
+            png.buffer.asUint8List(),
+            name,
+          )) ??
+          source;
     } finally {
       cropped?.dispose();
       full?.dispose();

@@ -18,9 +18,22 @@ def _validate_generation(value: int) -> int:
     return generation
 
 
+def _validate_source(source: AudioSource) -> None:
+    if isinstance(source, str):
+        if not source.strip():
+            raise ValueError("Audio source requires a nonempty path or URL")
+    elif isinstance(source, bytes):
+        if not source:
+            raise ValueError("Audio source bytes must not be empty")
+    else:
+        raise TypeError("Audio source must be a path, URL, or bytes")
+
+
 def _validate_queue_items(items: list[dict[str, str]]) -> None:
     """Reject malformed rows before Dart silently drops them."""
     for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise TypeError(f"Queue item {index} must be a mapping")
         for key in ("track_id", "source"):
             value = item.get(key)
             if not isinstance(value, str) or not value.strip():
@@ -87,6 +100,7 @@ class ManagedAudio(ft.Service):
         autoplay: bool = False,
         position_ms: int = 0,
     ) -> None:
+        _validate_source(source)
         await self._invoke_method(
             "load_source",
             {

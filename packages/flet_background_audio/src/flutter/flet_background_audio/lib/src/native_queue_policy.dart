@@ -16,8 +16,8 @@ NativeQueuePosition reconcileNativeQueue(
   final activeIndex = activeTrackId == null
       ? -1
       : trackIds.indexOf(activeTrackId);
-  final selectedIndex = activeTrackId != null &&
-          trackIds[boundedIndex] == activeTrackId
+  final selectedIndex =
+      activeTrackId != null && trackIds[boundedIndex] == activeTrackId
       ? boundedIndex
       : activeIndex;
   return selectedIndex >= 0
@@ -25,21 +25,29 @@ NativeQueuePosition reconcileNativeQueue(
       : NativeQueuePosition(-1, boundedIndex);
 }
 
-int? nextNativeQueueIndex({
-  required int length,
-  required int activeIndex,
-  required int detachedSuccessorIndex,
-  required String repeatMode,
-  required bool automatic,
-  int? fromIndex,
-}) {
-  if (length == 0) return null;
-  final index = fromIndex ?? activeIndex;
-  if (index < 0) {
-    return detachedSuccessorIndex >= 0 ? detachedSuccessorIndex : null;
+/// Decoder playlist rows, as queue indexes in playback order.
+class NativePlaylistLayout {
+  const NativePlaylistLayout(this.queueIndexes, this.initialIndex);
+
+  /// Queue index for each decoder row; -1 is a detached active decoder.
+  final List<int> queueIndexes;
+  final int initialIndex;
+}
+
+/// Places a detached active decoder immediately before its successor so that
+/// automatic completion, manual skips, and repeat-off termination all follow
+/// the queue order.
+NativePlaylistLayout nativePlaylistLayout(
+  int length,
+  NativeQueuePosition position,
+) {
+  final rows = List<int>.generate(length, (index) => index);
+  if (position.activeIndex >= 0) {
+    return NativePlaylistLayout(rows, position.activeIndex);
   }
-  if (automatic && repeatMode == "track") return index;
-  if (index + 1 < length) return index + 1;
-  if (repeatMode == "playlist") return 0;
-  return null;
+  final detached = position.detachedSuccessorIndex < 0
+      ? length
+      : position.detachedSuccessorIndex;
+  rows.insert(detached, -1);
+  return NativePlaylistLayout(rows, detached);
 }

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import stat
 import struct
-import tempfile
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -15,7 +13,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from musicplayer.core.media import source_key
-from musicplayer.core.storage import sync_directory
+from musicplayer.core.storage import atomic_write
 
 from .config import HEADER, MAGIC, SHA256_BYTES, TRACK_FIXED, U32, UUID_ONLY, VERSION
 from .models import IntegrityProblem, Playlist, Track
@@ -389,49 +387,17 @@ class MusicManager:
 
     def _write_metadata(self, data: bytes) -> None:
         try:
-            fd, temporary_name = tempfile.mkstemp(
-                dir=self.metadata_path.parent, prefix=".mmgr-", suffix=".tmp"
-            )
-        except OSError:
-            logger.exception(
-                "Failed to create temporary metadata file: path=%s", self.metadata_path
-            )
-            raise
-        logger.debug(
-            "Writing metadata through temporary file: temporary_path=%s", temporary_name
-        )
-        try:
-            with os.fdopen(fd, "wb") as file:
-                file.write(data)
-                file.flush()
-                os.fsync(file.fileno())
-            logger.debug(
-                "Replacing metadata atomically: temporary_path=%s target_path=%s",
-                temporary_name,
-                self.metadata_path,
-            )
-            os.replace(temporary_name, self.metadata_path)
-            sync_directory(self.metadata_path.parent)
-            logger.info(
-                "Music metadata saved successfully: path=%s byte_count=%d",
-                self.metadata_path,
-                len(data),
-            )
+            atomic_write(self.metadata_path, data)
         except Exception:
             logger.exception(
-                "Failed to save music metadata atomically: path=%s temporary_path=%s",
-                self.metadata_path,
-                temporary_name,
+                "Failed to save music metadata atomically: path=%s", self.metadata_path
             )
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                logger.warning(
-                    "Could not remove failed metadata temporary file: path=%s",
-                    temporary_name,
-                    exc_info=True,
-                )
             raise
+        logger.info(
+            "Music metadata saved successfully: path=%s byte_count=%d",
+            self.metadata_path,
+            len(data),
+        )
 
     # -- tracks ------------------------------------------------------
     def add_track(
@@ -803,25 +769,6 @@ class MusicManager:
         )
         return problem
 
-    def check_library_integrity(self) -> tuple[IntegrityProblem, ...]:
-        """Report every missing, unreadable, or modified library file.
-
-        Checks are strictly observational: no files or metadata are repaired,
-        replaced, deleted, or re-downloaded.
-        """
-        logger.debug("Checking library integrity")
-        with self._lock:
-            tracks = tuple(replace(track) for track in self._tracks.values())
-        problems = tuple(
-            problem
-            for track in tracks
-            if (problem := self._integrity_problem(track)) is not None
-        )
-        logger.info(
-            "Library integrity check completed: problem_count=%d", len(problems)
-        )
-        return problems
-
     def _integrity_problem(self, track: Track) -> IntegrityProblem | None:
         logger.debug(
             "Inspecting track integrity: track_id=%s filename=%s",
@@ -999,9 +946,6 @@ class MusicManager:
             if item in state.tracks
         )
 
-    def playlist_track_count(self, playlist_id: UUID | str) -> int:
-        return len(self._read_state.playlists[_as_uuid(playlist_id)].track_ids)
-
     def add_to_playlist(self, playlist_id: UUID | str, track_id: UUID | str) -> None:
         logger.debug(
             "add_to_playlist entered: playlist_id=%s track_id=%s", playlist_id, track_id
@@ -1129,64 +1073,6 @@ class MusicManager:
                 playlist.id,
                 track_uuid,
             )
-
-    def move_playlist_track(
-        self, playlist_id: UUID | str, track_id: UUID | str, offset: int
-    ) -> None:
-        logger.debug(
-            "move_playlist_track entered: playlist_id=%s track_id=%s offset=%d",
-            playlist_id,
-            track_id,
-            offset,
-        )
-        if offset not in (-1, 1):
-            logger.warning("Invalid playlist movement offset: offset=%d", offset)
-            raise ValueError("offset must be -1 or 1")
-        with self._lock:
-            playlist = self._get_playlist(playlist_id)
-            track_uuid = _as_uuid(track_id)
-            try:
-                index = playlist.track_ids.index(track_uuid)
-            except ValueError:
-                logger.warning(
-                    "Cannot move track absent from playlist: playlist_id=%s track_id=%s",
-                    playlist.id,
-                    track_uuid,
-                )
-                raise KeyError(
-                    f"Track {track_uuid} is not in playlist {playlist.id}"
-                ) from None
-            new_index = index + offset
-            if 0 <= new_index < len(playlist.track_ids):
-                playlist.track_ids[index], playlist.track_ids[new_index] = (
-                    playlist.track_ids[new_index],
-                    playlist.track_ids[index],
-                )
-                try:
-                    self._save(tracks_changed=False)
-                except Exception:
-                    playlist.track_ids[index], playlist.track_ids[new_index] = (
-                        playlist.track_ids[new_index],
-                        playlist.track_ids[index],
-                    )
-                    raise
-                logger.info(
-                    "Moved track within playlist: playlist_id=%s track_id=%s old_index=%d new_index=%d",
-                    playlist.id,
-                    track_uuid,
-                    index,
-                    new_index,
-                )
-            else:
-                logger.debug(
-                    "Playlist move skipped because target index is out of bounds: playlist_id=%s "
-                    "track_id=%s current_index=%d requested_offset=%d track_count=%d",
-                    playlist.id,
-                    track_uuid,
-                    index,
-                    offset,
-                    len(playlist.track_ids),
-                )
 
     def reorder_playlist(
         self, playlist_id: UUID | str, ordered_track_ids: Sequence[UUID | str]

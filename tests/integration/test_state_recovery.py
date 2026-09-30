@@ -28,6 +28,8 @@ class StateRecoveryTests(unittest.TestCase):
             settings = store.settings
             settings.volume = 37
 
+            sync_directory = storage.sync_directory
+
             def unsupported_barrier(path):
                 with (
                     patch.object(storage.os, "name", "posix"),
@@ -37,11 +39,11 @@ class StateRecoveryTests(unittest.TestCase):
                         side_effect=OSError("directory fsync unavailable"),
                     ),
                 ):
-                    storage.sync_directory(path)
+                    sync_directory(path)
 
             with (
                 patch(
-                    "musicplayer.application.store.sync_directory",
+                    "musicplayer.core.storage.sync_directory",
                     side_effect=unsupported_barrier,
                 ),
                 self.assertLogs("musicplayer.core.storage", level="WARNING"),
@@ -133,10 +135,13 @@ class StateRecoveryTests(unittest.TestCase):
             store.save_track_details("missing-record", TrackDetails(favorite=True))
             orphan = root / "orphan.mp3"
             orphan.write_bytes(b"keep me")
-            report = LibraryService(manager, store).reconcile()
+            service = LibraryService(manager, store)
+            report = service.reconcile()
+            self.assertEqual(report.stale_references_removed, 1)
             self.assertEqual(report.unregistered_files, (str(orphan),))
             self.assertEqual(store.favorite_track_ids(), frozenset())
             self.assertTrue(orphan.exists())
+            self.assertEqual(service.reconcile().stale_references_removed, 0)
 
     def test_failed_atomic_copy_does_not_expose_partial_destination(self):
         with tempfile.TemporaryDirectory() as directory:

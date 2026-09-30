@@ -18,7 +18,8 @@ from musicplayer.application.playback_persistence import PlaybackPersistence
 from musicplayer.application.providers import ProviderRegistry
 from musicplayer.application.store import ApplicationStore
 from musicplayer.application.thumbnails import ThumbnailCache
-from musicplayer.core.concurrency import LazyBoundedExecutor, WorkerQueueFull
+from musicplayer.application.yt_dlp_runtime import YtDlpRuntime
+from musicplayer.core.concurrency import LazyBoundedExecutor
 from musicplayer.core.library import MusicManager
 from musicplayer.platform_runtime import (
     UnsupportedPlatformError,
@@ -121,6 +122,7 @@ class MusicPlayerApp:
             getattr(self.page, "web", False)
         )
         self.downloads = services.downloads
+        self.yt_dlp = services.yt_dlp
 
     def _create_task_runtime(self) -> None:
         """Create the bounded executors owned by this page."""
@@ -298,7 +300,7 @@ class MusicPlayerApp:
             album=album,
             artwork_uri=artwork_uri,
             auto_focal_point_live_notifications=(
-                getattr(self.settings, "auto_focal_point_live_notifications", False)
+                self.settings.auto_focal_point_live_notifications
             ),
             duration_ms=self.playback.duration_ms,
             position_ms=self.playback.position_ms,
@@ -364,7 +366,7 @@ class MusicPlayerApp:
                 details.source_name,
                 self._artwork_uri(details.thumbnail),
             ),
-            bool(getattr(details, "favorite", False)),
+            details.favorite,
         )
 
     def _artwork_uri(self, source: str) -> str:
@@ -589,20 +591,6 @@ class MusicPlayerApp:
         self.downloads.shutdown(wait=False)
         self.workers.shutdown(wait=True, cancel_pending=True)
 
-    def _submit_background(
-        self, operation: Callable[..., object], /, *args: object
-    ) -> bool:
-        """Submit bounded blocking I/O without allocating workers while idle."""
-        try:
-            self.workers.submit(operation, *args)
-        except WorkerQueueFull as error:
-            self._show_error(str(error))
-            return False
-        except RuntimeError:
-            logger.debug("Background work rejected during application shutdown")
-            return False
-        return True
-
     def _show_message(self, message: str, *, error: bool = False) -> None:
         try:
             self.page.show_dialog(
@@ -628,6 +616,7 @@ class AppServices:
     providers: ProviderRegistry
     thumbnails: ThumbnailCache
     downloads: DownloadCoordinator
+    yt_dlp: YtDlpRuntime
     available_track_ids: set[str]
 
     @classmethod
@@ -661,6 +650,7 @@ class AppServices:
             providers=providers,
             thumbnails=thumbnails,
             downloads=downloads,
+            yt_dlp=YtDlpRuntime(store, directory / "yt-dlp-runtime"),
             available_track_ids=available_track_ids,
         )
 
@@ -915,6 +905,9 @@ async def main(page: ft.Page) -> None:
             AppServices.load,
             on_settings_loaded=appearance_ready,
         )
+        # Select yt-dlp while the loading view is visible; its first importer
+        # waits for this without blocking the interface.
+        services.yt_dlp.start()
         settings = services.store.settings
         _apply_startup_appearance(page, settings)
         if not settings.skip_loading_delay:
@@ -930,8 +923,8 @@ async def main(page: ft.Page) -> None:
         app = MusicPlayerApp(page, services, startup_transition=True)
         await _reveal_startup_app(page, app)
         await app.backend.reattach_native_state()
-    except Exception:  # noqa: BLE001 - final UI boundary must stay user-safe
-        logger.error("Melody failed to start")
+    except Exception:
+        logger.exception("Melody failed to start")
         await _stop_startup_quotes(quote_stop, quote_task)
         page.on_resize = None
         page.controls.clear()

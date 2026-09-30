@@ -203,30 +203,6 @@ class DownloadCoordinator:
         }
         return self._request_with_ownership(metadata)
 
-    def start(self, result: SearchResult) -> DownloadTask:
-        if not result.url:
-            raise ValueError("This result does not provide a downloadable URL.")
-        if not result.is_playlist:
-            existing = self.manager.find_track_by_source(result.url)
-            if (
-                existing is not None
-                and self.manager.check_track_integrity(existing.id) is None
-            ):
-                raise DuplicateDownloadError("This track is already in your library.")
-        metadata = {
-            "url": result.url,
-            "title": result.title,
-            "uploader": result.uploader,
-            "thumbnail": result.thumbnail,
-            "source": result.source,
-            "kind": result.kind,
-            "duration": result.duration,
-        }
-        return self._start(metadata)
-
-    def start_url(self, url: str, *, title: str = "New download") -> DownloadTask:
-        return self._start(_url_metadata(url.strip(), title=title))
-
     def start_urls(self, urls: Iterable[str]) -> DownloadBatch:
         """Schedule a URL collection as one batch without coupling its failures.
 
@@ -365,7 +341,7 @@ class DownloadCoordinator:
         self, progress: DownloadProgress, metadata: dict[str, object]
     ) -> None:
         with self._lock:
-            record = self._record(progress.task, metadata)
+            record = self._ensure_record_locked(progress.task, metadata)
             previous_status = record.status
             record.status = (
                 DownloadStatus.PROCESSING.value
@@ -404,7 +380,7 @@ class DownloadCoordinator:
         self, result: DownloadResult, metadata: dict[str, object]
     ) -> None:
         with self._lock:
-            record = self._record(result.task, metadata)
+            record = self._ensure_record_locked(result.task, metadata)
             uploader = record.uploader
             thumbnail = record.thumbnail
         final_status = result.status.value
@@ -575,11 +551,6 @@ class DownloadCoordinator:
             problem.kind if problem else "intact",
         )
         return stored_path
-
-    def _record(
-        self, task: DownloadTask, metadata: dict[str, object]
-    ) -> DownloadRecord:
-        return self._ensure_record_locked(task, metadata)
 
     def _ensure_record_locked(
         self, task: DownloadTask, metadata: dict[str, object]

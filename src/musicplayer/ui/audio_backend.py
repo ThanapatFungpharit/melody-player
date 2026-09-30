@@ -184,39 +184,29 @@ class ManagedAudioBackend:
         Flet sends one position event per second. Publish each event to keep
         the media notification current while the app is visible or hidden.
         """
-        clean_title = title.strip()
-        duration = max(0, int(duration_ms))
-        position = max(0, int(position_ms))
-        is_playing = bool(playing)
-        is_loading = bool(loading)
-        can_skip_next = bool(has_next)
-        can_skip_previous = bool(has_previous)
-        can_cycle_repeat = bool(can_repeat)
-        can_shuffle_upcoming = bool(can_shuffle)
-        can_toggle_favorite = bool(can_favorite)
-        is_favorite = bool(favorite)
-        should_keep_alive = bool(keep_alive)
-        position_marker = position
-        snapshot: tuple[object, ...] = (
-            clean_title,
-            artist,
-            album,
-            artwork_uri,
-            bool(auto_focal_point_live_notifications),
-            duration,
-            position_marker,
-            is_playing,
-            is_loading,
-            can_skip_next,
-            can_skip_previous,
-            repeat_mode,
-            can_cycle_repeat,
-            can_shuffle_upcoming,
-            can_toggle_favorite,
-            is_favorite,
-            notification_action_pair,
-            should_keep_alive,
-        )
+        payload: dict[str, object] = {
+            "title": title.strip(),
+            "artist": artist,
+            "album": album,
+            "artwork_uri": artwork_uri,
+            "auto_focal_point_live_notifications": bool(
+                auto_focal_point_live_notifications
+            ),
+            "duration_ms": max(0, int(duration_ms)),
+            "position_ms": max(0, int(position_ms)),
+            "playing": bool(playing),
+            "loading": bool(loading),
+            "has_next": bool(has_next),
+            "has_previous": bool(has_previous),
+            "repeat_mode": repeat_mode,
+            "can_repeat": bool(can_repeat),
+            "can_shuffle": bool(can_shuffle),
+            "can_favorite": bool(can_favorite),
+            "favorite": bool(favorite),
+            "notification_action_pair": notification_action_pair,
+            "keep_alive": bool(keep_alive),
+        }
+        snapshot = tuple(payload.values())
         if (
             (snapshot == self._media_snapshot and self._media_pending_snapshot is None)
             or snapshot == self._media_pending_snapshot
@@ -232,34 +222,12 @@ class ManagedAudioBackend:
         self._media_pending_snapshot = snapshot
         self._media_generation += 1
         generation = self._media_generation
-        payload = {
-            "title": clean_title,
-            "artist": artist,
-            "album": album,
-            "artwork_uri": artwork_uri,
-            "auto_focal_point_live_notifications": bool(
-                auto_focal_point_live_notifications
-            ),
-            "duration_ms": duration,
-            "position_ms": position,
-            "playing": is_playing,
-            "loading": is_loading,
-            "has_next": can_skip_next,
-            "has_previous": can_skip_previous,
-            "repeat_mode": repeat_mode,
-            "can_repeat": can_cycle_repeat,
-            "can_shuffle": can_shuffle_upcoming,
-            "can_favorite": can_toggle_favorite,
-            "favorite": is_favorite,
-            "notification_action_pair": notification_action_pair,
-            "keep_alive": should_keep_alive,
-            "reattach": self._media_reattach_pending,
-        }
+        payload["reattach"] = self._media_reattach_pending
         try:
             self.page.run_task(
                 self._run_media_sync,
                 generation,
-                cast(Any, payload),
+                payload,
                 snapshot,
             )
         except Exception:
@@ -386,15 +354,11 @@ class ManagedAudioBackend:
     def pause(self) -> None:
         if not self._loaded:
             self._pending_play_position = None
-            self._schedule_transport(self.audio.pause, generation=self._generation)
-            return
         self._schedule_transport(self.audio.pause, generation=self._generation)
 
     def resume(self) -> None:
         if not self._loaded:
             self._pending_play_position = self._pending_seek_position or 0
-            self._schedule_transport(self.audio.resume, generation=self._generation)
-            return
         self._schedule_transport(self.audio.resume, generation=self._generation)
 
     def seek(self, position_ms: int) -> None:

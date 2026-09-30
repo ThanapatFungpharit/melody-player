@@ -43,6 +43,7 @@ def _settings_view(app) -> ft.Control:
     appearance = app.settings_page._build_appearance_settings()
     download = app.settings_page._build_download_settings()
     youtube = app.settings_page._build_youtube_settings()
+    maintenance = app.settings_page._build_maintenance_settings()
     data = app.settings_page._build_data_management_settings()
     app.settings_page.path.read_only = True
     app.settings_page.path.helper_text = (
@@ -83,6 +84,12 @@ def _settings_view(app) -> ft.Control:
                 "Account access and cookies",
                 ft.Icons.SMART_DISPLAY_ROUNDED,
                 youtube,
+            ),
+            _settings_tile(
+                "Maintenance",
+                "yt-dlp updates and library cleanup",
+                ft.Icons.BUILD_CIRCLE_ROUNDED,
+                maintenance,
             ),
             _settings_tile(
                 "Data management",

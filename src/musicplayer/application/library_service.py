@@ -15,10 +15,12 @@ from .models import TrackDetails
 from .store import ApplicationStore
 
 logger = logging.getLogger(__name__)
+_AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".opus", ".wav", ".flac", ".ogg", ".aac"})
 
 
 @dataclass(frozen=True)
 class LibraryReconciliation:
+    stale_references_removed: int
     missing_track_ids: tuple[str, ...]
     unregistered_files: tuple[str, ...]
 
@@ -42,7 +44,9 @@ class LibraryService:
         """
         with self.manager.mutation():
             tracks = self.manager.list_tracks()
-            self.store.reconcile_track_references({str(track.id) for track in tracks})
+            removed = self.store.reconcile_track_references(
+                {str(track.id) for track in tracks}
+            )
             paths = {self.manager.track_path(track.id).resolve() for track in tracks}
             missing = tuple(
                 str(track.id)
@@ -54,17 +58,18 @@ class LibraryService:
                 for path in self.manager.music_folder.iterdir()
                 if path.is_file()
                 and not path.name.startswith(".")
-                and path.suffix.lower()
-                in {".mp3", ".m4a", ".opus", ".wav", ".flac", ".ogg", ".aac"}
+                and path.suffix.casefold() in _AUDIO_SUFFIXES
                 and path.resolve() not in paths
             )
-        if missing or unregistered:
+        if removed or missing or unregistered:
             logger.warning(
-                "Library reconciliation: %d missing tracks, %d unregistered files preserved",
+                "Library reconciliation: %d stale references removed, %d missing "
+                "tracks, %d unregistered files preserved",
+                removed,
                 len(missing),
                 len(unregistered),
             )
-        return LibraryReconciliation(missing, unregistered)
+        return LibraryReconciliation(removed, missing, unregistered)
 
     def update_details(self, track_id: UUID | str, **changes: object) -> TrackDetails:
         details = self.details(track_id)
@@ -119,8 +124,7 @@ class LibraryService:
         source_path = Path(source).resolve()
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
-        supported = {".mp3", ".m4a", ".opus", ".wav", ".flac", ".ogg", ".aac"}
-        if source_path.suffix.casefold() not in supported:
+        if source_path.suffix.casefold() not in _AUDIO_SUFFIXES:
             raise ValueError(
                 f"Unsupported audio format: {source_path.suffix or 'unknown'}"
             )

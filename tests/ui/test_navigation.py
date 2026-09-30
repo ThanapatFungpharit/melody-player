@@ -133,8 +133,9 @@ class NavigationTests(unittest.TestCase):
             for control in settings.controls[0].controls
             if isinstance(control, ft.ExpansionTile)
         ]
-        self.assertEqual(len(tiles), 4)
+        self.assertEqual(len(tiles), 5)
         self.assertEqual(tiles[0].title.value, "Appearance")
+        self.assertEqual(tiles[3].title.value, "Maintenance")
         self.assertFalse(tiles[0].expanded)
 
     def test_now_playing_queue_and_native_back_preserve_playback(self):

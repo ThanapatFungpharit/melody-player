@@ -405,9 +405,7 @@ class PlaybackControllerTests(unittest.TestCase):
                 manager, LibraryService(manager, store), store, FakeAudioBackend()
             )
 
-            controller.play_tracks(
-                [ids[0], ids[0], ids[1], ids[2]], start_index=2
-            )
+            controller.play_tracks([ids[0], ids[0], ids[1], ids[2]], start_index=2)
 
             self.assertEqual(controller.queue.items, ids)
             self.assertEqual(controller.current_track_id, ids[1])

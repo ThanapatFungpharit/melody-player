@@ -193,10 +193,12 @@ class Downloader:
         # builds have no registered operation and continue immediately.
         from musicplayer.core.runtime_gate import (
             MEDIA_BINARY_PREPARATION,
+            YT_DLP_PREPARATION,
             wait_for_runtime_preparation,
         )
 
         wait_for_runtime_preparation(key=MEDIA_BINARY_PREPARATION)
+        wait_for_runtime_preparation(key=YT_DLP_PREPARATION)
         from yt_dlp import YoutubeDL
 
         options: dict[str, Any] = {

@@ -65,7 +65,7 @@ arbitrary computed dynamic import; add such imports only with focused tests.
 | Download reuse, registration, retry, durable operation history | `DownloadCoordinator` | Core does not know about the library |
 | Embedded cover artwork | Downloaded media container | Downloader verifies the final tag before committing the file |
 | Offline UI artwork keyed by remote URL | `ThumbnailCache` | Derived only from verified embedded bytes; UI and system media resolve cached forms |
-| Runtime yt-dlp updates | Explicit updater and its `UpdateResult` | Normal launch and providers use the immutable bundled dependency |
+| Runtime yt-dlp selection | `yt_dlp_updater` (once per process, before first import) | `YtDlpRuntime` schedules it and exposes status; importers wait on the runtime gate |
 
 ### Playback and concurrency
 
@@ -155,9 +155,10 @@ file path so Flutter loads artwork without Python reading and transporting it
 on the UI thread. Browser views receive cached bytes, and native media sessions
 receive a file URI. Neither view needs to parse audio containers while offline.
 
-Startup loads only durable state needed for the first view. It does not run the
-network updater, fetch development media tools, reconcile unregistered files, or
-hash every completed download. Cheap stat-based availability filters the restored
+Startup loads only durable state needed for the first view. It does not fetch
+development media tools, reconcile unregistered files, or hash every completed
+download. yt-dlp selection runs in the background and contacts the network only
+when the user scheduled an update. Cheap stat-based availability filters the restored
 queue and history; full content integrity remains an explicit operation.
 
 ## Track identity and files
@@ -213,10 +214,13 @@ copy to a temporary file there first. This avoids partial final files, but canno
 promise durability beyond the filesystem/device's guarantees.
 
 The binary library and JSON state are separate stores, not a distributed
-transaction. Startup removes stale secondary references, marks completed history
-with missing audio as repairable, replays verified download receipts, and prunes
-missing queue files. Missing track records remain available for source-based
-repair. Unregistered local files are reported and preserved. A local-import
+transaction. Startup marks completed history with missing audio as repairable,
+replays verified download receipts, and prunes missing queue files. Readers
+tolerate stale secondary references (details, history, favorites) to deleted
+tracks. `LibraryService.reconcile()` removes them and reports unregistered
+local files without deleting them; it scans the music folder, so it is an
+explicit operation (Settings → Maintenance) and never runs at startup. Missing track records remain
+available for source-based repair. A local-import
 process kill or a failed deletion can still leave an unregistered file; automatic
 deletion without a durable ownership record is deliberately unsupported.
 
@@ -230,8 +234,9 @@ results should use this shared vocabulary as new providers are added.
 
 ## Remaining engineering work
 
-- Native session reattachment after process/page recreation and physical-device
-  lifecycle tests.
+- Physical-device lifecycle tests for native session reattachment. Page
+  recreation adopts the retained native snapshot (`reattach_native_state`);
+  automatic continuation after full process death is not implemented.
 - A complete locked Flutter/native transitive dependency graph for each release
   target; pinning Python packages and bridge dependencies alone is insufficient
   for byte-for-byte reproducible native artifacts.

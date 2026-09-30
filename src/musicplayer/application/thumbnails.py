@@ -11,15 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import stat
-import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from musicplayer.core.storage import sync_directory
+from musicplayer.core.storage import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +36,9 @@ class ThumbnailCache:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._key_locks: dict[str, tuple[threading.Lock, int]] = {}
+        # Serializes the rare artwork writes; concurrent replacement of one
+        # destination can fail on Windows. Reads never wait for a write.
+        self._write_lock = threading.Lock()
         self._memory: OrderedDict[str, bytes] = OrderedDict()
         self._memory_bytes = 0
         self.native_image_sources = False
@@ -103,40 +103,16 @@ class ThumbnailCache:
         except ValueError:
             logger.warning("Downloaded thumbnail has an unsupported image format")
             return False
-        key_lock = self._key_lock(key)
         try:
-            with key_lock:
+            with self._write_lock:
                 # Replace even a non-empty entry: a previous process or manual
                 # disk edit may have left corrupt cache bytes at this key.
-                self._write(key, data)
-                self._remember(key, data)
-            return True
+                atomic_write(self.directory / f"{key}.thumb", data)
         except OSError:
             logger.warning("Could not cache thumbnail: url=%s", url, exc_info=True)
             return False
-        finally:
-            self._release_key_lock(key, key_lock)
-
-    def _write(self, key: str, data: bytes) -> None:
-        if len(data) > _MAX_THUMBNAIL_BYTES:
-            raise ValueError("Thumbnail exceeds the size limit")
-        destination = self.directory / f"{key}.thumb"
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=self.directory, prefix=f".{key}-", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary_name, destination)
-            sync_directory(self.directory)
-        except Exception:
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                pass
-            raise
+        self._remember(key, data)
+        return True
 
     def _remember(self, key: str, data: bytes) -> None:
         with self._lock:
@@ -154,28 +130,6 @@ class ThumbnailCache:
             ):
                 _, removed = self._memory.popitem(last=False)
                 self._memory_bytes -= len(removed)
-
-    def _key_lock(self, key: str) -> threading.Lock:
-        with self._lock:
-            entry = self._key_locks.get(key)
-            if entry is None:
-                key_lock = threading.Lock()
-                self._key_locks[key] = (key_lock, 1)
-                return key_lock
-            key_lock, references = entry
-            self._key_locks[key] = (key_lock, references + 1)
-            return key_lock
-
-    def _release_key_lock(self, key: str, key_lock: threading.Lock) -> None:
-        with self._lock:
-            entry = self._key_locks.get(key)
-            if entry is None or entry[0] is not key_lock:
-                return
-            references = entry[1] - 1
-            if references == 0:
-                self._key_locks.pop(key, None)
-            else:
-                self._key_locks[key] = (key_lock, references)
 
 
 def _remote_key(url: str) -> str | None:

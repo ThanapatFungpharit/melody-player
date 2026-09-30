@@ -4,12 +4,14 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import flet as ft
 
 from musicplayer.app import MusicPlayerApp
 from musicplayer.application.models import AppSettings
+from musicplayer.application.yt_dlp_runtime import YtDlpStatus
 from musicplayer.ui.components.common import SharedUIComponents
 from musicplayer.ui.desktop.shell import DesktopShell
 from musicplayer.ui.pages.settings import SettingsPage
@@ -84,12 +86,14 @@ class SettingsCookieUiTests(unittest.TestCase):
         app.providers = _Providers()  # ty: ignore[invalid-assignment]
         app.manager = _Manager()  # ty: ignore[invalid-assignment]
         app.store = _Store()  # ty: ignore[invalid-assignment]
+        app.playback = SimpleNamespace(volume=5, previous_volume=5, muted=False)  # ty: ignore[invalid-assignment]
         app.file_picker = _FilePicker(content)  # ty: ignore[invalid-assignment]
         app.tasks = _InlineTasks()  # ty: ignore[invalid-assignment]
         app._show_error = Mock()
         app._show_message = Mock()
         app._reapply_accent = Mock()
         app.shared = SharedUIComponents(app)
+        app.yt_dlp = Mock(status=Mock(return_value=YtDlpStatus(preparing=True)))
         app.settings_page = SettingsPage(app)
         app.settings_page._settings_view()
         return app
@@ -108,6 +112,18 @@ class SettingsCookieUiTests(unittest.TestCase):
             self.assertEqual(app.settings.cookie_file, str(cookie_path))
             self.assertIs(app.store.saved, app.settings)  # ty: ignore[unresolved-attribute]
             app._show_error.assert_not_called()  # ty: ignore[unresolved-attribute]
+
+    def test_save_keeps_volume_changed_after_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = self._app(directory, COOKIE_FILE)
+            app.playback = SimpleNamespace(volume=42, previous_volume=42, muted=True)  # ty: ignore[invalid-assignment]
+
+            app.settings_page._save_settings()
+
+            saved = app.store.saved  # ty: ignore[unresolved-attribute]
+            self.assertEqual(
+                (saved.volume, saved.previous_volume, saved.muted), (42, 42, True)
+            )
 
     def test_invalid_upload_reports_error_and_is_not_installed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

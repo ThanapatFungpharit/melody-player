@@ -72,18 +72,23 @@ is a bounded compatibility policy, not a claim that all upstream behaviors in
 that range have been tested. Changing the window requires a reviewed Melody
 change and extractor/download regression tests.
 
-Normal application launch selects the immutable bundled pin and does not run the
-runtime updater. This removes PyPI metadata reads, wheel downloads, wheel hashing,
-subprocess import probes, runtime locks, and updater-state fsyncs from startup.
-Provider imports remain lazy at the first YouTube Music feature. Source-checkout
-media-tool preparation is registered without starting and joined only by the
-first download, so local playback remains offline-first. When the explicit
-updater facility is invoked, it holds a session lock for the process lifetime. A
-second process unable to acquire that lock uses its bundled package without
-changing the cache.
-Changing a selected runtime requires a restart; hot-swapping imported modules
-is forbidden. Diagnostics should report `UpdateResult.active_version` and
-`active_source`, with the bundled/current/previous versions as context.
+Every launch starts `prepare_yt_dlp` on a background thread while the loading
+view is visible (`application.yt_dlp_runtime.YtDlpRuntime`). The provider and
+downloader wait on the `yt-dlp` runtime gate immediately before importing
+yt-dlp, so selection always finishes first without blocking the interface.
+A normal launch is offline: it recovers state, re-validates the installed
+runtime wheels, and activates `current`, or uses the bundled package. It holds
+a session lock for the process lifetime; a second process unable to acquire it
+uses its bundled package without changing the cache. Any selection failure is a
+diagnostic, never a startup error.
+
+Settings → Maintenance reads PyPI metadata (`YtDlpUpdater.latest_release`) on
+demand. Installing a newer release records a request in the application state;
+the next launch consumes it once and runs the updater with the remote check
+enabled, so download, validation, the import probe, and rollback all happen
+before the first import. Changing a selected runtime requires a restart;
+hot-swapping imported modules is forbidden. Settings shows the active version,
+whether it is bundled, and the last non-fatal problem from `UpdateResult`.
 
 State schema 2 contains `current`, `previous`, `pending`, and `failed` records.
 `current` is the committed active runtime role; an absent current means bundled.

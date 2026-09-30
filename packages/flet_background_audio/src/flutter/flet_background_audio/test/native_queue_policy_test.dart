@@ -7,13 +7,6 @@ void main() {
 
     expect(position.activeIndex, -1);
     expect(position.detachedSuccessorIndex, 1);
-    expect(nextNativeQueueIndex(
-      length: 3,
-      activeIndex: position.activeIndex,
-      detachedSuccessorIndex: position.detachedSuccessorIndex,
-      repeatMode: "off",
-      automatic: true,
-    ), 1);
   });
 
   test("a selected duplicate stays selected after a queue reorder", () {
@@ -23,41 +16,42 @@ void main() {
     expect(position.detachedSuccessorIndex, -1);
   });
 
-  test("manual navigation advances during track repeat", () {
-    expect(nextNativeQueueIndex(
-      length: 3,
-      activeIndex: 1,
-      detachedSuccessorIndex: -1,
-      repeatMode: "track",
-      automatic: true,
-    ), 1);
-    expect(nextNativeQueueIndex(
-      length: 3,
-      activeIndex: 1,
-      detachedSuccessorIndex: -1,
-      repeatMode: "track",
-      automatic: false,
-    ), 2);
+  test("an attached track keeps the queue order", () {
+    final layout = nativePlaylistLayout(
+      3,
+      reconcileNativeQueue(["a", "b", "c"], "b", 1),
+    );
+
+    expect(layout.queueIndexes, [0, 1, 2]);
+    expect(layout.initialIndex, 1);
   });
 
-  test("playlist repeat wraps after the last row", () {
-    expect(nextNativeQueueIndex(
-      length: 3,
-      activeIndex: 2,
-      detachedSuccessorIndex: -1,
-      repeatMode: "playlist",
-      automatic: true,
-    ), 0);
+  test("a detached track plays between its predecessor and successor", () {
+    // Rotating the queue behind the detached track used to make repeat-off
+    // continue into earlier rows and Skip Previous miss the predecessor.
+    final layout = nativePlaylistLayout(
+      3,
+      reconcileNativeQueue(["a", "c", "d"], "b", 1),
+    );
+
+    expect(layout.queueIndexes, [0, -1, 1, 2]);
+    expect(layout.initialIndex, 1);
   });
 
-  test("an empty queue has no successor", () {
-    final position = reconcileNativeQueue([], "a", 0);
-    expect(nextNativeQueueIndex(
-      length: 0,
-      activeIndex: position.activeIndex,
-      detachedSuccessorIndex: position.detachedSuccessorIndex,
-      repeatMode: "playlist",
-      automatic: true,
-    ), isNull);
+  test("a detached preview before the first row keeps the full queue", () {
+    final layout = nativePlaylistLayout(
+      2,
+      reconcileNativeQueue(["a", "b"], null, 0),
+    );
+
+    expect(layout.queueIndexes, [-1, 0, 1]);
+    expect(layout.initialIndex, 0);
+  });
+
+  test("an empty queue keeps only the detached decoder", () {
+    final layout = nativePlaylistLayout(0, reconcileNativeQueue([], "a", 0));
+
+    expect(layout.queueIndexes, [-1]);
+    expect(layout.initialIndex, 0);
   });
 }

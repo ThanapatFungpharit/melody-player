@@ -18,6 +18,20 @@ def _home_view(app) -> ft.Control:
             on_click=lambda _: app.home_page._shuffle_library(),
         ),
     ]
+    sections.append(heading("Favorites"))
+    sections.extend(
+        [
+            app.library_page._library_track_row(track, i)
+            for i, track in enumerate(favorites)
+        ]
+    )
+    if not favorites:
+        sections.append(
+            _empty_state(
+                ft.Icons.MUSIC_NOTE_ROUNDED,
+                "Favorite tracks from their action menu to find them here.",
+            )
+        )
     sections.append(
         app.home_page._build_recommendation_section(
             lambda: _recommendations(app), spacing=14
@@ -35,20 +49,6 @@ def _home_view(app) -> ft.Control:
         )
         if not items:
             sections.append(_empty_state(ft.Icons.MUSIC_NOTE_ROUNDED, message))
-    sections.append(heading("Favorites"))
-    sections.extend(
-        [
-            app.library_page._library_track_row(track, i)
-            for i, track in enumerate(favorites)
-        ]
-    )
-    if not favorites:
-        sections.append(
-            _empty_state(
-                ft.Icons.MUSIC_NOTE_ROUNDED,
-                "Favorite tracks from their action menu to find them here.",
-            )
-        )
     return scroll_page(sections)
 
 

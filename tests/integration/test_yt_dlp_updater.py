@@ -397,7 +397,9 @@ class YtDlpUpdaterTests(unittest.TestCase):
             bundled_version="2026.8.19",
             fetch_remote=lambda _: None,
         ).prepare()
-        self.assertEqual((result.current, result.previous), ("2026.9.12", "2026.9.8"))
+        self.assertEqual(
+            (result.current_version, result.previous_version), ("2026.9.12", "2026.9.8")
+        )
         self.assertIsNone(json.loads(state_path.read_text())["pending"])
 
     def test_downloading_transaction_never_promotes_existing_candidate(self):
@@ -419,7 +421,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
             bundled_version="2026.8.19",
             fetch_remote=lambda _: None,
         ).prepare()
-        self.assertEqual(result.current, "2026.9.8")
+        self.assertEqual(result.current_version, "2026.9.8")
         self.assertFalse(pending.exists())
         self.assertIsNotNone(json.loads(state_path.read_text())["failed"])
 
@@ -441,7 +443,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
             fetch_remote=lambda _: None,
         ).prepare()
         self.assertTrue(result.rolled_back)
-        self.assertEqual(result.current, "2026.9.8")
+        self.assertEqual(result.current_version, "2026.9.8")
         self.assertNotIn("yt_dlp", sys.modules)
 
     def test_release_outside_compatibility_window_is_not_downloaded(self):
@@ -507,7 +509,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
                 bundled_version="2026.8.19",
                 fetch_remote=lambda _: None,
             ).prepare()
-        self.assertEqual(result.current, "2026.9.12")
+        self.assertEqual(result.current_version, "2026.9.12")
         self.assertNotIn("yt_dlp", sys.modules)
         self.assertEqual(sys.argv, original_argv)
         run.assert_not_called()

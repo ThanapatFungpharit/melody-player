@@ -265,16 +265,9 @@ class PlaylistsPage:
                 while session.pending and self.playlist_import_session is session:
                     key, result = session.pending[0]
                     try:
-                        if hasattr(self.app.downloads, "request_with_ownership"):
-                            task, owned = await self.app.tasks.io(
-                                self.app.downloads.request_with_ownership, result
-                            )
-                        else:
-                            was_active = self.app.downloads.is_source_active(result.url)
-                            task = await self.app.tasks.io(
-                                self.app.downloads.request, result
-                            )
-                            owned = task is not None and not was_active
+                        task, owned = await self.app.tasks.io(
+                            self.app.downloads.request_with_ownership, result
+                        )
                     except WorkerQueueFull:
                         queue_full = True
                         break

@@ -8,7 +8,6 @@ platform supported by Flet.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import importlib
 import importlib.metadata
@@ -83,7 +82,7 @@ class RemoteRelease:
 
 @dataclass(frozen=True)
 class UpdateResult:
-    """Non-fatal startup diagnostics returned by :func:`prepare_yt_dlp`."""
+    """Non-fatal selection diagnostics returned by :func:`prepare_yt_dlp`."""
 
     active_version: str
     bundled_version: str
@@ -95,36 +94,6 @@ class UpdateResult:
     rolled_back: bool
     active_source: str
     errors: tuple[str, ...] = ()
-
-    # Keep the compact field names while preserving the public result API
-    # consumed by startup and callers that display updater status.
-    @property
-    def active(self) -> str:
-        return self.active_version
-
-    @property
-    def bundled(self) -> str:
-        return self.bundled_version
-
-    @property
-    def current(self) -> str | None:
-        return self.current_version
-
-    @property
-    def previous(self) -> str | None:
-        return self.previous_version
-
-    @property
-    def update_occurred(self) -> bool:
-        return self.updated
-
-    @property
-    def recovery_occurred(self) -> bool:
-        return self.recovered
-
-    @property
-    def rollback_occurred(self) -> bool:
-        return self.rolled_back
 
 
 DownloadFunction = Callable[[str, Path], object]
@@ -143,6 +112,7 @@ class YtDlpUpdater:
         timeout: float = _DEFAULT_TIMEOUT,
         download: DownloadFunction | None = None,
         fetch_remote: RemoteFunction | None = None,
+        check_remote: bool = True,
     ) -> None:
         self._storage_directory = (
             Path(storage_directory) if storage_directory is not None else None
@@ -154,6 +124,7 @@ class YtDlpUpdater:
         self._timeout = timeout
         self._download_function = download
         self._fetch_remote_function = fetch_remote
+        self._check_remote = check_remote
         self._errors: list[str] = []
         self._recovered = False
         self._rolled_back = False
@@ -262,7 +233,7 @@ class YtDlpUpdater:
             self._recovered = True
         durable = self._write_state(storage, current, previous)
         active = current
-        remote = self._remote_release()
+        remote = self._remote_release() if self._check_remote else None
         if remote and remote.version > (active.version if active else bundled):
             failed_wheel = self._failed.get("wheel") if self._failed else None
             remote_record = WheelRecord(remote.version, remote.filename, remote.sha256)
@@ -460,22 +431,30 @@ class YtDlpUpdater:
             return None
         return WheelRecord(version, parsed_filename, digest.lower())
 
+    def latest_release(self) -> RemoteRelease | None:
+        """Return the newest release allowed by Melody's compatibility policy.
+
+        This only reads release metadata; it never downloads or selects a
+        package. Network and metadata failures are raised to the caller.
+        """
+        if self._fetch_remote_function is not None:
+            remote = self._fetch_remote_function(self._metadata_url)
+        else:
+            remote = _fetch_remote_release(self._metadata_url, self._timeout)
+        if remote is not None:
+            record = WheelRecord(remote.version, remote.filename, remote.sha256)
+            if (
+                not _entry_shape(record.as_json())
+                or remote.version not in _ALLOWED_RUNTIME
+            ):
+                raise ValueError(
+                    "Remote release is outside Melody's runtime compatibility policy"
+                )
+        return remote
+
     def _remote_release(self) -> RemoteRelease | None:
         try:
-            if self._fetch_remote_function is not None:
-                remote = self._fetch_remote_function(self._metadata_url)
-            else:
-                remote = _fetch_remote_release(self._metadata_url, self._timeout)
-            if remote is not None:
-                record = WheelRecord(remote.version, remote.filename, remote.sha256)
-                if (
-                    not _entry_shape(record.as_json())
-                    or remote.version not in _ALLOWED_RUNTIME
-                ):
-                    raise ValueError(
-                        "Remote release is outside Melody's runtime compatibility policy"
-                    )
-            return remote
+            return self.latest_release()
         except Exception as error:  # noqa: BLE001 - install failures are non-fatal
             self._record_error(f"Could not check for yt-dlp updates: {error}")
             logger.warning("Could not check for yt-dlp updates: %s", error)
@@ -586,10 +565,6 @@ class YtDlpUpdater:
                 self._recovered = True
                 _unlink(path)
 
-    def _remove_package(self, path: Path) -> None:
-        logger.warning("Removing corrupted runtime package %s", path.name)
-        _unlink(path)
-
     def _activate(self, path: Path) -> None:
         self._deactivate_runtime_wheels(path.parent)
         sys.path.insert(0, str(path))
@@ -649,7 +624,7 @@ class YtDlpUpdater:
         )
 
 
-async def prepare_yt_dlp(
+def prepare_yt_dlp(
     *,
     storage_directory: str | Path | None = None,
     bundled_version: str | Version | None = None,
@@ -657,14 +632,16 @@ async def prepare_yt_dlp(
     timeout: float = _DEFAULT_TIMEOUT,
     download: DownloadFunction | None = None,
     fetch_remote: RemoteFunction | None = None,
+    check_remote: bool = False,
 ) -> UpdateResult:
-    """Prepare yt-dlp before its first import.
+    """Select yt-dlp once per process, before its first import.
 
-    Blocking filesystem and network work runs off the event loop.  The
-    updater catches ordinary failures and always returns diagnostics, leaving
-    callers free to continue with the immutable bundled package.
+    Blocking filesystem and network work: call it from a worker thread. The
+    first call's result is reused for the process lifetime. Failures are
+    diagnostics in the result; the bundled package always remains usable.
     """
 
+    global _STARTUP_RESULT
     updater = YtDlpUpdater(
         storage_directory=storage_directory,
         bundled_version=bundled_version,
@@ -672,36 +649,30 @@ async def prepare_yt_dlp(
         timeout=timeout,
         download=download,
         fetch_remote=fetch_remote,
+        check_remote=check_remote,
     )
-
-    def prepare_once() -> UpdateResult:
-        global _STARTUP_RESULT
-        with _PREPARE_LOCK:
-            if _STARTUP_RESULT is not None:
-                return _STARTUP_RESULT
-            try:
-                storage = updater._storage()
-                # Hold for the process lifetime so another running application
-                # cannot prune a wheel that this interpreter may still import.
-                _SESSION.enter_context(exclusive_file_lock(storage / "session.lock"))
-            except OSError as error:
-                bundled = updater._bundled_version(updater.storage_directory)
-                updater._record_error(
-                    f"Runtime cache is in use or unavailable: {error}"
-                )
-                _STARTUP_RESULT = updater._result(
-                    active_version=str(bundled or "unknown"),
-                    bundled_version=str(bundled or "unknown"),
-                    current=None,
-                    previous=None,
-                    remote=None,
-                    source="bundled",
-                )
-                return _STARTUP_RESULT
-            _STARTUP_RESULT = updater.prepare()
+    with _PREPARE_LOCK:
+        if _STARTUP_RESULT is not None:
             return _STARTUP_RESULT
-
-    return await asyncio.to_thread(prepare_once)
+        try:
+            storage = updater._storage()
+            # Hold for the process lifetime so another running application
+            # cannot prune a wheel that this interpreter may still import.
+            _SESSION.enter_context(exclusive_file_lock(storage / "session.lock"))
+            _STARTUP_RESULT = updater.prepare()
+        except Exception as error:  # noqa: BLE001 - selection must never block yt-dlp use
+            logger.warning("yt-dlp runtime selection skipped: %s", error)
+            bundled = updater._bundled_version(updater.storage_directory)
+            updater._record_error(f"Runtime selection skipped: {error}")
+            _STARTUP_RESULT = updater._result(
+                active_version=str(bundled or "unknown"),
+                bundled_version=str(bundled or "unknown"),
+                current=None,
+                previous=None,
+                remote=None,
+                source="bundled",
+            )
+        return _STARTUP_RESULT
 
 
 def _coerce_version(value: str | Version) -> Version:
@@ -884,27 +855,6 @@ def _state_entry_matches(value: object, record: WheelRecord | None) -> bool:
     if record is None:
         return value is None
     return isinstance(value, dict) and value == record.as_json()
-
-
-def _choose_previous(
-    records: Mapping[str, WheelRecord],
-    current: WheelRecord | None,
-    preferred: WheelRecord | None,
-) -> WheelRecord | None:
-    if current is None:
-        return None
-    if preferred is not None and preferred.filename != current.filename:
-        candidate = records.get(preferred.filename)
-        if candidate is not None and candidate.version < current.version:
-            return candidate
-    candidates = [
-        record
-        for record in records.values()
-        if record.filename != current.filename and record.version < current.version
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item.version)
 
 
 def _looks_like_runtime_wheel(path: Path) -> bool:

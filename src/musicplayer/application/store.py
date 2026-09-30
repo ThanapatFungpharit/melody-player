@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import threading
 import time
 from collections import deque
@@ -12,7 +10,7 @@ from itertools import chain, islice
 from pathlib import Path
 from typing import Any
 
-from musicplayer.core.storage import sync_directory
+from musicplayer.core.storage import atomic_write
 
 from .models import AppSettings, DownloadRecord, TrackDetails
 
@@ -252,8 +250,11 @@ class ApplicationStore:
             self._commit_locked({}, track_details=changes)
             return len(changes)
 
-    def reconcile_track_references(self, valid_ids: Collection[str]) -> None:
-        """Remove secondary references only after the authoritative library loads."""
+    def reconcile_track_references(self, valid_ids: Collection[str]) -> int:
+        """Remove references to tracks the library no longer has.
+
+        Returns the number of distinct track IDs whose references were removed.
+        """
         with self._lock:
             stale = {
                 key: _MISSING
@@ -273,6 +274,7 @@ class ApplicationStore:
             self._commit_locked(histories, track_details=stale)
             self._deleted_track_ids.update(stale)
             self._deleted_track_ids.update(stale_history_ids)
+            return len(stale_history_ids.union(stale))
 
     def _recent_items_locked(self, key: str, value: str, *, limit: int) -> list[str]:
         remaining = (item for item in self._data.get(key, []) if item != value)
@@ -317,11 +319,7 @@ class ApplicationStore:
         if not updates:
             return
         candidate = {**self._data, **updates}
-        self._pending_data = candidate
-        try:
-            self._save_locked()
-        finally:
-            self._pending_data = None
+        self._save_locked(candidate)
         self._data = candidate
 
     def save_playback_updates(
@@ -358,26 +356,9 @@ class ApplicationStore:
                     )[:limit]
             self._commit_locked(updates, track_details=details)
 
-    def _save_locked(self) -> None:
+    def _save_locked(self, data: dict[str, Any]) -> None:
         # Compact JSON materially reduces bytes encoded and flushed for hot
         # state updates. Human readability is provided through typed APIs and
         # documentation rather than whitespace in this private state file.
-        payload = json.dumps(
-            self._pending_data, ensure_ascii=False, separators=(",", ":")
-        )
-        fd, temporary_name = tempfile.mkstemp(
-            dir=self.path.parent, prefix=".melody-", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
-                file.write(payload)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary_name, self.path)
-            sync_directory(self.path.parent)
-        except Exception:
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                pass
-            raise
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        atomic_write(self.path, payload.encode("utf-8"))

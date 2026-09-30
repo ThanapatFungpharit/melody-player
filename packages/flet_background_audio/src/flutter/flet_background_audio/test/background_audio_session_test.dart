@@ -6,52 +6,7 @@ import "package:flutter_test/flutter_test.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
 import "package:flet_background_audio/src/background_audio_session.dart";
 
-class _RecordingMediaSessionPlatform extends FlutterMediaSessionPlatform {
-  final List<PlaybackState> states = [];
-  Completer<MediaMetadata>? nextMetadata;
-
-  @override
-  Future<void> activate() async {}
-
-  @override
-  Future<void> deactivate() async {}
-
-  @override
-  Future<void> updateMetadata(MediaMetadata metadata) async {
-    final waiting = nextMetadata;
-    if (waiting != null && !waiting.isCompleted) waiting.complete(metadata);
-  }
-
-  @override
-  Future<void> updatePlaybackState(PlaybackState state) async {
-    states.add(state);
-  }
-
-  @override
-  Future<void> updateAvailableActions(Set<MediaAction>? actions) async {}
-
-  @override
-  Future<bool> requestNotificationPermission() async => true;
-
-  @override
-  Future<void> setSkipIntervals({
-    int forwardSeconds = 10,
-    int backwardSeconds = 10,
-  }) async {}
-
-  @override
-  Future<void> setAutoHandleInterruptions(bool enabled) async {}
-
-  @override
-  Future<void> setWindowsAppUserModelId(
-    String id, {
-    String? displayName,
-    String? iconPath,
-  }) async {}
-
-  @override
-  Stream<MediaAction> get onMediaAction => const Stream.empty();
-}
+import "support/fakes.dart";
 
 Future<List<int>> _portraitArtwork() async {
   final recorder = ui.PictureRecorder();
@@ -90,10 +45,10 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final originalPlatform = FlutterMediaSessionPlatform.instance;
   final runtime = NativeMediaSessionRuntime.instance;
-  late _RecordingMediaSessionPlatform platform;
+  late RecordingMediaSessionPlatform platform;
 
   setUp(() {
-    platform = _RecordingMediaSessionPlatform();
+    platform = RecordingMediaSessionPlatform();
     FlutterMediaSessionPlatform.instance = platform;
   });
 
@@ -133,6 +88,21 @@ void main() {
     });
     expect(platform.states.last.status, PlaybackStatus.playing);
   });
+
+  test(
+    "a failed deactivate still republishes metadata on reactivation",
+    () async {
+      await runtime.invokeMethod("sync", {"title": "Track"});
+      expect(platform.metadata, hasLength(1));
+
+      platform.failNextDeactivate = true;
+      await expectLater(runtime.deactivateForStop(), throwsStateError);
+      await runtime.invokeMethod("sync", {"title": "Track"});
+
+      expect(platform.metadata, hasLength(2));
+      expect(platform.metadata.last.title, "Track");
+    },
+  );
 
   test(
     "native track changes honor the automatic focal point setting",

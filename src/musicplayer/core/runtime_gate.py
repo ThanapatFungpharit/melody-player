@@ -9,6 +9,8 @@ from typing import Any
 
 _LOCK = Lock()
 MEDIA_BINARY_PREPARATION = "media-binaries"
+# Runtime yt-dlp selection must finish before the first ``import yt_dlp``.
+YT_DLP_PREPARATION = "yt-dlp"
 _PREPARATIONS: dict[str, Future[Any]] = {}
 _OPERATIONS: dict[str, Callable[[], Any]] = {}
 
@@ -33,6 +35,11 @@ def start_runtime_preparation(operation: Callable[[], Any], *, key: str) -> Futu
         try:
             result = operation()
         except Exception as error:  # noqa: BLE001 - forwarded to the feature worker
+            # Forget a failed attempt so the next feature request retries it
+            # instead of re-raising a transient failure for the process lifetime.
+            with _LOCK:
+                if _PREPARATIONS.get(key) is future:
+                    del _PREPARATIONS[key]
             future.set_exception(error)
         else:
             future.set_result(result)

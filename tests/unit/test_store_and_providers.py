@@ -366,7 +366,7 @@ class StoreTests(unittest.TestCase):
 
                 with (
                     patch(
-                        "musicplayer.application.store.os.replace",
+                        "musicplayer.core.storage.os.replace",
                         side_effect=OSError("disk full"),
                     ),
                     self.assertRaisesRegex(OSError, "disk full"),

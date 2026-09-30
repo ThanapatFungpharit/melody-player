@@ -40,12 +40,6 @@ def is_youtube_playlist_url(value: str) -> bool:
     return is_youtube_url(value) and bool(parse_qs(parsed.query).get("list"))
 
 
-def youtube_music_search_url(term: str, *, section: str = "songs") -> str:
-    """Build a YouTube Music search URL understood by yt-dlp."""
-    fragment = f"#{section.strip()}" if section.strip() else ""
-    return f"https://{YOUTUBE_MUSIC_HOST}/search?{urlencode({'q': term.strip()})}{fragment}"
-
-
 def youtube_music_track_url(url: str, media_id: str = "") -> str:
     """Return a canonical YouTube Music watch URL for a YouTube video."""
     if not url or not is_http_url(url):

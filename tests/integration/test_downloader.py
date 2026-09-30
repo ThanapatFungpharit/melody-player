@@ -456,13 +456,13 @@ class BatchDownloadTests(unittest.TestCase):
             )
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 coordinator = DownloadCoordinator(manager, store, settings)
-                with self.assertRaisesRegex(DuplicateDownloadError, "library"):
-                    coordinator.start(result)
+                self.assertIsNone(coordinator.request(result))
+                downloader.return_value.start.assert_not_called()
 
                 path.unlink()
                 task = DownloadTask(UUID(int=1))
                 downloader.return_value.start.return_value = task
-                self.assertEqual(coordinator.start(result), task)
+                self.assertEqual(coordinator.request(result), task)
 
     def test_redownload_repairs_broken_source_record_without_losing_identity(
         self,
@@ -763,7 +763,7 @@ class BatchDownloadTests(unittest.TestCase):
                 coordinator = DownloadCoordinator(_Manager(), store, settings)  # ty: ignore[invalid-argument-type]
 
                 with self.assertRaisesRegex(ValueError, "Only YouTube"):
-                    coordinator.start_url("https://example.test/song")
+                    coordinator.start_urls(("https://example.test/song",))
                 with self.assertRaisesRegex(ValueError, "Only YouTube"):
                     coordinator.start_urls(
                         ("https://youtu.be/allowed", "https://example.test/blocked")
@@ -787,7 +787,7 @@ class BatchDownloadTests(unittest.TestCase):
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 downloader.return_value.start.side_effect = start
                 coordinator = DownloadCoordinator(_Manager(), store, settings)  # ty: ignore[invalid-argument-type]
-                coordinator.start_url("https://youtu.be/video-id")
+                coordinator.start_urls(("https://youtu.be/video-id",))
 
                 self.assertTrue(
                     coordinator.is_source_active(
@@ -804,8 +804,9 @@ class BatchDownloadTests(unittest.TestCase):
                         )
                     )
                 self.assertEqual(normalize.call_count, 1)
+                record_id = coordinator.list()[0].id
                 with self.assertRaisesRegex(DuplicateDownloadError, "downloading"):
-                    coordinator.start_url("https://www.youtube.com/watch?v=video-id")
+                    coordinator.retry(record_id)
 
         downloader.return_value.start.assert_called_once()
 

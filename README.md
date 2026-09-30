@@ -63,7 +63,7 @@ Theme settings follow the same shared-state model. The Theme selector previews L
 
 The latency-sensitive paths are deliberately bounded:
 
-- Startup performs no network request, updater probe, media-tool download, or full-library hash/stray-file scan. It checks file availability only for tracks in the restored queue instead of walking the whole catalog; SHA-256 integrity checks remain available at the explicit feature boundaries that require them.
+- Startup performs no network request (unless you scheduled a yt-dlp update), media-tool download, or full-library hash/stray-file scan. It checks file availability only for tracks in the restored queue instead of walking the whole catalog; SHA-256 integrity checks remain available at the explicit feature boundaries that require them.
 - Search, stream resolution, and local imports share a pool capped at two active and two pending tasks. Library playback never enters that pool or reads whole tracks through Python; it hands the complete path queue directly to the managed player. The pool and its threads do not exist while idle; excess submissions are rejected immediately so UI actions never block behind or add to an unbounded queue.
 - The downloader creates its own pool only on the first download. Active work is capped by the configured concurrency and pending work has the same cap, for a maximum of `2 × concurrent_downloads` accepted tasks. The pool retires after the final task, and overload is reported per song without cancelling an otherwise valid batch.
 - Local audio paths reach the process-scoped native player immediately. `just_audio` owns decoding, buffering, playlist transitions, and repeat; `audio_session` configures audio focus and interruptions. Explicit selections prepare a replacement beside the active player and retire the old player after the replacement is ready. Generation checks discard stale Python and native work when the user changes tracks rapidly.
@@ -116,12 +116,17 @@ The desktop location can be changed in Settings.
 
 YouTube Music access is anonymous by default. To use a signed-in session, export a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody validates the file and copies it to the platform's private application-data directory. It never detects browsers or reads their cookie databases, so the same workflow is available on desktop and Android. Cookie files contain sensitive session credentials and should not be shared.
 
-Melody uses the immutable, release-tested `yt-dlp` version bundled with the app.
-Normal launch does not contact PyPI, validate a writable runtime wheel, run an
-import probe, or mutate `sys.path`; providers import the bundled dependency only
-when a YouTube Music feature is requested. The crash-safe runtime updater remains an
-explicit maintenance facility, but it is intentionally outside the application
-startup path.
+Melody ships a release-tested `yt-dlp` and never modifies it. Settings →
+Maintenance shows the version in use, checks PyPI for a newer compatible release,
+and schedules its installation. At the next launch the update is downloaded,
+verified, and activated in the background before yt-dlp is first imported; a
+failed update keeps the previously working version. Normal launches are offline:
+they only re-verify an already installed update, and fall back to the bundled
+version if it is damaged.
+
+Settings → Maintenance also offers **Clean up library**, which removes favorites
+and history that point to deleted tracks and lists audio files in the music folder
+that are not in the library. It never deletes files.
 
 ## Test and lint
 

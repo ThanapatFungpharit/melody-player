@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from musicplayer.core.storage import sync_directory
+from musicplayer.core.storage import atomic_write
 
 COOKIE_FILE_NAME = "cookies.txt"
 MAX_COOKIE_FILE_SIZE = 10 * 1024 * 1024
@@ -109,26 +107,10 @@ def install_cookie_file(
 ) -> Path:
     """Atomically install a validated cookie file in app-private storage."""
     target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=target.parent, prefix=".melody-cookies-", suffix=".tmp"
-    )
+    atomic_write(target, cookie_file.content)
     try:
-        with os.fdopen(descriptor, "wb") as temporary_file:
-            temporary_file.write(cookie_file.content)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_name, target)
-        sync_directory(target.parent)
-        try:
-            target.chmod(0o600)
-        except OSError:
-            # Some Android-backed filesystems do not expose POSIX permissions.
-            pass
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except OSError:
-            pass
-        raise
+        target.chmod(0o600)
+    except OSError:
+        # Some Android-backed filesystems do not expose POSIX permissions.
+        pass
     return target
