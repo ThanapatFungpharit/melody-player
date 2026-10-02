@@ -151,7 +151,7 @@ packages:
     source: hosted
     version: "6.0.0"
   flutter_media_session:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: flutter_media_session
       sha256: "1a88715fc7ebe9717d034eb77d81fd5412be6a5a041c1215c11a5c0badb1392f"

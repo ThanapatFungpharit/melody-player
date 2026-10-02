@@ -1,7 +1,11 @@
 import java.io.File
 
+// AGP 8.11 and Kotlin 2.2 match the toolchain Melody's Flet releases used;
+// just_audio, audio_session, and flutter_media_session still apply the Kotlin
+// Gradle plugin, which AGP 9's built-in Kotlin rejects.
 plugins {
     id("com.android.application")
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }

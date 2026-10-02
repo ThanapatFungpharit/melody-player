@@ -1,6 +1,7 @@
 import "dart:async";
 import "dart:io";
 import "dart:math";
+import "dart:ui" show AppExitResponse;
 
 import "package:flutter/material.dart";
 import "package:melody_audio/melody_audio.dart";
@@ -35,6 +36,14 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   (String, String) _appearance = ("system", "violet");
   final GlobalKey<ScaffoldMessengerState> _messenger = GlobalKey();
   StreamSubscription<AppMessage>? _messages;
+  late final AppLifecycleListener _lifecycle = AppLifecycleListener(
+    // Closing a desktop window persists the final position and stops
+    // background downloads before the process exits.
+    onExitRequested: () async {
+      _app?.close();
+      return AppExitResponse.exit;
+    },
+  );
 
   bool get _mobile => Platform.isAndroid || Platform.isIOS;
 
@@ -42,6 +51,7 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lifecycle;
     unawaited(_start());
   }
 
@@ -100,6 +110,7 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _lifecycle.dispose();
     unawaited(_messages?.cancel());
     _app?.close();
     super.dispose();

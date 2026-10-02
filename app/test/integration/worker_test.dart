@@ -19,7 +19,7 @@ import "package:path/path.dart" as p;
 /// End-to-end checks against the real Python worker and YouTube Music.
 ///
 ///   MELODY_WORKER_PYTHON=../worker/.venv/Scripts/python.exe \
-///   MELODY_FFMPEG_DIR=<folder with ffmpeg and ffprobe> \
+///   MELODY_FFMPEG_DIR=path/to/ffmpeg-folder \
 ///   flutter test test/integration --tags network
 void main() {
   final python = Platform.environment["MELODY_WORKER_PYTHON"];
