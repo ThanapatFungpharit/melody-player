@@ -58,9 +58,9 @@ def make_app(
         theme=theme,
         accent_color=accent,
     )
-    store = ApplicationStore(directory / "state.json")
+    store = ApplicationStore(directory / "state.db")
     store.save_settings(settings)
-    manager = MusicManager(directory / "library.mmdb", music)
+    manager = MusicManager(directory / "library.db", music)
     if populated:
         for i, title in enumerate(
             (

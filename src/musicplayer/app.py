@@ -625,15 +625,18 @@ class AppServices:
     ) -> AppServices:
         """Load only state required to render and resume the local application."""
         directory = application_data_directory()
-        store = ApplicationStore(directory / "state.json")
+        store = ApplicationStore(
+            directory / "state.db", legacy_path=directory / "state.json"
+        )
         settings = store.settings
         if on_settings_loaded is not None:
             on_settings_loaded(settings)
         platform_name = current_platform()
         manager = MusicManager(
-            directory / "library.mmdb",
+            directory / "library.db",
             settings.download_directory,
             additional_music_folders=_public_music_folders(platform_name),
+            legacy_metadata_path=directory / "library.mmdb",
         )
         library = LibraryService(manager, store)
         providers = ProviderRegistry(settings=settings)

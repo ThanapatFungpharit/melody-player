@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -9,6 +8,7 @@ from musicplayer.application.playback import PlaybackController
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.downloader import Downloader, DownloadStatus
 from musicplayer.core.library import MusicManager
+from tests.storage_support import DataDirectory
 from tests.unit.test_playback import FakeAudioBackend
 
 
@@ -27,7 +27,7 @@ class StateConcurrencyTests(unittest.TestCase):
                         raise RuntimeError("Test completion barrier timed out")
                 super()._finish(job, status, **kwargs)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             results = []
             downloader = RacingDownloader(directory, max_workers=1)
             try:
@@ -44,10 +44,10 @@ class StateConcurrencyTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_queue_commands_commit_serially(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
-            manager = MusicManager(root / "library.mmdb", root)
-            store = ApplicationStore(root / "state.json")
+            manager = MusicManager(root / "library.db", root)
+            store = ApplicationStore(root / "state.db")
             controller = PlaybackController(
                 manager, LibraryService(manager, store), store, FakeAudioBackend()
             )
@@ -61,10 +61,10 @@ class StateConcurrencyTests(unittest.TestCase):
                 controller.playing = True  # ty: ignore[invalid-assignment]
 
     def test_native_events_during_replacement_load_cannot_overwrite_intent(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
-            manager = MusicManager(root / "library.mmdb", root)
-            store = ApplicationStore(root / "state.json")
+            manager = MusicManager(root / "library.db", root)
+            store = ApplicationStore(root / "state.db")
             file = root / "song.mp3"
             file.write_bytes(b"audio")
             track_id = manager.add_track(file)

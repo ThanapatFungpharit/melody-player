@@ -139,8 +139,8 @@ Downloads have a separate bounded worker pool. Coordinator reservations use
 canonical source keys under its lock; requests for one source share active
 work. Library file allocation, duplicate lookup, and registration are serialized
 through `MusicManager.mutation()`, including local imports and download imports.
-ApplicationStore serializes each JSON transaction. A data directory is intended
-for one application writer; the library is not a multiprocess database.
+ApplicationStore serializes each transaction. A data directory is intended for
+one application writer; both stores keep one SQLite connection per process.
 
 Thumbnail files written by yt-dlp stay in staging while metadata is written and
 the cover is burned into the final audio container. Embedding is the last media
@@ -207,13 +207,21 @@ age-based guess while another process might own them.
 
 ## Crash consistency and recovery
 
-Settings, library metadata, cookies, update state, and download receipts use
-temporary writes, file flush/fsync, atomic replacement, and directory fsync where
-supported. Audio promotion happens on the destination filesystem; local imports
+Library metadata (`library.db`) and application state (`state.db`) are SQLite
+databases in write-ahead-log mode (`core.storage.Database`). A change writes
+only its rows in one transaction, so a failure rolls every statement back and
+the owner restores its in-memory model. Library commits are fully synchronous;
+application state uses `synchronous=NORMAL`, which survives application crashes
+and may lose only the latest session saves on power loss. Each store opens with
+an integrity quick check. The pre-SQLite `library.mmdb` and `state.json` files
+are imported in the transaction that creates each schema and then kept beside
+it with a `.migrated` suffix. Cookies, update state, and download receipts use
+temporary writes, file flush/fsync, atomic replacement, and directory fsync
+where supported. Audio promotion happens on the destination filesystem; local imports
 copy to a temporary file there first. This avoids partial final files, but cannot
 promise durability beyond the filesystem/device's guarantees.
 
-The binary library and JSON state are separate stores, not a distributed
+The library and application state are separate databases, not a distributed
 transaction. Startup marks completed history with missing audio as repairable,
 replays verified download receipts, and prunes missing queue files. Readers
 tolerate stale secondary references (details, history, favorites) to deleted

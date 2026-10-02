@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -19,6 +18,7 @@ from tests.integration.test_yt_dlp_updater import (
     _remote,
     _write_state,
 )
+from tests.storage_support import DataDirectory
 
 BUNDLED = "2026.8.19"
 
@@ -41,12 +41,12 @@ class YtDlpRuntimeTests(unittest.TestCase):
         self.addCleanup(sys.modules.update, imported)
         original_path = sys.path[:]
         self.addCleanup(sys.path.__setitem__, slice(None), original_path)
-        temporary = tempfile.TemporaryDirectory()
+        temporary = DataDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         self.storage = root / "yt-dlp-runtime"
         self.sources = root / "sources"
-        self.store = ApplicationStore(root / "state.json")
+        self.store = ApplicationStore(root / "state.db")
         self.session = ExitStack()
         self.addCleanup(lambda: self.session.close())
         self._new_process()

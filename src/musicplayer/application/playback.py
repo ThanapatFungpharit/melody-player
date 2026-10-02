@@ -196,7 +196,9 @@ class PlaybackController:
             source = str(state.get("source") or "")
             self.external_title = str(state.get("title") or Path(source).stem)
             self.external_uploader = str(state.get("artist") or "")
-            self.external_thumbnail = str(state.get("artwork_uri") or "")
+            self.external_thumbnail = _display_artwork(
+                str(state.get("artwork_uri") or "")
+            )
         self._source_loaded = True
         self._player_loading = False
         self._loading = False
@@ -893,3 +895,18 @@ def _audio_source(path: Path) -> str:
     failure through the generation-scoped backend error event.
     """
     return str(path)
+
+
+def _display_artwork(uri: str) -> str:
+    """Return reattached native artwork as a source Flet images can load.
+
+    The native session reports the media-session artwork, a file URI for
+    cached thumbnails. Flet images need a native path instead (see
+    ``_audio_source``); remote URLs pass through unchanged.
+    """
+    if not uri.casefold().startswith("file:"):
+        return uri
+    try:
+        return str(Path.from_uri(uri))
+    except ValueError:
+        return ""

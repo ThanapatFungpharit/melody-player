@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 from threading import Event
@@ -35,6 +34,7 @@ from musicplayer.core.downloader import (
 from musicplayer.core.library import MusicManager
 from musicplayer.core.media import source_key
 from musicplayer.platform_runtime import current_architecture, current_platform
+from tests.storage_support import DataDirectory
 
 
 class StubDownloader(Downloader):
@@ -77,7 +77,7 @@ class DownloaderTests(unittest.TestCase):
                 release.wait(timeout=2)
                 Path(temporary_directory, "downloaded.mp3").write_bytes(b"audio")
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = BlockingDownloader(directory, max_workers=1, max_pending=1)
             self.assertFalse(downloader._executor.is_active)
             first = downloader.start("https://example.test/one")
@@ -91,7 +91,7 @@ class DownloaderTests(unittest.TestCase):
             downloader.shutdown()
 
     def test_completed_job_metadata_is_bounded(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = StubDownloader(
                 directory,
                 max_workers=1,
@@ -110,7 +110,7 @@ class DownloaderTests(unittest.TestCase):
             downloader.shutdown()
 
     def test_download_options_use_uploaded_cookie_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             cookie_file = Path(directory) / "cookies.txt"
             cookie_file.write_text("cookie data", encoding="utf-8")
             settings = AppSettings(cookie_file=str(cookie_file))
@@ -154,7 +154,7 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("Restart Melody", error)
 
     def test_background_download_returns_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = StubDownloader(directory, max_workers=1)
             task = downloader.start("https://example.test/audio")
             job = downloader._jobs[task.id]
@@ -183,7 +183,7 @@ class DownloaderTests(unittest.TestCase):
                     b"\xff\xd8\xff\xe0downloaded sidecar"
                 )
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = ArtworkDownloader(directory, max_workers=1)
             task = downloader.start("https://example.test/audio")
             job = downloader._jobs[task.id]
@@ -203,7 +203,7 @@ class DownloaderTests(unittest.TestCase):
                     b"\xff\xd8\xff\xe0downloaded sidecar"
                 )
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = MissingEmbeddedArtworkDownloader(directory, max_workers=1)
             task = downloader.start("https://example.test/audio")
             job = downloader._jobs[task.id]
@@ -219,7 +219,7 @@ class DownloaderTests(unittest.TestCase):
             self.assertIn("Cover artwork", result.failure.message)
 
     def test_empty_audio_output_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = EmptyDownloader(directory, max_workers=1)
             task = downloader.start("https://example.test/empty")
             job = downloader._jobs[task.id]
@@ -239,7 +239,7 @@ class DownloaderTests(unittest.TestCase):
             Downloader._remove_files((output,))
 
     def test_core_downloader_accepts_injected_media_tools(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             downloader = Downloader(
                 directory, max_workers=1, options=_download_options(AppSettings())
             )
@@ -253,12 +253,12 @@ class DownloaderTests(unittest.TestCase):
 
 class DownloadImportTests(unittest.TestCase):
     def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
+        temporary = DataDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.music = self.root / "music"
-        self.manager = MusicManager(self.root / "library.mmdb", self.music)
-        self.store = ApplicationStore(self.root / "state.json")
+        self.manager = MusicManager(self.root / "library.db", self.music)
+        self.store = ApplicationStore(self.root / "state.db")
         self.notifications: list[DownloadRecord] = []
         with patch("musicplayer.application.downloads.Downloader"):
             self.coordinator = DownloadCoordinator(
@@ -434,16 +434,16 @@ class DownloadImportTests(unittest.TestCase):
 
 class BatchDownloadTests(unittest.TestCase):
     def test_known_source_blocks_only_when_its_managed_file_is_intact(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
             music.mkdir()
             path = music / "known.mp3"
             path.write_bytes(b"audio")
             source = "https://youtu.be/known-source"
-            manager = MusicManager(root / "library.mmdb", music)
+            manager = MusicManager(root / "library.db", music)
             manager.add_track(path, source=source)
-            store = ApplicationStore(root / "state.json")
+            store = ApplicationStore(root / "state.db")
             settings = AppSettings(download_directory=str(music))
             result = SearchResult(
                 id="known-source",
@@ -467,7 +467,7 @@ class BatchDownloadTests(unittest.TestCase):
     def test_redownload_repairs_broken_source_record_without_losing_identity(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
             music.mkdir()
@@ -475,12 +475,12 @@ class BatchDownloadTests(unittest.TestCase):
             existing_path.write_bytes(b"original audio")
             replacement_path = music / "redownloaded.mp3"
             replacement_path.write_bytes(b"fresh audio")
-            manager = MusicManager(root / "library.mmdb", music)
+            manager = MusicManager(root / "library.db", music)
             source = "https://youtu.be/repair-source"
             existing_id = manager.add_track(existing_path, source=source)
             playlist_id = manager.create_playlist("Kept")
             manager.add_to_playlist(playlist_id, existing_id)
-            store = ApplicationStore(root / "state.json")
+            store = ApplicationStore(root / "state.db")
             store.save_track_details(str(existing_id), TrackDetails(favorite=True))
             existing_path.write_bytes(b"modified and no longer trusted")
             task = DownloadTask(UUID(int=1))
@@ -517,7 +517,7 @@ class BatchDownloadTests(unittest.TestCase):
     def test_completed_download_reuses_content_duplicate_and_removes_extra_file(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
             music.mkdir()
@@ -525,9 +525,9 @@ class BatchDownloadTests(unittest.TestCase):
             existing_path.write_bytes(b"same audio")
             duplicate_path = music / "new-download.mp3"
             duplicate_path.write_bytes(b"same audio")
-            manager = MusicManager(root / "library.mmdb", music)
+            manager = MusicManager(root / "library.db", music)
             existing_id = manager.add_track(existing_path, title="Existing")
-            store = ApplicationStore(root / "state.json")
+            store = ApplicationStore(root / "state.db")
             store.save_track_details(str(existing_id), TrackDetails(favorite=True))
             settings = AppSettings(download_directory=str(music))
             task = DownloadTask(UUID(int=1))
@@ -571,7 +571,7 @@ class BatchDownloadTests(unittest.TestCase):
             "title": "Song",
             "source": "YouTube",
         }
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader"):
                 coordinator = DownloadCoordinator(
@@ -607,7 +607,7 @@ class BatchDownloadTests(unittest.TestCase):
             "title": "Song",
             "source": "YouTube",
         }
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader"):
                 coordinator = DownloadCoordinator(
@@ -636,7 +636,7 @@ class BatchDownloadTests(unittest.TestCase):
             progress=0.1,
         )
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader"):
                 coordinator = DownloadCoordinator(
@@ -691,7 +691,7 @@ class BatchDownloadTests(unittest.TestCase):
             on_progress(DownloadProgress(task, url, DownloadStatus.QUEUED))
             return task
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 downloader.return_value.start.side_effect = start
@@ -731,7 +731,7 @@ class BatchDownloadTests(unittest.TestCase):
             )
             return task
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 downloader.return_value.start.side_effect = start
@@ -757,7 +757,7 @@ class BatchDownloadTests(unittest.TestCase):
 
     def test_direct_and_batch_downloads_reject_non_youtube_urls(self) -> None:
         store = _DownloadStore()
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 coordinator = DownloadCoordinator(_Manager(), store, settings)  # ty: ignore[invalid-argument-type]
@@ -782,7 +782,7 @@ class BatchDownloadTests(unittest.TestCase):
             on_progress(DownloadProgress(task, url, DownloadStatus.QUEUED))
             return task
 
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 downloader.return_value.start.side_effect = start
@@ -829,7 +829,7 @@ class BatchDownloadTests(unittest.TestCase):
             url="https://youtu.be/video-id",
             source="YouTube",
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             settings = AppSettings(download_directory=directory)
             with patch("musicplayer.application.downloads.Downloader") as downloader:
                 downloader.return_value.start.side_effect = start

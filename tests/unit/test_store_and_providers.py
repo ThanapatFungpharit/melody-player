@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import tempfile
+import sqlite3
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,11 +18,12 @@ from musicplayer.application.providers import (
     is_youtube_url,
 )
 from musicplayer.application.store import ApplicationStore
+from tests.storage_support import DataDirectory
 
 
 class StoreTests(unittest.TestCase):
     def test_legacy_shuffle_state_is_removed_when_loading_playback(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             path = Path(directory) / "state.json"
             path.write_text(
                 json.dumps(
@@ -37,12 +39,12 @@ class StoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            store = ApplicationStore(path)
+            store = ApplicationStore(Path(directory) / "state.db", legacy_path=path)
             self.assertNotIn("shuffle", store.get("playback"))
 
     def test_settings_and_track_details_round_trip(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "state.json"
+        with DataDirectory() as directory:
+            path = Path(directory) / "state.db"
             store = ApplicationStore(path)
             settings = AppSettings(
                 volume=37,
@@ -89,8 +91,8 @@ class StoreTests(unittest.TestCase):
         )
 
     def test_track_details_many_returns_one_isolated_render_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.save_track_details(
                 "favorite", TrackDetails(uploader="Channel", favorite=True)
             )
@@ -103,7 +105,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.track_details("favorite").uploader, "Channel")
 
     def test_legacy_artist_credit_migrates_to_uploader_without_album(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             path = Path(directory) / "state.json"
             path.write_text(
                 json.dumps(
@@ -119,7 +121,7 @@ class StoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            store = ApplicationStore(path)
+            store = ApplicationStore(Path(directory) / "state.db", legacy_path=path)
 
             details = store.track_details("track")
             persisted = store.get("track_details")["track"]
@@ -131,7 +133,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("version"), 3)
 
     def test_legacy_browser_cookie_settings_are_removed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             path = Path(directory) / "state.json"
             path.write_text(
                 json.dumps(
@@ -147,7 +149,7 @@ class StoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            store = ApplicationStore(path)
+            store = ApplicationStore(Path(directory) / "state.db", legacy_path=path)
 
             self.assertEqual(store.settings.cookie_file, "")
             self.assertNotIn("use_browser_cookies", store.get("settings"))
@@ -162,16 +164,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(record.uploader, "Channel")
 
     def test_recent_values_are_unique_and_ordered(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.add_recent("search_history", "one")
             store.add_recent("search_history", "two")
             store.add_recent("search_history", "one")
             self.assertEqual(store.get("search_history"), ["one", "two"])
 
     def test_bulk_favorites_use_one_atomic_write(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             with patch.object(store, "_save_locked", wraps=store._save_locked) as save:
                 changed = store.favorite_tracks(("one", "two", "one"))
 
@@ -182,8 +184,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.favorite_track_ids(), frozenset({"one", "two"}))
 
     def test_readding_first_recent_value_skips_redundant_write(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.add_recent("search_history", "same")
             with patch.object(store, "_save_locked", wraps=store._save_locked) as save:
                 store.add_recent("search_history", "same")
@@ -195,8 +197,8 @@ class StoreTests(unittest.TestCase):
             def __eq__(self, other: object) -> bool:
                 raise AssertionError("Unchanged track metadata was compared")
 
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store._data["track_details"] = UnrelatedDetails(
                 {"track": {"favorite": True}}
             )
@@ -207,8 +209,8 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(store.track_details("other").favorite)
 
     def test_unchanged_or_missing_track_details_skip_disk_write(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             details = TrackDetails(favorite=True)
             store.save_track_details("track", details)
 
@@ -220,8 +222,8 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(store.track_details("track").favorite)
 
     def test_failed_atomic_write_restores_in_memory_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.set("custom", {"value": "before"})
 
             with (
@@ -233,8 +235,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("custom"), {"value": "before"})
 
     def test_record_play_commits_metadata_and_histories_once(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             with patch.object(store, "_save_locked", wraps=store._save_locked) as save:
                 store.record_play(
                     "track",
@@ -251,8 +253,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("playback")["queue"], ["track"])
 
     def test_failed_play_record_restores_metadata_and_histories(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.record_play("track", played_at=1.0)
 
             with (
@@ -266,8 +268,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("playback_history"), ["track"])
 
     def test_late_play_batch_cannot_restore_deleted_track(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.record_play("deleted", played_at=1.0)
             store.remove_track_details("deleted")
 
@@ -282,8 +284,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.track_details("other").play_count, 1)
 
     def test_clear_library_data_preserves_unrelated_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             settings = AppSettings(theme="light")
             store.save_settings(settings)
             store.save_track_details("track", TrackDetails(favorite=True))
@@ -319,8 +321,8 @@ class StoreTests(unittest.TestCase):
 
     def test_recent_history_respects_small_limits(self) -> None:
         for limit, expected in ((-1, []), (0, []), (1, ["new"]), (2, ["new", "old"])):
-            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
-                store = ApplicationStore(Path(directory) / "state.json")
+            with self.subTest(limit=limit), DataDirectory() as directory:
+                store = ApplicationStore(Path(directory) / "state.db")
                 store.set("search_history", ["old", "older"])
                 store.add_recent("search_history", "new", limit=limit)
                 self.assertEqual(store.get("search_history"), expected)
@@ -352,34 +354,40 @@ class StoreTests(unittest.TestCase):
             ),
             "bulk favorites": lambda store: store.favorite_tracks(["track", "new"]),
         }
+        write_rows = ApplicationStore._write_rows
         for name, mutate in mutations.items():
             with (
                 self.subTest(mutation=name),
-                tempfile.TemporaryDirectory() as directory,
+                DataDirectory() as directory,
             ):
-                store = ApplicationStore(Path(directory) / "state.json")
+                store = ApplicationStore(Path(directory) / "state.db")
                 store.record_play("track", played_at=1.0)
                 store.set("custom", {"nested": [0]})
                 store.add_recent("search_history", "old")
-                before = store.path.read_bytes()
-                expected = json.loads(before)
+                expected = deepcopy(store._data)
+
+                def fail_after_writing(db, updates, details) -> None:
+                    # Rows reach the database before the failure, so this
+                    # proves the transaction rolls them back.
+                    write_rows(db, updates, details)
+                    raise sqlite3.OperationalError("disk I/O error")
 
                 with (
-                    patch(
-                        "musicplayer.core.storage.os.replace",
-                        side_effect=OSError("disk full"),
+                    patch.object(
+                        ApplicationStore,
+                        "_write_rows",
+                        side_effect=fail_after_writing,
                     ),
-                    self.assertRaisesRegex(OSError, "disk full"),
+                    self.assertRaisesRegex(OSError, "disk I/O error"),
                 ):
                     mutate(store)
 
-                self.assertEqual(store.path.read_bytes(), before)
                 self.assertEqual(store._data, expected)
-                self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+                self.assertEqual(ApplicationStore(store.path)._data, expected)
 
     def test_unchanged_mutations_skip_writing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             details = TrackDetails(favorite=True)
             store.save_track_details("track", details)
             store.set("custom", {"nested": [1]})
@@ -395,8 +403,8 @@ class StoreTests(unittest.TestCase):
             save.assert_not_called()
 
     def test_store_values_are_isolated_from_callers(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             value = {"nested": ["original"]}
             store.set("custom", value)
             value["nested"].append("external")
@@ -410,8 +418,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get("playback"), {"queue": ["track"]})
 
     def test_null_can_be_saved_under_a_new_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             store.set("nullable", None)
             restored = ApplicationStore(store.path)
             self.assertIsNone(restored.get("nullable", "missing"))
@@ -419,8 +427,8 @@ class StoreTests(unittest.TestCase):
     def test_download_history_retains_only_latest_records_from_an_iterator(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             records = [
                 DownloadRecord(id=str(i), url="", title=str(i)) for i in range(300)
             ]
@@ -441,12 +449,57 @@ class StoreTests(unittest.TestCase):
             yield "track"
             raise ValueError("incomplete input")
 
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
             with self.assertRaisesRegex(ValueError, "incomplete input"):
                 store.favorite_tracks(track_ids())
             self.assertEqual(store.get("track_details"), {})
-            self.assertFalse(store.path.exists())
+            self.assertEqual(ApplicationStore(store.path).get("track_details"), {})
+
+    def test_legacy_json_is_imported_once_and_kept_as_backup(self) -> None:
+        with DataDirectory() as directory:
+            legacy = Path(directory) / "state.json"
+            legacy.write_text(
+                json.dumps({"version": 3, "search_history": ["legacy"]}),
+                encoding="utf-8",
+            )
+            path = Path(directory) / "state.db"
+
+            store = ApplicationStore(path, legacy_path=legacy)
+            store.add_recent("search_history", "new")
+
+            self.assertFalse(legacy.exists())
+            self.assertTrue((Path(directory) / "state.json.migrated").is_file())
+            self.assertEqual(
+                ApplicationStore(path, legacy_path=legacy).get("search_history"),
+                ["new", "legacy"],
+            )
+
+    def test_position_save_writes_only_the_playback_row(self) -> None:
+        with DataDirectory() as directory:
+            store = ApplicationStore(Path(directory) / "state.db")
+            store.favorite_tracks(str(index) for index in range(500))
+            with patch.object(
+                ApplicationStore, "_write_rows", wraps=ApplicationStore._write_rows
+            ) as write:
+                store.save_playback_updates({"playback": {"position_ms": 5000}}, {})
+
+            (_, updates, details), _ = write.call_args
+            self.assertEqual(list(updates), ["playback"])
+            self.assertEqual(details, {})
+
+    def test_invalid_legacy_json_leaves_the_database_uninitialized(self) -> None:
+        with DataDirectory() as directory:
+            legacy = Path(directory) / "state.json"
+            legacy.write_text("{", encoding="utf-8")
+            path = Path(directory) / "state.db"
+
+            with self.assertRaisesRegex(ValueError, "application settings"):
+                ApplicationStore(path, legacy_path=legacy)
+
+            legacy.write_text(json.dumps({"search_history": ["kept"]}))
+            store = ApplicationStore(path, legacy_path=legacy)
+            self.assertEqual(store.get("search_history"), ["kept"])
 
 
 class ProviderMappingTests(unittest.TestCase):

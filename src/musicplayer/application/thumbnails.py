@@ -91,6 +91,12 @@ class ThumbnailCache:
     def artwork_uri(self, source: str) -> str:
         """Resolve artwork for an operating-system media session."""
         path = self.cached_path(source)
+        if path is None and source and _remote_key(source) is None:
+            # Artwork restored from a reattached native session is a local
+            # path; the media session needs it as a file URI.
+            local = Path(source)
+            if local.is_absolute() and local.is_file():
+                path = local
         return path.resolve().as_uri() if path is not None else source
 
     def store_bytes(self, url: str, data: bytes) -> bool:

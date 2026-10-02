@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
@@ -13,6 +12,7 @@ from musicplayer.application.models import AppSettings, TrackDetails
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.library import MusicManager
 from musicplayer.ui.pages.settings import SettingsPage
+from tests.storage_support import DataDirectory
 
 
 class _Page:
@@ -55,14 +55,14 @@ class _InlineTasks:
 
 class DataManagementUiTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = DataDirectory()
         self.root = Path(self.temporary.name)
         self.music = self.root / "music"
         self.music.mkdir()
         self.data = self.root / "data"
         self.data.mkdir()
-        self.manager = MusicManager(self.data / "library.mmdb", self.music)
-        self.store = ApplicationStore(self.data / "state.json")
+        self.manager = MusicManager(self.data / "library.db", self.music)
+        self.store = ApplicationStore(self.data / "state.db")
         self.app = MusicPlayerApp.__new__(MusicPlayerApp)
         self.app.page = _Page()  # ty: ignore[invalid-assignment]
         self.app.data_directory = self.data

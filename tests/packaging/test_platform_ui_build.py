@@ -7,11 +7,11 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.storage_support import DataDirectory
 from tools import build_android, build_desktop
 from tools.production_build import (
     TARGET_PRESENTATIONS,
@@ -67,7 +67,7 @@ class PlatformUIBuildTests(unittest.TestCase):
         for presentation in ("desktop", "mobile"):
             with (
                 self.subTest(presentation=presentation),
-                tempfile.TemporaryDirectory() as directory,
+                DataDirectory() as directory,
             ):
                 root = Path(directory)
                 stage = root / "app"

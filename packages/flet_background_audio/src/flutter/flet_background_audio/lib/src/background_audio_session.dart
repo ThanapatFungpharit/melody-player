@@ -53,7 +53,8 @@ class NativeMediaSessionRuntime {
       "title": snapshot?.$1 ?? "",
       "artist": snapshot?.$2 ?? "",
       "album": snapshot?.$3 ?? "",
-      "artwork_uri": snapshot?.$4 ?? "",
+      // Report the app's artwork, never the square notification copy.
+      "artwork_uri": snapshot == null ? "" : _sourceArtworkUri,
     };
   }
 
@@ -180,11 +181,23 @@ class NativeMediaSessionRuntime {
         data["auto_focal_point_live_notifications"] as bool? ?? false;
     _automaticFocalPoint = automaticFocalPoint;
     final nativeStateRevision = _nativeStateRevision;
-    final preparedArtworkUri = artworkUri == null || artworkUri.isEmpty
+    Future<String>? preparingArtwork;
+    var artworkPending = false;
+    if (artworkUri != null && artworkUri.isNotEmpty) {
+      preparingArtwork = _notificationArtwork.prepare(
+        artworkUri,
+        automatic: automaticFocalPoint,
+      );
+    }
+    final preparedArtworkUri = preparingArtwork == null
         ? artworkUri
-        : await _notificationArtwork
-              .prepare(artworkUri, automatic: automaticFocalPoint)
-              .timeout(const Duration(seconds: 2), onTimeout: () => artworkUri);
+        : await preparingArtwork.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () {
+              artworkPending = true;
+              return artworkUri!;
+            },
+          );
     if (revision != _syncRevision) return;
     final reportedDurationMs = (data["duration_ms"] as num?)?.toInt() ?? 0;
     final reportedPositionMs = (data["position_ms"] as num?)?.toInt() ?? 0;
@@ -222,7 +235,17 @@ class NativeMediaSessionRuntime {
       );
       _metadataSnapshot = metadataSnapshot;
       _sourceArtworkUri = artworkUri ?? "";
-      _nativeMetadataToken++;
+      final token = ++_nativeMetadataToken;
+      if (artworkPending) {
+        // Slow remote artwork was published uncropped. Replace it once the
+        // prepared copy is ready: a paused player sends no further syncs.
+        unawaited(
+          _publishPreparedArtwork(preparingArtwork!, token).catchError(
+            (Object error) =>
+                debugPrint("Prepared artwork update failed: $error"),
+          ),
+        );
+      }
     }
     if (revision != _syncRevision) return;
 
@@ -410,6 +433,37 @@ class NativeMediaSessionRuntime {
       _publishNativeMetadata(token).catchError(
         (Object error) =>
             debugPrint("Native media metadata update failed: $error"),
+      ),
+    );
+  }
+
+  Future<void> _publishPreparedArtwork(
+    Future<String> preparing,
+    int token,
+  ) async {
+    final prepared = await preparing;
+    final snapshot = _metadataSnapshot;
+    if (!_active ||
+        snapshot == null ||
+        token != _nativeMetadataToken ||
+        prepared == snapshot.$4) {
+      return;
+    }
+    _metadataSnapshot = (
+      snapshot.$1,
+      snapshot.$2,
+      snapshot.$3,
+      prepared,
+      snapshot.$5,
+    );
+    _nativeMetadataToken++;
+    await FlutterMediaSessionPlatform.instance.updateMetadata(
+      MediaMetadata(
+        title: snapshot.$1.isEmpty ? "Melody" : snapshot.$1,
+        artist: snapshot.$2.isEmpty ? "Unknown artist" : snapshot.$2,
+        album: snapshot.$3.isEmpty ? null : snapshot.$3,
+        artworkUri: prepared,
+        duration: Duration(milliseconds: snapshot.$5),
       ),
     );
   }

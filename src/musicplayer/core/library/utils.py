@@ -45,15 +45,9 @@ def _pack_utf8_string(value: str) -> bytes:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    bytes_read = 0
     try:
         with path.open("rb") as file:
-            for chunk in iter(lambda: file.read(1 << 20), b""):
-                bytes_read += len(chunk)
-                digest.update(chunk)
+            return hashlib.file_digest(file, "sha256").hexdigest()
     except OSError:
         logger.exception("SHA-256 calculation failed while reading file: path=%s", path)
         raise
-    result = digest.hexdigest()
-    return result

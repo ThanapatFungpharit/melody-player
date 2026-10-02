@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from musicplayer.app import MusicPlayerApp
 from musicplayer.core.library import MusicManager
+from tests.storage_support import DataDirectory
 
 
 class AndroidMusicExportTests(unittest.TestCase):
     def test_public_copy_becomes_canonical_before_private_copy_is_removed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             private = root / "data" / "Music"
             public = root / "shared" / "Music" / "Melody"
@@ -22,7 +22,7 @@ class AndroidMusicExportTests(unittest.TestCase):
             published = public / "song.mp3"
             published.write_bytes(source.read_bytes())
             manager = MusicManager(
-                root / "data" / "library.mmdb",
+                root / "data" / "library.db",
                 private,
                 additional_music_folders=(public,),
             )

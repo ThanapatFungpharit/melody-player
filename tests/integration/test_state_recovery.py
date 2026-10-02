@@ -1,5 +1,4 @@
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,16 +16,15 @@ from musicplayer.core.downloader.receipts import (
 )
 from musicplayer.core.library import MusicManager
 from musicplayer.core.storage import atomic_copy, exclusive_file_lock
+from tests.storage_support import DataDirectory
 
 
 class StateRecoveryTests(unittest.TestCase):
     def test_directory_flush_failure_keeps_memory_and_committed_state_in_agreement(
         self,
     ):
-        with tempfile.TemporaryDirectory() as directory:
-            store = ApplicationStore(Path(directory) / "state.json")
-            settings = store.settings
-            settings.volume = 37
+        with DataDirectory() as directory:
+            path = Path(directory) / "cookies.txt"
 
             sync_directory = storage.sync_directory
 
@@ -48,16 +46,15 @@ class StateRecoveryTests(unittest.TestCase):
                 ),
                 self.assertLogs("musicplayer.core.storage", level="WARNING"),
             ):
-                store.save_settings(settings)
-            self.assertEqual(store.settings.volume, 37)
-            self.assertEqual(ApplicationStore(store.path).settings.volume, 37)
+                storage.atomic_write(path, b"committed")
+            self.assertEqual(path.read_bytes(), b"committed")
 
     def test_handoff_repairs_registration_without_secondary_metadata(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             file = root / "song.mp3"
             file.write_bytes(b"audio")
-            manager = MusicManager(root / "library.mmdb", root)
+            manager = MusicManager(root / "library.db", root)
             track_id = manager.add_track(file, source="https://youtu.be/abc")
             task_id = uuid4()
             write_receipt(
@@ -66,7 +63,7 @@ class StateRecoveryTests(unittest.TestCase):
                 "https://youtu.be/abc",
                 [{"filename": file.name, "sha256": file_digest(file)}],
             )
-            store = ApplicationStore(root / "state.json")
+            store = ApplicationStore(root / "state.db")
             coordinator = DownloadCoordinator(
                 manager, store, AppSettings(download_directory=str(root))
             )
@@ -78,7 +75,7 @@ class StateRecoveryTests(unittest.TestCase):
             self.assertFalse(receipt_path(root, task_id).exists())
 
     def test_completed_bytes_are_registered_after_process_interruption(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
             music.mkdir()
@@ -91,8 +88,8 @@ class StateRecoveryTests(unittest.TestCase):
                 "https://youtu.be/abc",
                 [{"filename": file.name, "sha256": file_digest(file)}],
             )
-            manager = MusicManager(root / "library.mmdb", music)
-            store = ApplicationStore(root / "state.json")
+            manager = MusicManager(root / "library.db", music)
+            store = ApplicationStore(root / "state.db")
             coordinator = DownloadCoordinator(
                 manager, store, AppSettings(download_directory=str(music))
             )
@@ -105,7 +102,7 @@ class StateRecoveryTests(unittest.TestCase):
             self.assertEqual(file.read_bytes(), b"verified completed audio")
 
     def test_corrupt_receipt_file_is_preserved_without_registration(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             file = root / "song.mp3"
             file.write_bytes(b"damaged")
@@ -116,10 +113,10 @@ class StateRecoveryTests(unittest.TestCase):
                 "https://youtu.be/abc",
                 [{"filename": file.name, "sha256": "0" * 64}],
             )
-            manager = MusicManager(root / "library.mmdb", root)
+            manager = MusicManager(root / "library.db", root)
             coordinator = DownloadCoordinator(
                 manager,
-                ApplicationStore(root / "state.json"),
+                ApplicationStore(root / "state.db"),
                 AppSettings(download_directory=str(root)),
             )
             self.addCleanup(coordinator.shutdown)
@@ -128,10 +125,10 @@ class StateRecoveryTests(unittest.TestCase):
             self.assertTrue(receipt_path(root, task_id).exists())
 
     def test_reconciliation_removes_stale_metadata_and_preserves_orphans(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
-            manager = MusicManager(root / "library.mmdb", root)
-            store = ApplicationStore(root / "state.json")
+            manager = MusicManager(root / "library.db", root)
+            store = ApplicationStore(root / "state.db")
             store.save_track_details("missing-record", TrackDetails(favorite=True))
             orphan = root / "orphan.mp3"
             orphan.write_bytes(b"keep me")
@@ -144,7 +141,7 @@ class StateRecoveryTests(unittest.TestCase):
             self.assertEqual(service.reconcile().stale_references_removed, 0)
 
     def test_failed_atomic_copy_does_not_expose_partial_destination(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             source, destination = (
                 Path(directory) / "source",
                 Path(directory) / "destination",
@@ -167,7 +164,7 @@ class StateRecoveryTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).glob("*.tmp")), [])
 
     def test_lock_content_is_not_used_as_ownership(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             path = Path(directory) / "lock"
             path.write_text(json.dumps({"old_process": 1}))
             with (

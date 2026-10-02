@@ -46,10 +46,24 @@ Future<bool> preparedArtworkExists(String uri) async {
   return File.fromUri(parsed!).exists();
 }
 
+Directory get _artworkDirectory =>
+    Directory("${Directory.systemTemp.path}/melody-notification-artwork");
+
+/// Artwork prepared under [key] by an earlier run, if it is still on disk.
+Future<String?> existingNotificationArtwork(String key) async {
+  try {
+    final file = File("${_artworkDirectory.path}/$key.png");
+    if (!await file.exists()) return null;
+    // Pruning keeps the most recently modified files, so reuse counts as use.
+    await file.setLastModified(DateTime.now());
+    return file.uri.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<String?> saveNotificationArtwork(Uint8List png, String key) async {
-  final directory = Directory(
-    "${Directory.systemTemp.path}/melody-notification-artwork",
-  );
+  final directory = _artworkDirectory;
   await directory.create(recursive: true);
   final file = File("${directory.path}/$key.png");
   await file.writeAsBytes(png, flush: true);

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +11,7 @@ from musicplayer.application.library_service import LibraryService
 from musicplayer.application.models import AppSettings, DownloadRecord
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.library import MusicManager
+from tests.storage_support import DataDirectory
 
 
 class StartupTests(unittest.TestCase):
@@ -32,18 +32,18 @@ class StartupTests(unittest.TestCase):
     def test_resource_load_uses_availability_without_reconciliation_or_hashing(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
             music.mkdir()
             audio = music / "song.mp3"
             audio.write_bytes(b"audio")
-            manager = MusicManager(root / "library.mmdb", music)
+            manager = MusicManager(root / "library.db", music)
             track_id = manager.add_track(audio, source="https://youtu.be/song")
             other_audio = music / "other.mp3"
             other_audio.write_bytes(b"other audio")
             manager.add_track(other_audio, source="https://youtu.be/other")
-            store = ApplicationStore(root / "state.json")
+            store = ApplicationStore(root / "state.db")
             store.save_settings(AppSettings(download_directory=str(music)))
             store.set(
                 "playback",

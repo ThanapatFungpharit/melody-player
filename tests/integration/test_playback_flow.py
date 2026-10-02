@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 import wave
 from pathlib import Path
@@ -13,6 +12,7 @@ from musicplayer.application.playback import PlaybackController
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.downloader import Downloader
 from musicplayer.core.library import MusicManager
+from tests.storage_support import DataDirectory
 
 
 class ValidWaveDownloader(Downloader):
@@ -92,11 +92,11 @@ class FlowAudioBackend:
 
 class CleanDownloadPlaybackFlowTests(unittest.TestCase):
     def test_clean_state_download_register_load_and_play(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with DataDirectory() as directory:
             root = Path(directory)
             music = root / "music"
-            store_path = root / "state.json"
-            library_path = root / "library.mmdb"
+            store_path = root / "state.db"
+            library_path = root / "library.db"
             self.assertFalse(store_path.exists())
             self.assertFalse(library_path.exists())
 

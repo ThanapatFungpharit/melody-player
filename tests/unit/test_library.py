@@ -1,23 +1,27 @@
 from __future__ import annotations
 
-import tempfile
+import sqlite3
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from musicplayer.application.library_service import LibraryService
 from musicplayer.application.store import ApplicationStore
 from musicplayer.core.library import MusicManager
+from musicplayer.core.library.config import HEADER, MAGIC, TRACK_FIXED, U32, UUID_ONLY
+from musicplayer.core.library.manager import _copy_track
+from musicplayer.core.storage import DatabaseError
+from tests.storage_support import DataDirectory
 
 
 class MusicManagerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = DataDirectory()
         self.root = Path(self.temporary.name)
         self.music = self.root / "music"
         self.music.mkdir()
-        self.manager = MusicManager(self.root / "library.mmdb", self.music)
+        self.manager = MusicManager(self.root / "library.db", self.music)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -35,58 +39,187 @@ class MusicManagerTests(unittest.TestCase):
         self.manager.add_to_playlist(playlist, second)
         self.manager.reorder_playlist(playlist, [second, first])
 
-        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        reloaded = MusicManager(self.root / "library.db", self.music)
 
         self.assertEqual(
             [track.id for track in reloaded.playlist_tracks(playlist)], [second, first]
         )
 
-    def test_playlist_saves_reuse_unchanged_track_records(self) -> None:
+    def test_playlist_saves_keep_the_published_track_snapshot(self) -> None:
         track_id = self.add_track("song.mp3")
-        with patch.object(
-            self.manager,
-            "_serialize_track_records",
-            wraps=self.manager._serialize_track_records,
-        ) as serialize:
-            playlist_id = self.manager.create_playlist("First")
-            self.manager.add_to_playlist(playlist_id, track_id)
-            self.manager.rename_playlist(playlist_id, "Updated")
-            self.assertEqual(serialize.call_count, 0)
+        tracks = self.manager._read_state.tracks
+        playlist_id = self.manager.create_playlist("First")
+        self.manager.add_to_playlist(playlist_id, track_id)
+        self.manager.rename_playlist(playlist_id, "Updated")
+        self.assertIs(self.manager._read_state.tracks, tracks)
 
-            self.manager.rename_track(track_id, "Renamed song")
-            self.assertEqual(serialize.call_count, 1)
-            self.manager.remove_from_playlist(playlist_id, track_id)
-            self.assertEqual(serialize.call_count, 1)
+        self.manager.rename_track(track_id, "Renamed song")
+        self.assertIsNot(self.manager._read_state.tracks, tracks)
+        self.manager.remove_from_playlist(playlist_id, track_id)
 
-        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        reloaded = MusicManager(self.root / "library.db", self.music)
         self.assertEqual(reloaded.get_track(track_id).title, "Renamed song")
         self.assertEqual(reloaded.get_playlist(playlist_id).name, "Updated")
         self.assertEqual(reloaded.playlist_tracks(playlist_id), ())
 
-    def test_failed_playlist_save_keeps_committed_cache_and_snapshot(self) -> None:
+    def test_failed_playlist_save_keeps_committed_snapshot(self) -> None:
         track_id = self.add_track("song.mp3")
         playlist_id = self.manager.create_playlist("Before")
-        committed_records = self.manager._track_records_cache
         committed_tracks = self.manager._read_state.tracks
 
         with (
             patch.object(
-                self.manager, "_write_metadata", side_effect=OSError("disk full")
+                self.manager._db, "transaction", side_effect=OSError("disk full")
             ),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             self.manager.rename_playlist(playlist_id, "After")
 
-        self.assertIs(self.manager._track_records_cache, committed_records)
         self.assertIs(self.manager._read_state.tracks, committed_tracks)
         self.assertEqual(self.manager.get_playlist(playlist_id).name, "Before")
         self.assertEqual(self.manager.get_track(track_id).title, "song")
         self.assertEqual(
-            MusicManager(self.root / "library.mmdb", self.music)
+            MusicManager(self.root / "library.db", self.music)
             .get_playlist(playlist_id)
             .name,
             "Before",
         )
+
+    def test_interrupted_multi_statement_write_leaves_database_unchanged(
+        self,
+    ) -> None:
+        track_id = self.add_track("song.mp3")
+        source = self.manager.create_playlist("Source")
+        target = self.manager.create_playlist("Target")
+        self.manager.add_to_playlist(source, track_id)
+        write = MusicManager._write_playlist_tracks
+        calls = 0
+
+        def fail_second_playlist(db, playlist) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise sqlite3.OperationalError("disk I/O error")
+            write(db, playlist)
+
+        with (
+            patch.object(
+                MusicManager,
+                "_write_playlist_tracks",
+                side_effect=fail_second_playlist,
+            ),
+            self.assertRaisesRegex(DatabaseError, "disk I/O error"),
+        ):
+            self.manager.move_track_between_playlists(source, target, track_id)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(self.manager.get_playlist(source).track_ids, [track_id])
+        self.assertEqual(self.manager.get_playlist(target).track_ids, [])
+        reloaded = MusicManager(self.root / "library.db", self.music)
+        self.assertEqual(reloaded.get_playlist(source).track_ids, [track_id])
+        self.assertEqual(reloaded.get_playlist(target).track_ids, [])
+
+    def test_playlist_appends_after_a_deleted_member(self) -> None:
+        first, second, third = (
+            self.add_track(name) for name in ("a.mp3", "b.mp3", "c.mp3")
+        )
+        playlist_id = self.manager.create_playlist("Gaps")
+        self.manager.add_tracks_to_playlist(playlist_id, [first, second])
+        self.manager.delete_track(first)
+        self.manager.add_to_playlist(playlist_id, third)
+
+        reloaded = MusicManager(self.root / "library.db", self.music)
+        self.assertEqual(reloaded.get_playlist(playlist_id).track_ids, [second, third])
+
+    def test_legacy_metadata_is_imported_once_and_kept_as_backup(self) -> None:
+        audio = self.music / "legacy.mp3"
+        audio.write_bytes(b"legacy audio")
+        track_id, playlist_id = uuid4(), uuid4()
+        legacy = self.root / "library-legacy.mmdb"
+        # Version 2 predates content hashes, so the import captures one.
+        legacy.write_bytes(
+            b"".join(
+                (
+                    HEADER.pack(MAGIC, 2, 1),
+                    TRACK_FIXED.pack(track_id.bytes, 5.0),
+                    *(
+                        _pack(value)
+                        for value in ("legacy.mp3", "https://youtu.be/x", "Old")
+                    ),
+                    U32.pack(1),
+                    UUID_ONLY.pack(playlist_id.bytes),
+                    _pack("Mix"),
+                    U32.pack(1),
+                    UUID_ONLY.pack(track_id.bytes),
+                )
+            )
+        )
+
+        manager = MusicManager(
+            self.root / "imported.db", self.music, legacy_metadata_path=legacy
+        )
+
+        self.assertEqual(manager.get_track(track_id).title, "Old")
+        self.assertIsNone(manager.check_track_integrity(track_id))
+        self.assertEqual(manager.playlist_tracks(playlist_id)[0].id, track_id)
+        self.assertFalse(legacy.exists())
+        self.assertTrue((self.root / "library-legacy.mmdb.migrated").is_file())
+        reopened = MusicManager(
+            self.root / "imported.db", self.music, legacy_metadata_path=legacy
+        )
+        self.assertEqual(reopened.get_playlist(playlist_id).name, "Mix")
+
+    def test_invalid_legacy_metadata_creates_no_database_schema(self) -> None:
+        legacy = self.root / "broken.mmdb"
+        legacy.write_bytes(b"not a library")
+
+        with self.assertRaisesRegex(ValueError, "not a valid MusicManager file"):
+            MusicManager(self.root / "new.db", self.music, legacy_metadata_path=legacy)
+
+        self.assertTrue(legacy.exists())
+
+    def test_corrupt_database_is_reported_as_invalid(self) -> None:
+        path = self.root / "corrupt.db"
+        path.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)
+
+        with self.assertRaisesRegex(ValueError, "not a valid database"):
+            MusicManager(path, self.music)
+
+    def test_search_keys_follow_track_changes_and_survive_playlist_saves(
+        self,
+    ) -> None:
+        track_id = self.add_track("Alpha.mp3")
+        self.assertEqual(len(self.manager.search_tracks("alpha")), 1)
+        search_text = self.manager._read_state.search_text
+
+        self.manager.create_playlist("Unrelated")
+        self.assertIs(self.manager._read_state.search_text, search_text)
+
+        self.manager.rename_track(track_id, "Ωmega Straße")
+        self.assertEqual(
+            [track.id for track in self.manager.search_tracks("STRASSE")], [track_id]
+        )
+        self.assertEqual(
+            [
+                track.id
+                for track in self.manager.search_tracks("ωMEGA", sort="title", limit=1)
+            ],
+            [track_id],
+        )
+        # The filename still matches after the title stops matching.
+        self.assertEqual(len(self.manager.search_tracks("alpha.mp3")), 1)
+
+    def test_path_reference_check_ignores_excluded_and_unmanaged_paths(self) -> None:
+        first = self.add_track("shared.mp3")
+        second = self.manager.add_track(self.music / "shared.mp3", title="Copy")
+        path = self.manager.track_path(first)
+
+        self.assertTrue(self.manager.is_path_referenced(path, excluding=first))
+        self.manager.delete_track(second)
+        self.assertFalse(self.manager.is_path_referenced(path, excluding=first))
+        self.assertTrue(self.manager.is_path_referenced(path))
+        self.assertFalse(self.manager.is_path_referenced(self.music / "other.mp3"))
+        self.assertFalse(self.manager.is_path_referenced(self.root / "outside.mp3"))
 
     def test_bounded_reads_copy_only_the_requested_library_slice(self) -> None:
         first = self.add_track("first-match.mp3")
@@ -124,11 +257,11 @@ class MusicManagerTests(unittest.TestCase):
         middle = self.add_track("alpha-match.mp3")
         newest = self.add_track("beta-match.mp3")
         self.add_track("unrelated.mp3")
-        library = LibraryService(
-            self.manager, ApplicationStore(self.root / "state.json")
-        )
+        library = LibraryService(self.manager, ApplicationStore(self.root / "state.db"))
 
-        with patch("musicplayer.core.library.manager.replace", wraps=replace) as copy:
+        with patch(
+            "musicplayer.core.library.manager._copy_track", wraps=_copy_track
+        ) as copy:
             title_page = library.tracks(query="match", sort="title", offset=1, limit=1)
         self.assertEqual([track.id for track in title_page], [newest])
         self.assertEqual(copy.call_count, 1)
@@ -207,7 +340,7 @@ class MusicManagerTests(unittest.TestCase):
         playlist = self.manager.create_playlist("Import")
         self.manager.add_to_playlist(playlist, retained)
 
-        with patch.object(self.manager, "_save", wraps=self.manager._save) as save:
+        with patch.object(self.manager, "_commit", wraps=self.manager._commit) as save:
             added = self.manager.merge_tracks_into_playlist(
                 playlist, [second, first, second]
             )
@@ -223,7 +356,7 @@ class MusicManagerTests(unittest.TestCase):
         track_id = self.add_track("rollback.mp3", "https://example.test/old")
 
         with (
-            patch.object(self.manager, "_save", side_effect=OSError("disk full")),
+            patch.object(self.manager, "_commit", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             self.manager.update_track(
@@ -244,7 +377,7 @@ class MusicManagerTests(unittest.TestCase):
     def test_local_import_rolls_back_when_metadata_store_fails(self) -> None:
         source = self.root / "outside.mp3"
         source.write_bytes(b"local audio")
-        store = ApplicationStore(self.root / "state.json")
+        store = ApplicationStore(self.root / "state.db")
         library = LibraryService(self.manager, store)
 
         with (
@@ -267,9 +400,7 @@ class MusicManagerTests(unittest.TestCase):
         path = self.manager.track_path(track_id)
         playlist_id = self.manager.create_playlist("Temporary")
         self.manager.add_to_playlist(playlist_id, track_id)
-        library = LibraryService(
-            self.manager, ApplicationStore(self.root / "state.json")
-        )
+        library = LibraryService(self.manager, ApplicationStore(self.root / "state.db"))
 
         library.delete_track_and_file(track_id)
 
@@ -280,9 +411,7 @@ class MusicManagerTests(unittest.TestCase):
     def test_delete_track_file_failure_keeps_library_entry(self) -> None:
         track_id = self.add_track("locked.mp3")
         path = self.manager.track_path(track_id)
-        library = LibraryService(
-            self.manager, ApplicationStore(self.root / "state.json")
-        )
+        library = LibraryService(self.manager, ApplicationStore(self.root / "state.db"))
 
         with (
             patch.object(Path, "unlink", side_effect=PermissionError("file locked")),
@@ -299,9 +428,7 @@ class MusicManagerTests(unittest.TestCase):
         playlist_id = self.manager.create_playlist("Reversed")
         self.manager.add_to_playlist(playlist_id, first)
         self.manager.add_to_playlist(playlist_id, second)
-        library = LibraryService(
-            self.manager, ApplicationStore(self.root / "state.json")
-        )
+        library = LibraryService(self.manager, ApplicationStore(self.root / "state.db"))
 
         playlist_lines = (
             library.export_playlist_m3u8(playlist_id).decode("utf-8").splitlines()
@@ -318,7 +445,7 @@ class MusicManagerTests(unittest.TestCase):
     def test_local_import_keeps_audio_when_registration_rollback_fails(self) -> None:
         source = self.root / "outside.mp3"
         source.write_bytes(b"local audio")
-        store = ApplicationStore(self.root / "state.json")
+        store = ApplicationStore(self.root / "state.db")
         library = LibraryService(self.manager, store)
 
         with (
@@ -341,7 +468,7 @@ class MusicManagerTests(unittest.TestCase):
     def test_local_import_cleanup_failure_preserves_original_error(self) -> None:
         source = self.root / "outside.mp3"
         source.write_bytes(b"local audio")
-        store = ApplicationStore(self.root / "state.json")
+        store = ApplicationStore(self.root / "state.db")
         library = LibraryService(self.manager, store)
 
         with (
@@ -354,7 +481,7 @@ class MusicManagerTests(unittest.TestCase):
 
         self.assertEqual(self.manager.list_tracks(), ())
         self.assertEqual((self.music / source.name).read_bytes(), b"local audio")
-        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        reloaded = MusicManager(self.root / "library.db", self.music)
         self.assertEqual(reloaded.list_tracks(), ())
 
     def test_clear_library_removes_tracks_and_playlists_but_keeps_files(self) -> None:
@@ -369,7 +496,7 @@ class MusicManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.list_playlists(), ())
         self.assertTrue(path.exists())
         self.assertEqual(self.manager.clear_library(), (0, 0))
-        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        reloaded = MusicManager(self.root / "library.db", self.music)
         self.assertEqual(reloaded.list_tracks(), ())
         self.assertEqual(reloaded.list_playlists(), ())
 
@@ -382,7 +509,7 @@ class MusicManagerTests(unittest.TestCase):
         self.assertTrue(self.manager.has_track(track_id))
         self.assertEqual(self.manager.list_playlists(), ())
         self.assertEqual(self.manager.clear_playlists(), 0)
-        reloaded = MusicManager(self.root / "library.mmdb", self.music)
+        reloaded = MusicManager(self.root / "library.db", self.music)
         self.assertTrue(reloaded.has_track(track_id))
         self.assertEqual(reloaded.list_playlists(), ())
 
@@ -412,7 +539,7 @@ class MusicManagerTests(unittest.TestCase):
         published = public / "published.mp3"
         published.write_bytes(b"published audio")
         manager = MusicManager(
-            self.root / "library.mmdb",
+            self.root / "library.db",
             self.music,
             additional_music_folders=(public,),
         )
@@ -421,7 +548,7 @@ class MusicManagerTests(unittest.TestCase):
 
         self.assertEqual(manager.track_path(track_id), published.resolve())
         reloaded = MusicManager(
-            self.root / "library.mmdb",
+            self.root / "library.db",
             self.music,
             additional_music_folders=(public,),
         )
@@ -434,7 +561,7 @@ class MusicManagerTests(unittest.TestCase):
         outside = self.root / "outside.mp3"
         outside.write_bytes(b"outside audio")
         manager = MusicManager(
-            self.root / "library.mmdb",
+            self.root / "library.db",
             self.music,
             additional_music_folders=(public,),
         )
@@ -474,3 +601,8 @@ class MusicManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _pack(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return U32.pack(len(encoded)) + encoded

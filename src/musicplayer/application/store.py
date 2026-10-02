@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -10,33 +11,95 @@ from itertools import chain, islice
 from pathlib import Path
 from typing import Any
 
-from musicplayer.core.storage import atomic_write
+from musicplayer.core.storage import Database, retire_legacy_file
 
 from .models import AppSettings, DownloadRecord, TrackDetails
 
 _MISSING = object()
 
 
+_SCHEMA = """
+CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+CREATE TABLE track_details (track_id TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+"""
+_UPSERT_STATE = (
+    "INSERT INTO state (key, value) VALUES (?, ?) "
+    "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+)
+_UPSERT_DETAILS = (
+    "INSERT INTO track_details (track_id, value) VALUES (?, ?) "
+    "ON CONFLICT (track_id) DO UPDATE SET value = excluded.value"
+)
+
+
 class ApplicationStore:
-    """Thread-safe JSON persistence for state outside MusicManager's domain.
+    """Thread-safe SQLite persistence for state outside MusicManager's domain.
 
     MusicManager continues to own tracks and playlists. This store contains UI
     preferences, playback/session state, enriched metadata, favorites, history,
     and durable download history.
+
+    Each top-level value is one JSON row and each track's details another, so
+    a playback-position save rewrites one small row rather than the catalog.
+    Commits survive application crashes; a power loss can drop only the most
+    recent commits (``synchronous=NORMAL``), which suits frequent session
+    saves. ``legacy_path`` names a pre-SQLite JSON file imported once.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, legacy_path: str | Path | None = None
+    ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._data = self._load()
+        self._db = Database(self.path, synchronous="NORMAL")
+        try:
+            self._data = self._open(Path(legacy_path) if legacy_path else None)
+        except BaseException:
+            self._db.close()
+            raise
         # Pending play batches may arrive after a track is removed. Keep their
         # IDs for this process lifetime so those writes cannot recreate it.
         self._deleted_track_ids: set[str] = set()
 
+    def close(self) -> None:
+        """Release the database file. Later writes raise ``DatabaseError``."""
+        self._db.close()
+
+    def _open(self, legacy_path: Path | None) -> dict[str, Any]:
+        if self._db.has_table("state"):
+            if legacy_path is not None:
+                # A crash after the import committed but before the rename.
+                retire_legacy_file(legacy_path)
+            return self._load()
+        data = self._load_legacy(legacy_path) if legacy_path else self._defaults()
+        with self._db.transaction() as db:
+            db.executescript(_SCHEMA)
+            self._write_rows(db, data, {})
+        if legacy_path is not None:
+            retire_legacy_file(legacy_path)
+        return data
+
     def _load(self) -> dict[str, Any]:
         try:
-            contents = self.path.read_text(encoding="utf-8")
+            raw = {
+                key: json.loads(value)
+                for key, value in self._db.query("SELECT key, value FROM state")
+            }
+            raw["track_details"] = {
+                key: json.loads(value)
+                for key, value in self._db.query(
+                    "SELECT track_id, value FROM track_details ORDER BY rowid"
+                )
+            }
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"Could not read application settings: {error}") from error
+        merged = self._defaults()
+        merged.update(raw)
+        return self._migrate(merged)
+
+    def _load_legacy(self, path: Path) -> dict[str, Any]:
+        try:
+            contents = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return self._defaults()
         except OSError as error:
@@ -299,27 +362,27 @@ class ApplicationStore:
             if not track_details or key != "track_details"
             if self._data.get(key, _MISSING) != value
         }
+        changed_details = {}
         if track_details:
             current_details = self._data["track_details"]
-            changed_details = {}
             for key, value in track_details.items():
                 if value is _MISSING:
                     if key in current_details:
                         changed_details[key] = value
                 elif current_details.get(key, _MISSING) != value:
                     changed_details[key] = value
-            if changed_details:
-                details = dict(current_details)
-                for key, value in changed_details.items():
-                    if value is _MISSING:
-                        details.pop(key)
-                    else:
-                        details[key] = value
-                updates["track_details"] = details
-        if not updates:
+        if not updates and not changed_details:
             return
         candidate = {**self._data, **updates}
-        self._save_locked(candidate)
+        if changed_details:
+            details = dict(candidate["track_details"])
+            for key, value in changed_details.items():
+                if value is _MISSING:
+                    details.pop(key)
+                else:
+                    details[key] = value
+            candidate["track_details"] = details
+        self._save_locked(updates, changed_details)
         self._data = candidate
 
     def save_playback_updates(
@@ -356,9 +419,35 @@ class ApplicationStore:
                     )[:limit]
             self._commit_locked(updates, track_details=details)
 
-    def _save_locked(self, data: dict[str, Any]) -> None:
-        # Compact JSON materially reduces bytes encoded and flushed for hot
-        # state updates. Human readability is provided through typed APIs and
-        # documentation rather than whitespace in this private state file.
-        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        atomic_write(self.path, payload.encode("utf-8"))
+    def _save_locked(
+        self, updates: dict[str, Any], track_details: dict[str, Any]
+    ) -> None:
+        """Write only the changed rows in one transaction."""
+        with self._db.transaction() as db:
+            self._write_rows(db, updates, track_details)
+
+    @staticmethod
+    def _write_rows(
+        db: sqlite3.Connection,
+        updates: dict[str, Any],
+        track_details: dict[str, Any],
+    ) -> None:
+        for key, value in updates.items():
+            if key == "track_details":
+                # A whole-catalog replacement, such as clearing library data.
+                db.execute("DELETE FROM track_details")
+                db.executemany(
+                    _UPSERT_DETAILS,
+                    ((item, _encode(details)) for item, details in value.items()),
+                )
+            else:
+                db.execute(_UPSERT_STATE, (key, _encode(value)))
+        for key, value in track_details.items():
+            if value is _MISSING:
+                db.execute("DELETE FROM track_details WHERE track_id = ?", (key,))
+            else:
+                db.execute(_UPSERT_DETAILS, (key, _encode(value)))
+
+
+def _encode(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))

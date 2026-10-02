@@ -30,6 +30,17 @@ class ThumbnailCacheTests(unittest.TestCase):
             reopened = ThumbnailCache(directory)
             self.assertEqual(reopened.image_source(url), JPEG)
 
+    def test_local_artwork_paths_become_media_session_uris(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ThumbnailCache(directory)
+            local = (Path(directory) / "restored.thumb").resolve()
+            local.write_bytes(JPEG)
+
+            self.assertEqual(cache.artwork_uri(str(local)), local.as_uri())
+            missing = str(Path(directory).resolve() / "missing.thumb")
+            self.assertEqual(cache.artwork_uri(missing), missing)
+            self.assertEqual(cache.artwork_uri(""), "")
+
     def test_invalid_or_non_remote_artwork_is_not_cached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache = ThumbnailCache(directory)

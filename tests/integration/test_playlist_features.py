@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import unittest
 from collections import deque
 from collections.abc import Iterable
@@ -20,6 +19,7 @@ from musicplayer.core.downloader import DownloadTask
 from musicplayer.core.library import MusicManager
 from musicplayer.core.media import source_key
 from musicplayer.ui.pages.playlists import PlaylistsPage, _PlaylistImportSession
+from tests.storage_support import DataDirectory
 
 
 class _Page:
@@ -146,11 +146,11 @@ class _ParallelDownloads:
 
 class PlaylistFeatureTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = DataDirectory()
         self.root = Path(self.temporary.name)
         self.music = self.root / "music"
         self.music.mkdir()
-        self.manager = MusicManager(self.root / "library.mmdb", self.music)
+        self.manager = MusicManager(self.root / "library.db", self.music)
         self.app = MusicPlayerApp.__new__(MusicPlayerApp)
         self.app.page = _Page()  # ty: ignore[invalid-assignment]
         self.app.manager = self.manager

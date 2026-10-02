@@ -41,4 +41,7 @@ repositories {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+    // CPU-only LiteRT: Dart calls its TensorFlow Lite C API through FFI to
+    // find the subject of notification artwork.
+    implementation "com.google.ai.edge.litert:litert:1.4.0"
 }

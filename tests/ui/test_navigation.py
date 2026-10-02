@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,12 +13,13 @@ from musicplayer.core.library.models import Playlist, Track
 from musicplayer.ui.desktop.player import DesktopPlayer
 from musicplayer.ui.mobile.player import MobilePlayer
 from musicplayer.ui.presentation import PresentationKind, presentation_kind
+from tests.storage_support import DataDirectory
 from tests.ui_support import TestPage, make_app, walk
 
 
 class NavigationTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = DataDirectory()
         self.root = Path(self.temporary.name)
         self.apps = []
 

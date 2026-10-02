@@ -1,25 +1,50 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import stat
 import struct
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from functools import cached_property
 from heapq import nsmallest
+from os.path import normcase
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from musicplayer.core.media import source_key
-from musicplayer.core.storage import atomic_write
+from musicplayer.core.storage import Database, retire_legacy_file
 
 from .config import HEADER, MAGIC, SHA256_BYTES, TRACK_FIXED, U32, UUID_ONLY, VERSION
 from .models import IntegrityProblem, Playlist, Track
-from .utils import _as_uuid, _pack_utf8_string, _read_utf8_string, _sha256
+from .utils import _as_uuid, _read_utf8_string, _sha256
 
 logger = logging.getLogger(__name__)
+
+_SCHEMA_VERSION = 1
+# Row order (rowid) preserves insertion order for tracks and playlists.
+_SCHEMA = """
+CREATE TABLE library_meta (key TEXT PRIMARY KEY, value ANY) STRICT;
+CREATE TABLE tracks (
+    id BLOB PRIMARY KEY,
+    filename TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    content_hash BLOB NOT NULL
+) STRICT;
+CREATE TABLE playlists (id BLOB PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE playlist_tracks (
+    playlist_id BLOB NOT NULL REFERENCES playlists (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_id BLOB NOT NULL REFERENCES tracks (id) ON DELETE CASCADE,
+    PRIMARY KEY (playlist_id, position)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX playlist_tracks_by_track ON playlist_tracks (track_id);
+"""
 
 
 @dataclass(frozen=True)
@@ -29,6 +54,53 @@ class _LibraryReadState:
     sources: dict[str, UUID]
     newest: tuple[UUID, ...]
     newest_rank: dict[UUID, int]
+
+    # Derived lazily (cached_property writes the instance dict, bypassing the
+    # frozen setattr) so saves do not pay for keys that no search has asked for.
+    # Concurrent first readers may both compute; the results are identical.
+    @cached_property
+    def search_text(self) -> dict[UUID, str]:
+        """Casefolded title, filename and source, NUL-separated per track."""
+        return {
+            key: f"{track.title}\0{track.filename}\0{track.source}".casefold()
+            for key, track in self.tracks.items()
+        }
+
+    @cached_property
+    def title_keys(self) -> dict[UUID, str]:
+        return {
+            key: (track.title or Path(track.filename).stem).casefold()
+            for key, track in self.tracks.items()
+        }
+
+
+def _copy_track(track: Track) -> Track:
+    # Four times faster than dataclasses.replace; readers copy whole catalogs.
+    return Track(
+        track.id,
+        track.filename,
+        track.source,
+        track.title,
+        track.added_at,
+        track.content_hash,
+    )
+
+
+def _track_row(track: Track) -> tuple[bytes, str, str, str, float, bytes]:
+    try:
+        digest = bytes.fromhex(track.content_hash)
+    except ValueError as exc:
+        raise ValueError(f"Invalid content hash for track {track.id}") from exc
+    if len(digest) != SHA256_BYTES:
+        raise ValueError(f"Invalid content hash for track {track.id}")
+    return (
+        track.id.bytes,
+        track.filename,
+        track.source,
+        track.title,
+        track.added_at,
+        digest,
+    )
 
 
 class MusicManager:
@@ -44,7 +116,14 @@ class MusicManager:
         music_folder: str | Path,
         *,
         additional_music_folders: Sequence[str | Path] = (),
+        legacy_metadata_path: str | Path | None = None,
     ) -> None:
+        """Open the SQLite library at ``metadata_path``.
+
+        ``legacy_metadata_path`` names a pre-SQLite ``MMD1`` file. It is
+        imported once, in the transaction that creates the schema, and then
+        renamed with a ``.migrated`` suffix as a backup.
+        """
         logger.debug(
             "Initializing MusicManager: metadata_path=%s music_folder=%s",
             metadata_path,
@@ -73,13 +152,15 @@ class MusicManager:
         self._source_index: dict[str, dict[UUID, None]] = {}
         self._content_index: dict[str, dict[UUID, None]] = {}
         self._newest_track_ids: tuple[UUID, ...] | None = None
-        # Updated only after a successful commit. Playlist-only saves can reuse
-        # these immutable bytes without encoding every track again.
-        self._track_records_cache: bytes | None = None
+        self._validated_paths: dict[str, Path] = {}
+        self._db = Database(self.metadata_path, synchronous="FULL")
         try:
-            self._load()
+            self._open(
+                Path(legacy_metadata_path) if legacy_metadata_path is not None else None
+            )
             self._publish_read_state()
         except Exception:
+            self._db.close()
             logger.exception(
                 "MusicManager initialization failed while loading metadata: path=%s",
                 self.metadata_path,
@@ -93,60 +174,72 @@ class MusicManager:
             len(self._playlists),
         )
 
+    def close(self) -> None:
+        """Release the database file. Later mutations raise ``DatabaseError``."""
+        self._db.close()
+
     # -- persistence -------------------------------------------------
+    def _open(self, legacy_path: Path | None) -> None:
+        if not self._db.has_table("library_meta"):
+            self._initialize(legacy_path)
+        else:
+            if legacy_path is not None:
+                # A crash after the import committed but before the rename.
+                retire_legacy_file(legacy_path)
+            self._load()
+        self._rebuild_track_indexes()
+
+    def _initialize(self, legacy_path: Path | None) -> None:
+        """Create the schema and import legacy metadata in one transaction."""
+        if legacy_path is not None:
+            self._load_legacy(legacy_path)
+        with self._db.transaction() as db:
+            db.executescript(_SCHEMA)
+            db.execute(
+                "INSERT INTO library_meta (key, value) VALUES ('schema', ?)",
+                (_SCHEMA_VERSION,),
+            )
+            db.executemany(
+                "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)",
+                (_track_row(track) for track in self._tracks.values()),
+            )
+            for playlist in self._playlists.values():
+                db.execute(
+                    "INSERT INTO playlists (id, name) VALUES (?, ?)",
+                    (playlist.id.bytes, playlist.name),
+                )
+                self._write_playlist_tracks(db, playlist)
+        if legacy_path is not None and (self._tracks or self._playlists):
+            logger.info(
+                "Imported legacy music metadata: path=%s tracks=%d playlists=%d",
+                legacy_path,
+                len(self._tracks),
+                len(self._playlists),
+            )
+        if legacy_path is not None:
+            retire_legacy_file(legacy_path)
+
     def _load(self) -> None:
-        logger.debug("Loading music metadata: path=%s", self.metadata_path)
-        try:
-            data = self.metadata_path.read_bytes()
-        except FileNotFoundError:
-            logger.info(
-                "No existing music metadata to load: path=%s", self.metadata_path
+        tracks: dict[UUID, Track] = {}
+        for raw_id, filename, source, title, added_at, digest in self._db.query(
+            "SELECT id, filename, source, title, added_at, content_hash "
+            "FROM tracks ORDER BY rowid"
+        ):
+            track_id = UUID(bytes=raw_id)
+            tracks[track_id] = Track(
+                track_id, filename, source, title, added_at, digest.hex()
             )
-            return
-        except OSError:
-            logger.exception(
-                "Failed to read music metadata file: path=%s", self.metadata_path
+        playlists: dict[UUID, Playlist] = {
+            UUID(bytes=raw_id): Playlist(UUID(bytes=raw_id), name)
+            for raw_id, name in self._db.query(
+                "SELECT id, name FROM playlists ORDER BY rowid"
             )
-            raise
-        if not data:
-            logger.info(
-                "No existing music metadata to load: path=%s (empty file)",
-                self.metadata_path,
-            )
-            return
-        logger.debug(
-            "Read music metadata: path=%s byte_count=%d", self.metadata_path, len(data)
-        )
-        version, track_count = self._read_metadata_header(data)
-        logger.info(
-            "Parsing music metadata: path=%s version=%d track_count=%d",
-            self.metadata_path,
-            version,
-            track_count,
-        )
-        try:
-            tracks, playlists, offset = self._parse_metadata_records(
-                data, version, track_count
-            )
-        except (struct.error, UnicodeDecodeError, ValueError) as exc:
-            logger.exception(
-                "Invalid music metadata while parsing: path=%s", self.metadata_path
-            )
-            raise ValueError(
-                f"{self.metadata_path} contains invalid music metadata"
-            ) from exc
-
-        if offset != len(data):
-            logger.error(
-                "Music metadata has trailing bytes: path=%s parsed_offset=%d total_bytes=%d",
-                self.metadata_path,
-                offset,
-                len(data),
-            )
-            raise ValueError(f"{self.metadata_path} contains trailing music metadata")
-
-        self._discard_missing_playlist_tracks(playlists, tracks)
-
+        }
+        for raw_playlist, raw_track in self._db.query(
+            "SELECT playlist_id, track_id FROM playlist_tracks "
+            "ORDER BY playlist_id, position"
+        ):
+            playlists[UUID(bytes=raw_playlist)].track_ids.append(UUID(bytes=raw_track))
         self._tracks = tracks
         self._playlists = playlists
         logger.info(
@@ -155,40 +248,41 @@ class MusicManager:
             len(tracks),
             len(playlists),
         )
+
+    def _load_legacy(self, path: Path) -> None:
+        logger.debug("Loading legacy music metadata: path=%s", path)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            return
+        except OSError:
+            logger.exception("Failed to read legacy music metadata: path=%s", path)
+            raise
+        if not data:
+            return
+        version, track_count = self._read_metadata_header(data, path)
+        try:
+            tracks, playlists, offset = self._parse_metadata_records(
+                data, version, track_count
+            )
+        except (struct.error, UnicodeDecodeError, ValueError) as exc:
+            logger.exception("Invalid legacy music metadata: path=%s", path)
+            raise ValueError(f"{path} contains invalid music metadata") from exc
+        if offset != len(data):
+            raise ValueError(f"{path} contains trailing music metadata")
+        self._discard_missing_playlist_tracks(playlists, tracks)
+        self._tracks = tracks
+        self._playlists = playlists
         if version < VERSION:
-            logger.info(
-                "Upgrading legacy music metadata by capturing file hashes: path=%s version=%d targetVERSION=%d",
-                self.metadata_path,
-                version,
-                VERSION,
-            )
             self._capture_legacy_hashes()
-            self._save()
-        self._rebuild_track_indexes()
 
-    def _read_metadata_header(self, data: bytes) -> tuple[int, int]:
+    def _read_metadata_header(self, data: bytes, path: Path) -> tuple[int, int]:
         if len(data) < HEADER.size:
-            logger.error(
-                "Music metadata header is truncated: path=%s byte_count=%d",
-                self.metadata_path,
-                len(data),
-            )
-            raise ValueError(f"{self.metadata_path} is not a valid MusicManager file")
-
+            raise ValueError(f"{path} is not a valid MusicManager file")
         magic, version, track_count = HEADER.unpack_from(data)
         if magic != MAGIC:
-            logger.error(
-                "Music metadata magic mismatch: path=%s actual MAGIC=%r",
-                self.metadata_path,
-                magic,
-            )
-            raise ValueError(f"{self.metadata_path} is not a valid MusicManager file")
+            raise ValueError(f"{path} is not a valid MusicManager file")
         if version not in (1, 2, VERSION):
-            logger.error(
-                "Unsupported music metadata version: path=%s version=%d",
-                self.metadata_path,
-                version,
-            )
             raise ValueError(f"Unsupported metadata version: {version}")
         return version, track_count
 
@@ -308,95 +402,88 @@ class MusicManager:
                 )
                 continue
 
-    def _save(self, *, tracks_changed: bool = True) -> None:
-        """Commit metadata, rebuilding track records only when tracks changed."""
-        logger.debug(
-            "Saving music metadata atomically: path=%s tracks=%d playlists=%d",
-            self.metadata_path,
-            len(self._tracks),
-            len(self._playlists),
-        )
-        track_records = None if tracks_changed else self._track_records_cache
-        if track_records is None:
-            track_records = self._serialize_track_records()
-        data = self._serialize_metadata(track_records)
-        self._write_metadata(data)
-        self._track_records_cache = track_records
+    def _commit(
+        self,
+        write: Callable[[sqlite3.Connection], object],
+        *,
+        tracks_changed: bool = True,
+    ) -> None:
+        """Apply one change durably, then publish it to readers.
+
+        Callers mutate the in-memory model first and restore it when this
+        raises; the database transaction has already been rolled back.
+        """
+        with self._db.transaction() as db:
+            write(db)
         self._publish_read_state(tracks_changed=tracks_changed)
 
     def _publish_read_state(self, *, tracks_changed: bool = True) -> None:
         # Readers never wait behind hashing, imports or durable commits. Publish
         # only after success; these copies are never mutated by later writers.
-        if tracks_changed or not hasattr(self, "_read_state"):
+        previous = getattr(self, "_read_state", None)
+        if tracks_changed or previous is None:
             newest = tuple(track.id for track in self._tracks_newest_first())
-            tracks = {key: replace(value) for key, value in self._tracks.items()}
+            tracks = {key: _copy_track(value) for key, value in self._tracks.items()}
             sources = {
                 key: next(iter(ids)) for key, ids in self._source_index.items() if ids
             }
             newest_rank = {track_id: rank for rank, track_id in enumerate(newest)}
         else:
-            previous = self._read_state
             tracks = previous.tracks
             sources = previous.sources
             newest = previous.newest
             newest_rank = previous.newest_rank
-        self._read_state = _LibraryReadState(
+        state = _LibraryReadState(
             tracks,
             {key: self._copy_playlist(value) for key, value in self._playlists.items()},
             sources,
             newest,
             newest_rank,
         )
-
-    def _serialize_track_records(self) -> bytes:
-        parts: list[bytes] = []
-        for track in self._tracks.values():
-            parts.append(TRACK_FIXED.pack(track.id.bytes, track.added_at))
-            parts.extend(
-                _pack_utf8_string(value)
-                for value in (track.filename, track.source, track.title)
-            )
-            parts.append(self._content_hash_bytes(track))
-        return b"".join(parts)
-
-    def _serialize_metadata(self, track_records: bytes) -> bytes:
-        parts: list[bytes] = [
-            HEADER.pack(MAGIC, VERSION, len(self._tracks)),
-            track_records,
-        ]
-        parts.append(U32.pack(len(self._playlists)))
-        for playlist in self._playlists.values():
-            parts.append(UUID_ONLY.pack(playlist.id.bytes))
-            parts.extend(
-                (_pack_utf8_string(playlist.name), U32.pack(len(playlist.track_ids)))
-            )
-            parts.extend(
-                UUID_ONLY.pack(track_id.bytes) for track_id in playlist.track_ids
-            )
-        return b"".join(parts)
+        if previous is not None and tracks is previous.tracks:
+            # Same track copies: keep any search keys already derived from them.
+            for name in ("search_text", "title_keys"):
+                if name in previous.__dict__:
+                    state.__dict__[name] = previous.__dict__[name]
+        self._read_state = state
 
     @staticmethod
-    def _content_hash_bytes(track: Track) -> bytes:
-        try:
-            digest = bytes.fromhex(track.content_hash)
-        except ValueError as exc:
-            raise ValueError(f"Invalid content hash for track {track.id}") from exc
-        if len(digest) != SHA256_BYTES:
-            raise ValueError(f"Invalid content hash for track {track.id}")
-        return digest
+    def _write_playlist_tracks(db: sqlite3.Connection, playlist: Playlist) -> None:
+        db.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist.id.bytes,)
+        )
+        db.executemany(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id) "
+            "VALUES (?, ?, ?)",
+            (
+                (playlist.id.bytes, position, track_id.bytes)
+                for position, track_id in enumerate(playlist.track_ids)
+            ),
+        )
 
-    def _write_metadata(self, data: bytes) -> None:
-        try:
-            atomic_write(self.metadata_path, data)
-        except Exception:
-            logger.exception(
-                "Failed to save music metadata atomically: path=%s", self.metadata_path
-            )
-            raise
-        logger.info(
-            "Music metadata saved successfully: path=%s byte_count=%d",
-            self.metadata_path,
-            len(data),
+    @staticmethod
+    def _delete_everything(db: sqlite3.Connection) -> None:
+        db.execute("DELETE FROM playlists")
+        db.execute("DELETE FROM tracks")
+
+    @classmethod
+    def _write_playlist_tracks_of(
+        cls, db: sqlite3.Connection, *playlists: Playlist
+    ) -> None:
+        for playlist in playlists:
+            cls._write_playlist_tracks(db, playlist)
+
+    @staticmethod
+    def _append_playlist_track(
+        db: sqlite3.Connection, playlist_id: UUID, track_id: UUID
+    ) -> None:
+        # Positions only order rows; deletions may leave gaps, so append after
+        # the current maximum instead of at the in-memory length.
+        db.execute(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id) "
+            "SELECT ?, COALESCE(MAX(position), -1) + 1, ? FROM playlist_tracks "
+            "WHERE playlist_id = ?",
+            (playlist_id.bytes, track_id.bytes, playlist_id.bytes),
         )
 
     # -- tracks ------------------------------------------------------
@@ -437,7 +524,12 @@ class MusicManager:
             self._index_track(track)
             self._newest_track_ids = None
             try:
-                self._save()
+                self._commit(
+                    lambda db: db.execute(
+                        "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)",
+                        _track_row(track),
+                    )
+                )
             except Exception:
                 self._tracks.pop(track_id, None)
                 self._unindex_track(track)
@@ -482,7 +574,12 @@ class MusicManager:
             track.content_hash = digest
             self._content_index.setdefault(digest, {})[track.id] = None
             try:
-                self._save()
+                self._commit(
+                    lambda db: db.execute(
+                        "UPDATE tracks SET filename = ?, content_hash = ? WHERE id = ?",
+                        (track.filename, bytes.fromhex(digest), track.id.bytes),
+                    )
+                )
             except Exception:
                 self._remove_index_entry(self._content_index, digest, track.id)
                 track.filename = previous_filename
@@ -530,7 +627,12 @@ class MusicManager:
                 track.source = source
                 self._index_source(track)
             try:
-                self._save()
+                self._commit(
+                    lambda db: db.execute(
+                        "UPDATE tracks SET title = ?, source = ? WHERE id = ?",
+                        (track.title, track.source, track.id.bytes),
+                    )
+                )
             except Exception:
                 if source_changed:
                     self._unindex_source(track)
@@ -568,7 +670,12 @@ class MusicManager:
             previous_newest_track_ids = self._newest_track_ids
             self._newest_track_ids = None
             try:
-                self._save()
+                self._commit(
+                    # Playlist references cascade with the track row.
+                    lambda db: db.execute(
+                        "DELETE FROM tracks WHERE id = ?", (track_uuid.bytes,)
+                    )
+                )
             except Exception:
                 self._tracks = previous_tracks
                 self._newest_track_ids = previous_newest_track_ids
@@ -602,7 +709,7 @@ class MusicManager:
             self._content_index = {}
             self._newest_track_ids = None
             try:
-                self._save()
+                self._commit(self._delete_everything)
             except Exception:
                 self._tracks = previous_tracks
                 self._playlists = previous_playlists
@@ -622,7 +729,7 @@ class MusicManager:
     def list_tracks(self, *, limit: int | None = None) -> tuple[Track, ...]:
         state = self._read_state
         keys = state.newest if limit is None else state.newest[: max(0, limit)]
-        return tuple(replace(state.tracks[key]) for key in keys)
+        return tuple(_copy_track(state.tracks[key]) for key in keys)
 
     def tracks_by_ids(
         self, track_ids: Sequence[UUID | str], *, limit: int | None = None
@@ -645,14 +752,14 @@ class MusicManager:
         ranked = (
             sorted(ranked_tracks) if limit is None else nsmallest(limit, ranked_tracks)
         )
-        return tuple(replace(state.tracks[key]) for _, key in ranked)
+        return tuple(_copy_track(state.tracks[key]) for _, key in ranked)
 
     def counts(self) -> tuple[int, int]:
         state = self._read_state
         return len(state.tracks), len(state.playlists)
 
     def get_track(self, track_id: UUID | str) -> Track:
-        return replace(self._read_state.tracks[_as_uuid(track_id)])
+        return _copy_track(self._read_state.tracks[_as_uuid(track_id)])
 
     def has_track(self, track_id: UUID | str) -> bool:
         try:
@@ -673,24 +780,13 @@ class MusicManager:
             return ()
         remaining_offset = max(0, offset)
         state = self._read_state
+        search_text = state.search_text if needle else {}
         if sort in {"title", "oldest"}:
             matching_keys = [
-                key
-                for key in state.newest
-                if not needle
-                or any(
-                    needle in value.casefold()
-                    for value in (
-                        state.tracks[key].title,
-                        state.tracks[key].filename,
-                        state.tracks[key].source,
-                    )
-                )
+                key for key in state.newest if not needle or needle in search_text[key]
             ]
             if sort == "title":
-                ordering = lambda key: (
-                    state.tracks[key].title or Path(state.tracks[key].filename).stem
-                ).casefold()
+                ordering = state.title_keys.__getitem__
             else:
                 ordering = lambda key: state.tracks[key].added_at
             end = None if limit is None else remaining_offset + limit
@@ -699,20 +795,16 @@ class MusicManager:
             else:
                 ordered = sorted(matching_keys, key=ordering)
             return tuple(
-                replace(state.tracks[key]) for key in ordered[remaining_offset:end]
+                _copy_track(state.tracks[key]) for key in ordered[remaining_offset:end]
             )
         matches: list[Track] = []
         for key in state.newest:
-            track = state.tracks[key]
-            if needle and not any(
-                needle in value.casefold()
-                for value in (track.title, track.filename, track.source)
-            ):
+            if needle and needle not in search_text[key]:
                 continue
             if remaining_offset:
                 remaining_offset -= 1
                 continue
-            matches.append(replace(track))
+            matches.append(_copy_track(state.tracks[key]))
             if limit is not None and len(matches) >= max(0, limit):
                 break
         return tuple(matches)
@@ -720,7 +812,7 @@ class MusicManager:
     def find_track_by_source(self, source: str) -> Track | None:
         state = self._read_state
         key = state.sources.get(source_key(source))
-        return replace(state.tracks[key]) if key is not None else None
+        return _copy_track(state.tracks[key]) if key is not None else None
 
     def find_track_by_content(self, path: str | Path) -> Track | None:
         """Return the track with the same bytes as ``path``, if one exists."""
@@ -728,7 +820,7 @@ class MusicManager:
         with self._lock:
             matches = self._content_index.get(digest)
             if matches:
-                return replace(self._tracks[next(iter(matches))])
+                return _copy_track(self._tracks[next(iter(matches))])
         return None
 
     def track_path(self, track_id: UUID | str) -> Path:
@@ -747,12 +839,16 @@ class MusicManager:
         this guard also makes cleanup safe for older metadata or manually repaired
         libraries where two records may point at the same managed file.
         """
-        target = Path(filename).resolve()
         excluded = _as_uuid(excluding) if excluding is not None else None
+        try:
+            # Stored names are already canonical (see ``_relative_filename``),
+            # so compare them as paths instead of resolving every record on disk.
+            target = normcase(self._relative_filename(Path(filename).resolve()))
+        except ValueError:
+            return False
         with self._lock:
             return any(
-                track.id != excluded
-                and self._path_for_filename(track.filename).resolve() == target
+                track.id != excluded and normcase(track.filename) == target
                 for track in self._tracks.values()
             )
 
@@ -760,7 +856,7 @@ class MusicManager:
     def check_track_integrity(self, track_id: UUID | str) -> IntegrityProblem | None:
         logger.debug("Checking track integrity: track_id=%s", track_id)
         with self._lock:
-            track = replace(self._get_track(track_id))
+            track = _copy_track(self._get_track(track_id))
         problem = self._integrity_problem(track)
         logger.info(
             "Track integrity check completed: track_id=%s result=%s",
@@ -868,7 +964,13 @@ class MusicManager:
             playlist_id = uuid4()
             self._playlists[playlist_id] = Playlist(playlist_id, name)
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: db.execute(
+                        "INSERT INTO playlists (id, name) VALUES (?, ?)",
+                        (playlist_id.bytes, name),
+                    ),
+                    tracks_changed=False,
+                )
             except Exception:
                 self._playlists.pop(playlist_id, None)
                 raise
@@ -893,7 +995,13 @@ class MusicManager:
                 return
             playlist.name = name
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: db.execute(
+                        "UPDATE playlists SET name = ? WHERE id = ?",
+                        (name, playlist.id.bytes),
+                    ),
+                    tracks_changed=False,
+                )
             except Exception:
                 playlist.name = previous_name
                 raise
@@ -912,7 +1020,12 @@ class MusicManager:
             self._playlists = dict(self._playlists)
             del self._playlists[playlist_uuid]
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: db.execute(
+                        "DELETE FROM playlists WHERE id = ?", (playlist_uuid.bytes,)
+                    ),
+                    tracks_changed=False,
+                )
             except Exception:
                 self._playlists = previous_playlists
                 raise
@@ -929,7 +1042,9 @@ class MusicManager:
             previous_playlists = self._playlists
             self._playlists = {}
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: db.execute("DELETE FROM playlists"), tracks_changed=False
+                )
             except Exception:
                 self._playlists = previous_playlists
                 raise
@@ -941,7 +1056,7 @@ class MusicManager:
         state = self._read_state
         playlist = state.playlists[_as_uuid(playlist_id)]
         return tuple(
-            replace(state.tracks[item])
+            _copy_track(state.tracks[item])
             for item in playlist.track_ids
             if item in state.tracks
         )
@@ -956,7 +1071,12 @@ class MusicManager:
             if track.id not in playlist.track_ids:
                 playlist.track_ids.append(track.id)
                 try:
-                    self._save(tracks_changed=False)
+                    self._commit(
+                        lambda db: self._append_playlist_track(
+                            db, playlist.id, track.id
+                        ),
+                        tracks_changed=False,
+                    )
                 except Exception:
                     playlist.track_ids.pop()
                     raise
@@ -993,7 +1113,10 @@ class MusicManager:
             previous = list(playlist.track_ids)
             playlist.track_ids.extend(additions)
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: self._write_playlist_tracks(db, playlist),
+                    tracks_changed=False,
+                )
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1034,7 +1157,10 @@ class MusicManager:
                 return 0
             playlist.track_ids = merged
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: self._write_playlist_tracks(db, playlist),
+                    tracks_changed=False,
+                )
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1064,7 +1190,10 @@ class MusicManager:
                 ) from None
             playlist.track_ids.pop(index)
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: self._write_playlist_tracks(db, playlist),
+                    tracks_changed=False,
+                )
             except Exception:
                 playlist.track_ids.insert(index, track_uuid)
                 raise
@@ -1096,7 +1225,10 @@ class MusicManager:
             previous = playlist.track_ids
             playlist.track_ids = normalized
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: self._write_playlist_tracks(db, playlist),
+                    tracks_changed=False,
+                )
             except Exception:
                 playlist.track_ids = previous
                 raise
@@ -1117,7 +1249,10 @@ class MusicManager:
             if track.id not in target.track_ids:
                 target.track_ids.append(track.id)
                 try:
-                    self._save(tracks_changed=False)
+                    self._commit(
+                        lambda db: self._append_playlist_track(db, target.id, track.id),
+                        tracks_changed=False,
+                    )
                 except Exception:
                     target.track_ids.pop()
                     raise
@@ -1144,7 +1279,10 @@ class MusicManager:
             if added_to_target:
                 target.track_ids.append(track.id)
             try:
-                self._save(tracks_changed=False)
+                self._commit(
+                    lambda db: self._write_playlist_tracks_of(db, source, target),
+                    tracks_changed=False,
+                )
             except Exception:
                 source.track_ids.insert(source_index, track.id)
                 if added_to_target:
@@ -1191,12 +1329,16 @@ class MusicManager:
         return result
 
     def _path_for_filename(self, filename: str) -> Path:
+        # Validation resolves the path on disk. Queue activation asks for every
+        # queued track, so a whole-library queue paid thousands of syscalls per
+        # selection. Stored names are immutable strings; validate each once.
+        cached = self._validated_paths.get(filename)
+        if cached is not None:
+            return cached
         stored = self._relative_filename(filename)
         candidate = Path(stored)
         path = candidate if candidate.is_absolute() else self._music_folder / candidate
-        logger.debug(
-            "Resolved music path for filename: filename=%s path=%s", filename, path
-        )
+        self._validated_paths[filename] = path
         return path
 
     def _tracks_newest_first(self) -> Iterator[Track]:

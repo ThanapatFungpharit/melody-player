@@ -125,9 +125,19 @@ after an activity or page reattachment to refresh metadata and action handling.
 
 `sync` requires `title`. Optional `artist`, `album`, and `artwork_uri` describe
 the current media. `auto_focal_point_live_notifications` prepares a square
-artwork copy in Flutter by finding the crop that retains the most local color
-and edge detail; equal-scoring crops favor the image center. This lightweight
-visual-detail estimate does not recognize faces. When false, Flutter crops
+artwork copy in Flutter by finding the square crop, horizontal or vertical,
+that retains the most salient content, centered on the subject where the frame
+allows. Letterbox and pillarbox bars are trimmed first, even when they carry a
+channel logo. On Android the salient object model U²-Netp
+(Qin et al., 2020; Apache-2.0, see `assets/u2netp_LICENSE.txt`) runs on a
+background isolate through the TensorFlow Lite C API of the CPU-only LiteRT
+runtime, called directly over FFI with the XNNPACK delegate: a 1.3 MB int8
+model with a 256 by 256 input, converted from the upstream weights and
+calibrated on music video thumbnails. On other platforms, or
+if the model fails, a pure Dart MB+ saliency estimate is used instead. A
+center preference keeps ambiguous artwork centered. Neither model recognizes
+faces. Prepared artwork is reused across restarts while the source file is
+unchanged, so each cover is analyzed once. When false, Flutter crops
 around the center. The operating system still draws the media panel from the
 prepared artwork. `duration_ms` and `position_ms` are
 clamped to nonnegative integer milliseconds; `playing` and `loading` describe
