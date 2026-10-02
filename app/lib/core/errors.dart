@@ -1,6 +1,8 @@
 /// Failure vocabulary shared by providers, downloads, and the UI.
 library;
 
+import "dart:io";
+
 import "media.dart";
 
 /// A failure reported by the yt-dlp worker, with the facts needed to
@@ -76,8 +78,17 @@ class DownloadFailure {
 // errno values that mean storage cannot be written, across platforms:
 // ENOSPC, EDQUOT (Linux 122, macOS 69), EACCES, EROFS, EIO.
 const _diskErrnos = {28, 122, 69, 13, 30, 5};
+// The same conditions as Windows error codes: access denied, write
+// protected, handle disk full, disk full.
+const _windowsDiskErrors = {5, 19, 39, 112};
 
 bool _hasAny(String text, List<String> words) => words.any(text.contains);
+
+bool _isDiskError(FileSystemException error) {
+  final code = error.osError?.errorCode;
+  if (code == null) return false;
+  return Platform.isWindows ? _windowsDiskErrors.contains(code) : _diskErrnos.contains(code);
+}
 
 /// Classifies a download failure into a stable kind and recovery action.
 DownloadFailure classifyDownloadError(Object error) {
@@ -112,7 +123,7 @@ DownloadFailure classifyDownloadError(Object error) {
     );
   }
   if ((failure?.errnos.any(_diskErrnos.contains) ?? false) ||
-      (error is FileSystemFailure) ||
+      (error is FileSystemException && _isDiskError(error)) ||
       _hasAny(message, [
         "no space left",
         "disk full",
@@ -192,9 +203,9 @@ DownloadFailure classifyDownloadError(Object error) {
   );
 }
 
-/// A local file operation failed while finishing a download.
-class FileSystemFailure implements Exception {
-  FileSystemFailure(this.message);
+/// A download could not be finished, with a message for classification.
+class DownloadError implements Exception {
+  DownloadError(this.message);
 
   final String message;
 
