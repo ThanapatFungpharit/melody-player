@@ -1,5 +1,5 @@
 import "package:flutter_test/flutter_test.dart";
-import "package:flet_background_audio/src/native_queue_policy.dart";
+import "package:melody_audio/src/native_queue_policy.dart";
 
 void main() {
   test("removing the active row keeps it detached until its successor", () {

@@ -7,7 +7,7 @@ import "package:flutter/services.dart" show rootBundle;
 
 import "notification_saliency.dart";
 
-const _asset = "packages/flet_background_audio/assets/u2netp_256_int8.tflite";
+const _asset = "packages/melody_audio/assets/u2netp_256_int8.tflite";
 // Inference is rare, once per new artwork, so a few cores finish it quickly
 // without starving playback.
 const _threads = 4;

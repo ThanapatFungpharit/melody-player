@@ -4,7 +4,7 @@ import "dart:ui" as ui;
 
 import "package:flutter_test/flutter_test.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
-import "package:flet_background_audio/src/background_audio_session.dart";
+import "package:melody_audio/src/background_audio_session.dart";
 
 import "support/fakes.dart";
 

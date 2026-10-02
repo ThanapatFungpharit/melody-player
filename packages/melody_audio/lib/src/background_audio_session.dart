@@ -1,11 +1,14 @@
 import "dart:async";
 
-import "package:flet/flet.dart";
 import "package:flutter/foundation.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
 
 import "native_playback_registry.dart";
 import "notification_artwork.dart";
+
+/// Receives a system media action the native engine could not satisfy alone.
+typedef MediaActionListener =
+    void Function(String action, Duration? seekPosition);
 
 /// Process-scoped media session shared with the persistent decoder.
 class NativeMediaSessionRuntime {
@@ -13,7 +16,7 @@ class NativeMediaSessionRuntime {
 
   static final NativeMediaSessionRuntime instance =
       NativeMediaSessionRuntime._();
-  Control? _actionControl;
+  MediaActionListener? _actionListener;
 
   final FlutterMediaSession _session = FlutterMediaSession();
   final NotificationArtwork _notificationArtwork = NotificationArtwork();
@@ -39,12 +42,12 @@ class NativeMediaSessionRuntime {
   Future<void> _playbackStateTail = Future<void>.value();
   bool _nativeLoading = false;
 
-  void attach(Control control) {
-    _actionControl = control;
+  void attach(MediaActionListener listener) {
+    _actionListener = listener;
   }
 
-  void detach(Control control) {
-    if (identical(_actionControl, control)) _actionControl = null;
+  void detach(MediaActionListener listener) {
+    if (identical(_actionListener, listener)) _actionListener = null;
   }
 
   Map<String, String> get currentMetadata {
@@ -79,12 +82,12 @@ class NativeMediaSessionRuntime {
           ) ??
           false;
       // The engine applied the action. Its Stop also releases this session
-      // after the decoder is cleared and reports "stopped" to Python.
+      // after the decoder is cleared and reports "stopped" to the app.
       if (handled) return;
     } catch (error) {
       debugPrint("BackgroundAudioSession: native action failed: $error");
     }
-    // A queue-less preview may still need Python application policy (for
+    // A queue-less preview may still need application policy (for
     // example Skip Next returning to the durable library queue).
     _sendAction(action, seekPosition: seekPosition);
   }
@@ -126,7 +129,7 @@ class NativeMediaSessionRuntime {
   }
 
   /// Start background retention with playback itself, independently of a
-  /// later Python metadata sync.
+  /// later metadata sync from the app.
   Future<void> ensurePlaybackActive() async {
     if (kIsWeb || _disposed) return;
     final epoch = _lifecycleEpoch;
@@ -203,7 +206,7 @@ class NativeMediaSessionRuntime {
     final reportedPositionMs = (data["position_ms"] as num?)?.toInt() ?? 0;
     final playing = data["playing"] as bool? ?? false;
     final loading = data["loading"] as bool? ?? false;
-    // Python can deliver a snapshot that was queued before a native pause or
+    // The app can deliver a snapshot that was queued before a native pause or
     // seek. Once the decoder has reported state, its timeline is authoritative.
     if (!_nativeStateObserved && nativeStateRevision == _nativeStateRevision) {
       _nativePositionMs = reportedPositionMs;
@@ -340,8 +343,8 @@ class NativeMediaSessionRuntime {
     await _queuePlaybackState();
   }
 
-  /// Decoder events continue to update the system timeline while Python is
-  /// suspended or a Flet page is being replaced.
+  /// Decoder events continue to update the system timeline while the app is
+  /// suspended or its widget tree is being rebuilt.
   void onNativePlaybackEvent(String name, dynamic value) {
     if (!_active || value is! Map) return;
     final data = Map<String, dynamic>.from(value);
@@ -376,7 +379,7 @@ class NativeMediaSessionRuntime {
       _nativeDurationMs = 0;
     } else {
       // Other events such as "loaded" carry no timeline state and must not
-      // make an in-flight Python snapshot look superseded.
+      // make an in-flight app snapshot look superseded.
       return;
     }
     _nativeStateRevision++;
@@ -506,10 +509,7 @@ class NativeMediaSessionRuntime {
     if (_disposed) {
       return;
     }
-    _actionControl?.triggerEvent("action", {
-      "action": action,
-      "seek_position_ms": seekPosition?.inMilliseconds,
-    });
+    _actionListener?.call(action, seekPosition);
   }
 
   Future<void> _deactivate() async {
@@ -540,26 +540,5 @@ class NativeMediaSessionRuntime {
     if (!_active) return;
     _active = false;
     await _session.deactivate();
-  }
-}
-
-/// Only the Flet command and event bridge follows the page lifecycle.
-class BackgroundAudioSessionService extends FletService {
-  BackgroundAudioSessionService({required super.control});
-
-  final NativeMediaSessionRuntime _runtime = NativeMediaSessionRuntime.instance;
-
-  @override
-  void init() {
-    super.init();
-    control.addInvokeMethodListener(_runtime.invokeMethod);
-    _runtime.attach(control);
-  }
-
-  @override
-  void dispose() {
-    control.removeInvokeMethodListener(_runtime.invokeMethod);
-    _runtime.detach(control);
-    super.dispose();
   }
 }

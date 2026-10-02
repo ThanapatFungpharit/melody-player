@@ -3,9 +3,9 @@ import "dart:typed_data";
 import "dart:ui" as ui;
 
 import "package:flutter_test/flutter_test.dart";
-import "package:flet_background_audio/src/notification_artwork.dart";
-import "package:flet_background_audio/src/notification_focal_point.dart";
-import "package:flet_background_audio/src/notification_saliency.dart";
+import "package:melody_audio/src/notification_artwork.dart";
+import "package:melody_audio/src/notification_focal_point.dart";
+import "package:melody_audio/src/notification_saliency.dart";
 
 Uint8List pixelsWhere(int width, int height, int Function(int x, int y) gray) {
   final pixels = Uint8List(width * height * 4);

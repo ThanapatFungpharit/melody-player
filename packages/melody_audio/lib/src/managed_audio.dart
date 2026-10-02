@@ -1,7 +1,6 @@
 import "dart:async";
 
 import "package:audio_session/audio_session.dart";
-import "package:flet/flet.dart";
 import "package:flutter/foundation.dart";
 import "package:just_audio/just_audio.dart";
 
@@ -61,14 +60,29 @@ class _MemoryAudioSource extends StreamAudioSource {
   }
 }
 
-/// Process-scoped player; page-scoped Flet services are only command bridges.
+/// Receives decoder events: loaded, duration_change, position_change,
+/// state_change, track_change, and error. Each carries its generation.
+typedef NativeAudioListener =
+    void Function(String name, Map<String, Object?> data);
+
+/// Parses a millisecond position sent as a number or numeric string.
+Duration? _parseDuration(Object? value) {
+  final milliseconds = switch (value) {
+    num number => number.toInt(),
+    String text => int.tryParse(text),
+    _ => null,
+  };
+  return milliseconds == null ? null : Duration(milliseconds: milliseconds);
+}
+
+/// Process-scoped player shared by the app and the system media session.
 /// just_audio owns decoding, buffering, playlists, automatic next, and repeat.
 class NativeAudioRuntime implements NativePlaybackEngine {
   NativeAudioRuntime._();
 
   static final NativeAudioRuntime instance = NativeAudioRuntime._();
 
-  Control? _eventControl;
+  NativeAudioListener? _listener;
   AudioPlayer? _player;
   AudioPlayer? _preparingPlayer;
   Future<void>? _sessionFuture;
@@ -90,14 +104,14 @@ class NativeAudioRuntime implements NativePlaybackEngine {
   bool _playbackWanted = false;
   bool _removingGhost = false;
 
-  void attach(Control control) {
-    _eventControl = control;
+  void attach(NativeAudioListener listener, {double volume = 1}) {
+    _listener = listener;
     activeNativePlaybackEngine = this;
-    setVolume(control.getDouble("volume", 1)!);
+    setVolume(volume);
   }
 
-  void detach(Control control) {
-    if (identical(_eventControl, control)) _eventControl = null;
+  void detach(NativeAudioListener listener) {
+    if (identical(_listener, listener)) _listener = null;
   }
 
   Future<void> _ensureSession() async {
@@ -296,7 +310,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
         }
         if (state.processingState == ProcessingState.loading ||
             state.processingState == ProcessingState.buffering) {
-          // The native media session needs buffering, while Python's play intent
+          // The native media session needs buffering, while the app's play intent
           // stays unchanged until the decoder reports ready or completed.
           NativeMediaSessionRuntime.instance.onNativePlaybackEvent(
             "state_change",
@@ -340,7 +354,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     final item = _queue[queueIndex];
     _activeSource = item.source;
     _activeTrackId = item.trackId;
-    // Explicit Python requests use even generations; native transitions use
+    // Explicit app requests use even generations; native transitions use
     // odd ones so a concurrent request can never share a generation.
     _generation = _generation.isEven ? _generation + 1 : _generation + 2;
     _positionBucket = -1;
@@ -563,9 +577,9 @@ class NativeAudioRuntime implements NativePlaybackEngine {
     }
   }
 
-  void _event(String name, [dynamic value]) {
+  void _event(String name, [Map<String, Object?> value = const {}]) {
     NativeMediaSessionRuntime.instance.onNativePlaybackEvent(name, value);
-    _eventControl?.triggerEvent(name, value);
+    _listener?.call(name, value);
   }
 
   void _publishPosition(AudioPlayer player) {
@@ -610,7 +624,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
         if (player == null) return false;
         _playbackWanted = true;
         _retainPlayback();
-        // A preparing selection starts itself when ready, like Python resume.
+        // A preparing selection starts itself when ready, like an app resume.
         if (_preparingPlayer == null) await _resume(player);
         return true;
       case "pause":
@@ -721,7 +735,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       case "play":
         _playbackWanted = true;
         _retainPlayback();
-        final position = parseDuration((args as Map?)?["position"]);
+        final position = _parseDuration((args as Map?)?["position"]);
         if (_preparingPlayer != null) {
           // Zero means "no seek" and must not override the load position.
           if (position != null && position > Duration.zero) {
@@ -743,7 +757,7 @@ class NativeAudioRuntime implements NativePlaybackEngine {
         await _player?.pause();
         return null;
       case "seek":
-        final position = parseDuration((args as Map?)?["position"]);
+        final position = _parseDuration((args as Map?)?["position"]);
         final player = _player;
         if (_preparingPlayer != null) {
           _pendingSeekPosition = position;
@@ -763,29 +777,5 @@ class NativeAudioRuntime implements NativePlaybackEngine {
       default:
         throw ArgumentError("Unknown ManagedAudio method: $name");
     }
-  }
-}
-
-/// Only this command bridge follows the Flet page lifecycle.
-class ManagedAudioService extends FletService {
-  ManagedAudioService({required super.control});
-
-  final NativeAudioRuntime _runtime = NativeAudioRuntime.instance;
-
-  @override
-  void init() {
-    super.init();
-    control.addInvokeMethodListener(_runtime.invokeMethod);
-    _runtime.attach(control);
-  }
-
-  @override
-  void update() => _runtime.setVolume(control.getDouble("volume", 1)!);
-
-  @override
-  void dispose() {
-    control.removeInvokeMethodListener(_runtime.invokeMethod);
-    _runtime.detach(control);
-    super.dispose();
   }
 }

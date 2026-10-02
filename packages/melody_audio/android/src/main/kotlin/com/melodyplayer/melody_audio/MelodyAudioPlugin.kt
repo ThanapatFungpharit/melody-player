@@ -1,4 +1,4 @@
-package com.melodyplayer.flet_background_audio
+package com.melodyplayer.melody_audio
 
 import android.content.ContentValues
 import android.content.Context
@@ -15,7 +15,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 
-class FletBackgroundAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+class MelodyAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private lateinit var context: Context
     private lateinit var channel: MethodChannel
     private val executor = Executors.newSingleThreadExecutor()
@@ -25,15 +25,30 @@ class FletBackgroundAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler
         context = binding.applicationContext
         channel = MethodChannel(
             binding.binaryMessenger,
-            "com.melodyplayer.flet_background_audio/shared_storage",
+            "com.melodyplayer.melody_audio/native",
         )
         channel.setMethodCallHandler(this)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (call.method != "publishAudio") {
-            result.notImplemented()
-            return
+        when (call.method) {
+            "publishAudio" -> {}
+            "nativeLibraryDir" -> {
+                result.success(context.applicationInfo.nativeLibraryDir)
+                return
+            }
+            "publicMusicDir" -> {
+                result.success(
+                    Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_MUSIC,
+                    ).absolutePath,
+                )
+                return
+            }
+            else -> {
+                result.notImplemented()
+                return
+            }
         }
         val source = call.argument<String>("source")
         val relativePath = call.argument<String>("relativePath") ?: "Melody"

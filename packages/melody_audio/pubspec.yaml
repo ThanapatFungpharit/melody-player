@@ -1,6 +1,6 @@
-name: flet_background_audio
-description: Melody audio player and system media-session bridge
-version: 0.7.0
+name: melody_audio
+description: Melody's audio player, system media session, and Android storage bridge
+version: 1.0.0
 publish_to: none
 
 environment:
@@ -9,7 +9,6 @@ environment:
 
 dependencies:
   audio_session: 0.2.4
-  flet: 0.86.5
   flutter:
     sdk: flutter
   flutter_media_session: 3.0.3
@@ -28,8 +27,8 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.melodyplayer.flet_background_audio
-        pluginClass: FletBackgroundAudioPlugin
+        package: com.melodyplayer.melody_audio
+        pluginClass: MelodyAudioPlugin
   assets:
     # U²-Netp salient object model (Apache-2.0, see u2netp_LICENSE.txt).
     - assets/u2netp_256_int8.tflite
