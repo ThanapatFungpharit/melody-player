@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from packaging.version import Version
 
-from musicplayer.yt_dlp_updater import (
+from melody_worker.updater import (
     RemoteRelease,
     WheelRecord,
     YtDlpUpdater,
@@ -311,9 +311,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
         source = _make_wheel(self.sources, "2026.9.12")
         remote = _remote(source, "2026.9.12")
 
-        with patch(
-            "musicplayer.yt_dlp_updater.os.replace", wraps=os.replace
-        ) as replace:
+        with patch("melody_worker.updater.os.replace", wraps=os.replace) as replace:
             YtDlpUpdater(
                 storage_directory=self.storage,
                 bundled_version="2026.8.19",
@@ -471,7 +469,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
                     raise OSError("disk full")
             replace(source_path, destination)
 
-        with patch("musicplayer.yt_dlp_updater.os.replace", side_effect=fail_new_state):
+        with patch("melody_worker.updater.os.replace", side_effect=fail_new_state):
             result = YtDlpUpdater(
                 storage_directory=self.storage,
                 bundled_version="2026.8.19",
@@ -502,7 +500,7 @@ class YtDlpUpdaterTests(unittest.TestCase):
         original_argv = sys.argv[:]
         with (
             patch.object(sys, "executable", "C:/Program Files/Melody/melody.exe"),
-            patch("musicplayer.yt_dlp_updater.subprocess.run") as run,
+            patch("melody_worker.updater.subprocess.run") as run,
         ):
             result = YtDlpUpdater(
                 storage_directory=self.storage,

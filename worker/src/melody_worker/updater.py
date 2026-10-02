@@ -3,7 +3,7 @@
 The application package is intentionally never modified.  A verified pure
 Python wheel is placed on ``sys.path`` ahead of the packaged distribution, so
 the packaged yt-dlp remains an immutable last-resort fallback on every
-platform supported by Flet.
+platform Melody's embedded interpreter supports.
 """
 
 from __future__ import annotations
@@ -32,9 +32,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from musicplayer.core.storage import exclusive_file_lock
-
-from .platform_runtime import application_data_directory
+from .storage import exclusive_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -305,9 +303,8 @@ class YtDlpUpdater:
 
     def _storage(self) -> Path:
         if self._storage_directory is None:
-            self._storage_directory = (
-                application_data_directory(create=True) / "yt-dlp-runtime"
-            )
+            raise RuntimeError("No yt-dlp runtime storage directory was configured")
+        self._storage_directory.mkdir(parents=True, exist_ok=True)
         return self._storage_directory
 
     def _read_state(self, storage: Path) -> tuple[dict[str, Any], bool]:

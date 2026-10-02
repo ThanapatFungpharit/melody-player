@@ -1,0 +1,26 @@
+[project]
+name = "melody-worker"
+version = "1.0.0"
+description = "Embedded yt-dlp worker for the Melody Flutter application"
+requires-python = ">=3.14"
+dependencies = [
+    "packaging>=24.0",
+    "yt-dlp==2026.8.19",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
