@@ -1,6 +1,11 @@
 # Melody
 
-Melody is a cross-platform music player and downloader built with CPython 3.14, Flet, the repository-owned `flet_background_audio` player, and `yt-dlp`. It provides one continuous workflow for searching, previewing, downloading, organizing, queueing, and playing music, with dedicated desktop and mobile interfaces for the same shared capabilities.
+Melody is a cross-platform music player and downloader. The application is a
+Flutter app written in Dart; Python is embedded only to run
+[`yt-dlp`](https://github.com/yt-dlp/yt-dlp), which has no Dart equivalent. It
+provides one continuous workflow for searching, previewing, downloading,
+organizing, queueing, and playing music, with dedicated desktop and mobile
+interfaces for the same shared capabilities.
 
 ## What is implemented
 
@@ -8,309 +13,133 @@ Melody is a cross-platform music player and downloader built with CPython 3.14, 
 - Optional manually uploaded cookie-file sessions for personalized YouTube Music search, signed-in playlists, stream previews, and downloads
 - Stream previews directly from Search
 - Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in every downloaded media file plus a derived offline UI cache
-- Search actions have one clear intent: Play reuses the intact library file or downloads it and starts playback when ready; Download stores it without playing. Both actions reuse an existing file or join an in-flight request instead of creating another copy.
-- Automatic import of completed audio into the existing binary `MusicManager` library
+- Search actions have one clear intent: Play reuses the intact library file or downloads it and starts playback when ready; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
+- Automatic import of completed audio into the SQLite music library
 - Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
 - Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, copy/move, and safe removal that does not delete audio files
 - Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and integrity-aware file paths
 - Persistent playback queue with play-next, append, reorder, remove, clear-upcoming, a visible one-time shuffle reorder, repeat-track, and repeat-queue
 - Background playback while Melody is minimized, another app is active, or a mobile device is locked
 - Lock-screen, notification-panel, Control Center, and desktop system-media controls with synchronized artwork, title, artist, playback state, seeking, and previous/next actions; Pause keeps the session available and explicit Stop removes it
-- Shared playback with platform-appropriate controls: desktop seek and precise volume controls with media-key/keyboard handling; mobile touch controls with mute/restore while the device provides media volume buttons
-- Dedicated mobile and desktop presentation layers with separate navigation and interaction models: mobile bottom navigation, full-screen panels, touch-sized actions, and bottom-sheet menus; desktop navigation rail, docked utility panels, dense toolbars, keyboard shortcuts, hover states, context menus, and drag-to-reorder interactions
-- Recent tracks, playback/search history, session queue state, light/dark/system themes, configurable accent palettes, and configurable YouTube Music/download settings
+- Desktop seek, precise volume, media keys, and keyboard shortcuts; mobile touch controls with mute/restore while the device provides media volume buttons
+- Separate desktop (navigation rail, docked queue, hover states, menus, drag-to-reorder) and mobile (bottom navigation, full-screen panels, touch targets, bottom-sheet menus) presentations
+- Recent tracks, playback/search history, session queue state, light/dark/system themes, accent palettes, and YouTube Music/download settings
 
-## Architecture
+## Layout
 
-The state owners, dependency rules, crash-recovery contracts, and native lifecycle limits are documented in [Architecture and invariants](docs/architecture.md). The [background-audio package reference](packages/flet_background_audio/README.md) covers its controls, events, queue contract, and platform behavior. See [Contributing](CONTRIBUTING.md) for the test groups and [Release and dependency policy](docs/releases-and-dependencies.md) for versioning and runtime yt-dlp selection.
+| Path | Contents |
+| --- | --- |
+| `app/` | The Flutter application: UI, SQLite stores, library, queue, playback, downloads, artwork verification |
+| `packages/melody_audio/` | Flutter plugin: process-scoped `just_audio` engine, system media session, notification artwork, Android MediaStore bridge |
+| `worker/` | The embedded Python worker: runs yt-dlp and selects/updates its runtime wheel |
+| `tools/` | Build and release scripts (FFmpeg fetching, worker packaging, `flutter build`) |
 
-The `core/` package owns independently usable capabilities:
+See [Architecture and invariants](docs/architecture.md) for state owners and
+contracts, [Contributing](CONTRIBUTING.md) for tests, and
+[Release and dependency policy](docs/releases-and-dependencies.md) for versions
+and runtime yt-dlp updates.
 
-- `core.concurrency.LazyBoundedExecutor` provides lazy, bounded worker pools with immediate overload backpressure and automatic idle retirement.
-- `core.downloader.Downloader` owns bounded threaded `yt-dlp` execution, progress callbacks, cancellation, staged files, and collision-safe output names.
-- `core.library.MusicManager` owns durable track records, hashes, duplicate source identity, library paths, integrity checks, and playlist order.
+## Run from source
 
-The `application/` package coordinates user-facing use cases across those capabilities:
+Requirements: Flutter 3.44.8, [uv](https://docs.astral.sh/uv/), and on Windows
+Visual Studio with the C++ desktop workload.
 
-- `providers.py` performs search and stream metadata extraction through a provider registry.
-- `downloads.py` coordinates core jobs, persistent history, retry, and library import. It is the single download-resolution point: source identity is normalized before scheduling, active requests are shared, and completed media is imported into one canonical managed library path.
-- `library_service.py` adds favorites/enriched metadata and explicit file-deletion semantics.
-- `queue.py` models the temporary playback queue independently from playlists.
-- `playback.py` mirrors durable queue intent into the required managed track-player contract.
-- `store.py` persists settings, enriched metadata, history, and session state in SQLite, writing only changed rows per transaction.
-
-The `ui/` package is split into presentation layers while keeping application behavior shared:
-
-- `ui/desktop/` implements the mouse-and-keyboard workspace. Its adaptive sidebar, rounded workspace, soft collection cards, and floating player use the same theme and accent colors as mobile. Labels collapse at smaller window sizes; Queue docks beside the current page on wide windows. Precise volume controls, keyboard shortcuts, context menus, and dedicated queue/playlist drag handles keep desktop interactions within reach.
-- `ui/mobile/` implements the touch-first workspace. It uses bottom navigation, a view stack for full-screen panels, comfortable touch targets, bottom-sheet action menus, and simplified Now Playing and queue flows. A shared Flet `SafeArea` policy keeps the top bar, page content, bottom navigation, and full-screen panels clear of status bars, display cutouts, gesture areas, and three-button navigation; action sheets use the matching platform view insets. Mobile does not depend on hover, right-click, or drag interactions, and uses the device's media volume controls with an in-app mute/restore action.
-- `ui/components/` contains genuinely shared visual pieces and playback bindings, including artwork, track rows, navigation definitions, and common design tokens. Platform-specific screen structure and interaction logic stays in its own package instead of accumulating conditionals in one responsive component.
-
-Track deletion is explicit and deterministic. Deleting a library track removes its enriched metadata, playlist references, and managed audio file when no other record owns that path. Clearing download history only removes operation history; it never removes media that is still available in the library.
-
-The Library export action and each playlist's Export action save an M3U8 file in track order. The export contains links to the audio files on the current device; it does not copy the audio into the export.
-
-`app.py` selects the presentation from the native platform at startup. Both shells call the same application services, playback coordinator, persistent store, and managed player, so queue state, settings, downloads, history, and playback remain synchronized even when the controls and information density differ. Capability parity follows the user's goal rather than requiring identical controls on every device.
-
-Release wrappers package only the target presentation: Windows, Linux, and macOS
-include `ui/desktop/`; Android APKs and AABs include `ui/mobile/`. Both retain the
-shared pages, components, theme, managed-player adapter, and application services. Imports
-load only the selected presentation, so an installed app does not depend on the
-excluded UI. Source-tree launches and previews continue to support both.
-
-Theme settings follow the same shared-state model. The Theme selector previews Light, Dark, or System immediately; accent swatches preview immediately as well. Save persists both choices, while Cancel restores the last persisted theme and accent.
-
-## Performance characteristics
-
-The latency-sensitive paths are deliberately bounded:
-
-- Startup performs no network request (unless you scheduled a yt-dlp update), media-tool download, or full-library hash/stray-file scan. It checks file availability only for tracks in the restored queue instead of walking the whole catalog; SHA-256 integrity checks remain available at the explicit feature boundaries that require them.
-- Search, stream resolution, and local imports share a pool capped at two active and two pending tasks. Library playback never enters that pool or reads whole tracks through Python; it hands the complete path queue directly to the managed player. The pool and its threads do not exist while idle; excess submissions are rejected immediately so UI actions never block behind or add to an unbounded queue.
-- The downloader creates its own pool only on the first download. Active work is capped by the configured concurrency and pending work has the same cap, for a maximum of `2 × concurrent_downloads` accepted tasks. The pool retires after the final task, and overload is reported per song without cancelling an otherwise valid batch.
-- Local audio paths reach the process-scoped native player immediately. `just_audio` owns decoding, buffering, playlist transitions, and repeat; `audio_session` configures audio focus and interruptions. Explicit selections prepare a replacement beside the active player and retire the old player after the replacement is ready. Generation checks discard stale Python and native work when the user changes tracks rapidly.
-- Playback position and duration events update only the seek slider and time labels instead of rebuilding the complete player bar, re-reading track metadata, and recreating artwork on every tick.
-- System media state is updated immediately for track, transport, queue-mode, and artwork changes, while position-only updates are throttled to once every five seconds. The operating system extrapolates the playhead between updates, preserving an accurate seek surface without waking the Python UI on every audio tick.
-- Returning from the background reconciles the UI with the native player's current position and duration before the media-session timeline is corrected, so the in-app seek surface does not jump back to its last foreground value.
-- Android keeps the foreground media session attached while a resumable queue exists, including while paused, and releases its keep-alive resources on explicit Stop. Removing the app from recents retains the Flutter engine while the foreground service is running, so reopening the notification reconnects to the same decoder. The native decoder sends position callbacks once per second while the UI is visible or hidden, and unchanged lock-screen metadata/actions are not republished. iOS uses the native playback audio-session category, and the underlying player handles transient audio-focus interruptions such as calls before resuming when the operating system restores focus.
-- Desktop volume changes reach the audio backend continuously while dragging, but the durable setting is written only when the drag settles. Mobile delegates loudness to the device's media volume controls and exposes a shared mute/restore capability; button and mute changes remain immediately durable.
-- Starting a track commits play count, last-played time, recents, history, and the current session queue in one SQLite transaction. Each track's details and each top-level state value are separate rows, so a playback-position save writes one small row instead of the whole state.
-- Download callbacks notify the UI at most five times per second and checkpoint non-terminal progress at most once per second. Completion, failure, cancellation, and status transitions are still immediate, so the trade-off is only that a forced process termination can lose up to one second of transient progress.
-- yt-dlp writes descriptive metadata first and burns the thumbnail into the final MP3, M4A, or Opus container last. The background worker reads the cover back from the completed container before committing it; when artwork was advertised or downloaded but embedded art does not exist, the download fails instead of silently creating a cache-only result. Verified embedded bytes are also atomically copied to app-private storage so UI images and native media sessions remain fast and offline without reparsing audio files.
-- Library source/hash duplicate checks use in-memory indexes, newest-first ordering is cached until membership changes, and bounded reads copy only the tracks a view needs. Library rendering automatically appends 50-row batches near the end of the scroll, text filtering is debounced, row metadata is loaded once per render, and artwork memory is capped by both bytes and entry count. Shuffle performs one O(n) reorder and then uses ordinary sequential traversal. The visible queue is the exact upcoming playback order.
-- Core task results and application download history are each capped at 250 records. Temporary destination reservations are released immediately after a move, so repeated downloads cannot grow bookkeeping structures without bound.
-
-Atomic temporary-file replacement and `fsync` are retained for settled and terminal state. This favors correctness and crash safety while coalescing only high-frequency intermediate updates. The worker caps deliberately trade unlimited burst acceptance for predictable CPU/RAM usage and responsive overload behavior.
-
-## Run
-
-Install dependencies and launch:
+During development the worker can run in a normal Python interpreter instead of
+the embedded one. Point the app at it, and at a throwaway data folder so your
+real library and music folder are never touched:
 
 ```console
-uv sync
-uv run musicplayer
+cd worker && uv sync && cd ..
+python tools/fetch_media_binaries.py windows x86_64
+cd app
+set MELODY_WORKER_PYTHON=..\worker\.venv\Scripts\python.exe
+set MELODY_FFMPEG_DIR=media\windows\x86_64
+set MELODY_DATA_DIR=%TEMP%\melody-dev
+flutter run -d windows
 ```
 
-On the first source-tree download, Melody resolves the current FFmpeg release
-asset for the desktop platform and architecture through a stable filename
-selector. The provider's published SHA-256 is verified before extraction, and
-the resolved release tag, source URL, and digest are saved with the cache.
-Launch only registers that on-demand operation: it performs no fetch, checksum
-pass, extraction, or encoder probe. The download runs the preparation on its
-background worker; local startup and playback do not wait for it. Later
-downloads reuse the verified cached bundle. Android and packaged desktop builds
-prepare their native tools through their build wrappers. Melody never selects a
-system installation from `PATH`.
+| Variable | Effect |
+| --- | --- |
+| `MELODY_WORKER_PYTHON` | Run the worker in this interpreter over stdio instead of the embedded runtime |
+| `MELODY_WORKER_SOURCE` | Worker source folder (defaults to `../worker/src`) |
+| `MELODY_FFMPEG_DIR` | Folder containing `ffmpeg` and `ffprobe` |
+| `MELODY_DATA_DIR` | Keep all state and the default music folder in this directory |
 
-Application state uses the native per-user data location on every system:
+Application state uses the same per-user locations as earlier releases, so an
+installed Melody upgrades in place with its library, playlists, and settings:
 
 - Windows: `%LOCALAPPDATA%\MelodyPlayer`
-- Linux: `$XDG_DATA_HOME/MelodyPlayer`, falling back to
-  `~/.local/share/MelodyPlayer`
+- Linux: `$XDG_DATA_HOME/MelodyPlayer`, falling back to `~/.local/share/MelodyPlayer`
 - macOS: `~/Library/Application Support/MelodyPlayer`
-- Android: Flet's application-specific data directory
+- Android and iOS: the app's application-support directory (`…/data`)
 
-Downloaded audio defaults to `~/Music/Melody` on desktop systems. On Android,
-downloads are prepared in recoverable private staging and then published through
+Downloaded audio defaults to `~/Music/Melody` on desktop. On Android, downloads
+are prepared in recoverable private staging and then published through
 MediaStore to the public `Music/Melody` folder without broad storage permission.
-After the library record is safely updated, the private staged copy is removed.
-The desktop location can be changed in Settings.
 
-YouTube Music access is anonymous by default. To use a signed-in session, export a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody validates the file and copies it to the platform's private application-data directory. It never detects browsers or reads their cookie databases, so the same workflow is available on desktop and Android. Cookie files contain sensitive session credentials and should not be shared.
+YouTube Music access is anonymous by default. To use a signed-in session, export
+a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody
+validates it and copies it to private application storage; it never reads
+browser cookie databases. Cookie files contain session credentials and should
+not be shared.
 
-Melody ships a release-tested `yt-dlp` and never modifies it. Settings →
-Maintenance shows the version in use, checks PyPI for a newer compatible release,
-and schedules its installation. At the next launch the update is downloaded,
-verified, and activated in the background before yt-dlp is first imported; a
-failed update keeps the previously working version. Normal launches are offline:
-they only re-verify an already installed update, and fall back to the bundled
-version if it is damaged.
+Melody ships a release-tested yt-dlp and never modifies it. Settings →
+Maintenance checks PyPI for a newer compatible release and schedules it; the
+next launch downloads, verifies, and activates it before yt-dlp is imported, and
+keeps the working version if anything fails. Maintenance also offers **Clean up
+library**, which removes references to deleted tracks and lists stray audio
+files without deleting anything.
 
-Settings → Maintenance also offers **Clean up library**, which removes favorites
-and history that point to deleted tracks and lists audio files in the music folder
-that are not in the library. It never deletes files.
-
-## Test and lint
-
-Preview either presentation with an isolated sample library and silent playback:
+## Test
 
 ```console
-uv run python tools/preview_ui.py --theme dark
-uv run python tools/preview_ui.py --screen library --width 1040 --height 700 --theme light
-uv run python tools/preview_ui.py --mobile
+cd packages/melody_audio && flutter test
+cd app && flutter analyze && flutter test
+cd worker && uv run pytest
+uv run pytest            # build tools
 ```
 
-Use `--empty` to check a new library. The preview uses temporary data and never opens your saved music or settings.
+`app/test/ui/screens_test.dart` renders every page and panel of both shells and
+fails on any layout or framework error. With `MELODY_SCREENSHOTS=1` and
+`--update-goldens` it also writes PNGs to `app/test/ui/screenshots/` for review.
 
-Tests are separated into `tests/unit`, `tests/integration`, `tests/ui`, and
-`tests/packaging`. Normal validation runs on every pull request and main-branch
-change. Packaging tests separately stage and compile each presentation with the
-other UI removed, then build every page and panel using an isolated fixture.
-The release workflow reuses validation before starting native builds.
+`app/test/integration` exercises the real worker against YouTube Music (search
+and a full download with artwork verification). It needs network access and
+runs only when `MELODY_WORKER_PYTHON` (and `MELODY_FFMPEG_DIR` for downloads)
+are set.
+
+## Build
+
+`tools/build_app.py` fetches and verifies FFmpeg for the target, packages the
+worker and its pinned requirements with
+[serious_python](https://pub.dev/packages/serious_python), and runs
+`flutter build` with the version from `app/pubspec.yaml`:
 
 ```console
-uv run --locked python -m unittest discover -s tests/unit -t . -v
-uv run --locked --group build python -m unittest discover -s tests -t . -v
-uv run ruff check src tests
-uv run ruff format --check src tests
+uv sync --locked --no-dev
+uv run python tools/build_app.py windows --architecture x86_64
+uv run python tools/build_app.py linux --architecture x86_64
+uv run python tools/build_app.py macos --architecture arm64
+uv run python tools/build_app.py apk
+uv run python tools/build_app.py aab
 ```
 
-Network search/download tests are intentionally excluded; provider mapping and the threaded downloader lifecycle are tested deterministically without external requests.
+Outputs are collected in `build/<target>`. Run each desktop build on its own
+operating system. Arguments after `--` go to `flutter build`.
 
-## Desktop bundles
+Android 10 and newer cannot execute programs from writable storage, so FFmpeg
+ships as `libffmpeg.so`/`libffprobe.so` native libraries that the installer
+extracts to the read-only native-library directory. The launcher activity is
+`singleTask` and keeps its Flutter engine cached, so the media notification
+reconnects to the same decoder after the task is removed. Android builds need
+release signing through `MELODY_ANDROID_KEY_STORE`,
+`MELODY_ANDROID_KEY_STORE_PASSWORD`, `MELODY_ANDROID_KEY_PASSWORD`, and
+`MELODY_ANDROID_KEY_ALIAS`, or the four `ANDROID_KEY_*` values written to `.env`
+by `generate-android-key.ps1`. `--allow-debug-signing` is for local testing only.
 
-Use the build wrapper rather than invoking `flet build` directly. It resolves
-the current BtbN release for Windows and pinned archives for other targets,
-verifies the provider SHA-256 hash, checks the extracted programs and their
-cached copies, and then packages them with the app:
-
-```console
-uv sync --locked --python 3.14 --no-dev --group build
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py windows --architecture x86_64 -- --yes
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py linux --architecture x86_64 -- --yes
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture x86_64 -- --yes
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture arm64 -- --yes
-```
-
-The release workflow builds separate Intel and Apple Silicon macOS bundles on
-matching native runners and uploads every desktop bundle with its architecture
-in the artifact name. macOS builds require Xcode 26.1.1 or newer for the native
-connectivity plugin; CI selects Xcode 26.2 explicitly. The desktop wrapper keeps
-the Python package, Xcode, and FFmpeg architectures aligned, and CI checks the
-resulting macOS executable before upload.
-
-Generated binaries are deliberately kept out of Git; every distributable
-artifact obtains them using the stable asset selectors and checksum verification
-in `tools/fetch_media_binaries.py`.
-
-## Android bundles
-
-Android 10 and newer do not permit applications to execute programs copied
-into writable app storage. Use the Android build wrapper, which packages each
-position-independent FFmpeg executable as an ABI-specific native library and
-enables installer extraction into Android's read-only native-library directory:
-
-```console
-uv sync --locked --python 3.14 --no-dev --group build
-uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android apk -- --yes --split-per-abi
-uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab -- --yes
-```
-
-The default Android build supports `arm64-v8a`, `armeabi-v7a`, and `x86_64`,
-targets Android 10/API 29 or newer, and bundles both `ffmpeg` and `ffprobe`.
-The wrapper also patches Flet's generated launcher activity to `singleTask`
-with document launching disabled, so launcher taps and media-notification
-intents route back to the existing player task instead of creating another UI
-and playback owner.
-Use `--architecture arm64`, `--architecture arm`, or `--architecture x86_64`
-before `--` to build a single ABI. The release workflow uploads each
-side-loadable APK as an architecture-specific artifact and uploads the Google
-Play App Bundle separately.
-
-## Build each target or every platform
-
-The wrapper commands above build one native target at a time. Run a desktop
-command on its matching operating system: Windows for `windows`, Linux for
-`linux`, and macOS for `macos`. Prepare the release toolchain once, then choose
-the target command to run:
-
-```console
-uv sync --locked --python 3.14 --no-dev --group build
-```
-
-```console
-# Windows x86_64 (run on Windows)
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py windows --architecture x86_64 -- --yes
-
-# Linux x86_64 (run on Linux)
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py linux --architecture x86_64 -- --yes
-
-# macOS Intel or Apple Silicon (run on the matching Mac)
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture x86_64 -- --yes
-uv run --locked --python 3.14 --no-dev --group build python tools/build_desktop.py macos --architecture arm64 -- --yes
-
-# Android: all APK ABIs, then the Play Store bundle
-uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android apk -- --yes --split-per-abi
-uv run --locked --python 3.14 --no-dev --group build python -m tools.build_android aab -- --yes
-```
-
-Desktop builds are written to `build/windows`, `build/linux`, or `build/macos`.
-Android writes APKs to `build/apk` and the App Bundle to `build/aab`. Android
-requires SDK platform 36, Build Tools 36.0.0, accepted Android SDK licenses,
-and the four release-signing environment variables described below.
-Both build wrappers load the project-root `.env` when it exists. Values already
-exported in the shell take precedence, and builds work without an `.env` file.
-
-Use [`act`](https://github.com/nektos/act) to run the **Application builds**
-workflow locally. Put the Android workflow secrets in `.env`, then choose one
-workflow job or invoke every job:
-
-```console
-# Entire workflow: preflight, validation, and every build job
-act workflow_dispatch -W .github/workflows/release-builds.yml --secret-file .env --artifact-server-path ./artifacts --pull=false
-
-# Individual workflow jobs
-act workflow_dispatch -W .github/workflows/release-builds.yml -j windows --secret-file .env --artifact-server-path ./artifacts --pull=false
-act workflow_dispatch -W .github/workflows/release-builds.yml -j linux --secret-file .env --artifact-server-path ./artifacts --pull=false
-act workflow_dispatch -W .github/workflows/release-builds.yml -j macos --secret-file .env --artifact-server-path ./artifacts --pull=false
-act workflow_dispatch -W .github/workflows/release-builds.yml -j android-apk --secret-file .env --artifact-server-path ./artifacts --pull=false
-act workflow_dispatch -W .github/workflows/release-builds.yml -j android-aab --secret-file .env --artifact-server-path ./artifacts --pull=false
-```
-
-`act` runs Linux containers. The APK and App Bundle jobs run independently, so
-each verifies and uploads its artifacts when its own build succeeds. The
-all-jobs command builds the Linux and Android artifacts locally, writes uploaded
-artifacts beneath `artifacts`, and reports the Windows and macOS jobs as
-unsupported. Build those desktop bundles with the
-matching native wrapper command above. GitHub Actions runs every workflow job
-on its matching hosted runner and creates the full Windows x86_64, Linux
-x86_64, Intel macOS, Apple Silicon macOS, three-ABI Android APK, and Android
-App Bundle release set. Manual workflow runs build and validate artifacts;
-publishing occurs only when a `v*` tag triggers the workflow.
-
-## Production release safeguards
-
-`musicplayer.__version__` is the authoritative release version. Package metadata, native build versions/numbers, tag validation, and artifact names derive from it. Flet/Flet Desktop/Flet CLI and the local audio package have exact compatible pins; the bundled yt-dlp is also pinned. See the [release policy](docs/releases-and-dependencies.md) for the runtime update window and remaining native reproducibility work.
-
-The build wrappers are release-only. They reject development/staging
-environments, enabled debug flags, verbose/profile builds, disabled Python
-compilation, and caller-selected embedded Python versions. Release packaging
-uses optimized Python bytecode, removes non-runtime source files, source maps,
-test helpers, cache directories, and the source-checkout bootstrap, and embeds
-a validated `production` configuration with debug, mock data, and source maps
-disabled. The audit permits only the two Flet bootstrap sources required by the
-embedded Python runtime.
-Packaged releases use the CPython 3.14 runtime.
-
-Local Android builds accept the four `ANDROID_KEY_*` values written to `.env` by
-`generate-android-key.ps1`. The wrapper decodes the Base64 keystore to a
-temporary file for the build and removes it afterward. You can also provide
-the four `FLET_ANDROID_SIGNING_*` variables accepted by Flet (`KEY_STORE`,
-`KEY_STORE_PASSWORD`, `KEY_PASSWORD`, and `KEY_ALIAS`). The wrapper verifies
-that the key-store file exists and rejects obvious debug-key configurations
-before doing any build work.
-
-After a local build, run the same recursive artifact audit used by CI:
-
-```console
-uv run python tools/verify_production_artifact.py --target windows build/windows
-uv run python tools/verify_production_artifact.py --target apk build/apk
-uv run python tools/verify_production_artifact.py --target aab build/aab
-```
-
-With `--target`, each installable must contain the complete compiled UI for that
-target, including shared UI modules, and must not contain the other presentation.
-Windows, Linux, and macOS use their matching target names; Android uses `apk` or
-`aab`. Files in another bundle cannot satisfy a missing module in an installable.
-
-The audit opens nested APK/AAB/Python archives and fails if it finds a package
-from any non-runtime dependency group, known test/dev tooling, non-runtime
-Python sources, source maps, debug symbols, local tool output, test directories,
-environment files, or a missing/non-production release manifest. CI installs the build
-toolchain without the `dev` group, runs this audit before upload, and uses the
-protected `production` GitHub environment. Android releases additionally
-require `ANDROID_KEY_STORE_BASE64`, `ANDROID_KEY_STORE_PASSWORD`,
-`ANDROID_KEY_PASSWORD`, and `ANDROID_KEY_ALIAS` secrets; the workflow stops
-instead of falling back to Flet's debug signing key when any is missing.
+The **Application builds** workflow builds Windows, Linux, Intel and Apple
+Silicon macOS, Android APKs, and the Android App Bundle on tagged releases.
 
 ## License status
 
-A project license has not yet been selected. See [Contributing](CONTRIBUTING.md#licensing-status); this repository currently contains no new license grant for Melody or its local bridge.
+A project license has not yet been selected. See [Contributing](CONTRIBUTING.md#licensing-status); this repository currently contains no new license grant for Melody or its local plugin.

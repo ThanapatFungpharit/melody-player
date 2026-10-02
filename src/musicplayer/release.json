@@ -1,7 +1,0 @@
-{
-  "schema": 1,
-  "environment": "production",
-  "debug": false,
-  "mock_data": false,
-  "source_maps": false
-}

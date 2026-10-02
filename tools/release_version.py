@@ -1,29 +1,19 @@
-"""Read the sole release version without importing the application/toolchain."""
+"""Read the sole release version from the Flutter app's pubspec."""
 
 from __future__ import annotations
 
 import argparse
-import ast
 import os
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def release_version(root: Path = ROOT) -> str:
-    tree = ast.parse((root / "src/musicplayer/__init__.py").read_text("utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "__version__"
-            for target in node.targets
-        ):
-            version = ast.literal_eval(node.value)
-            if isinstance(version, str) and re.fullmatch(
-                r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version
-            ):
-                return version
-    raise ValueError("Melody's __version__ must be a literal major.minor.patch version")
+PUBSPEC = ROOT / "app" / "pubspec.yaml"
+_VERSION_LINE = re.compile(
+    r"^version:\s*(?P<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))"
+    r"\+(?P<build>\d+)\s*$",
+    re.MULTILINE,
+)
 
 
 def build_number(version: str) -> int:
@@ -31,6 +21,20 @@ def build_number(version: str) -> int:
     if major > 2099 or minor >= 1000 or patch >= 1000:
         raise ValueError("Version exceeds the Android build-number allocation")
     return major * 1_000_000 + minor * 1_000 + patch
+
+
+def release_version(pubspec: Path = PUBSPEC) -> str:
+    """Return major.minor.patch, checking that the build number agrees."""
+    match = _VERSION_LINE.search(pubspec.read_text("utf-8"))
+    if match is None:
+        raise ValueError("app/pubspec.yaml must declare version: X.Y.Z+BUILD")
+    version = match["version"]
+    expected = build_number(version)
+    if int(match["build"]) != expected:
+        raise ValueError(
+            f"app/pubspec.yaml build number must be {expected} for version {version}"
+        )
+    return version
 
 
 def validate_tag(version: str, ref: str) -> None:

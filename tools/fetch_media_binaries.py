@@ -28,7 +28,7 @@ ANDROID_RELEASE_ROOT = (
     f"https://github.com/rhythmcache/ffmpeg-android/releases/download/{ANDROID_VERSION}"
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BINARY_ROOT = PROJECT_ROOT / "src" / "musicplayer" / "bin"
+DEFAULT_BINARY_ROOT = PROJECT_ROOT / "app" / "media"
 REQUIRED_AUDIO_ENCODERS = frozenset({"libmp3lame", "aac", "libopus"})
 
 

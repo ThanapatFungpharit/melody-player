@@ -121,6 +121,18 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
+# Bundled FFmpeg/FFprobe, staged by tools/fetch_media_binaries.py.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(MELODY_MEDIA_ARCH "arm64")
+else()
+  set(MELODY_MEDIA_ARCH "x86_64")
+endif()
+set(MELODY_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../media/linux/${MELODY_MEDIA_ARCH}")
+if(EXISTS "${MELODY_MEDIA_DIR}/ffmpeg")
+  install(PROGRAMS "${MELODY_MEDIA_DIR}/ffmpeg" "${MELODY_MEDIA_DIR}/ffprobe"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/ffmpeg" COMPONENT Runtime)
+endif()
+
 # Install the AOT library on non-Debug builds only.
 if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

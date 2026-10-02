@@ -1,7 +1,7 @@
 name: melody
-description: "A new Flutter project."
+description: "Melody: a local music player with YouTube Music downloads."
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.0.1+1000001
 
 environment:
   sdk: ^3.12.2

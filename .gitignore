@@ -55,3 +55,4 @@ signing/
 /app/test/ui/screenshots/
 # FFmpeg staged for native builds by tools/fetch_media_binaries.py
 /app/media/
+/app/android/app/src/main/jniLibs/

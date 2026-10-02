@@ -3,43 +3,42 @@
 Start with [architecture and invariants](docs/architecture.md) and
 [release/dependency policy](docs/releases-and-dependencies.md). Preserve named
 capabilities and state owners; file or line-count reduction alone is not an
-architectural improvement.
+architectural improvement. Python is reserved for the yt-dlp worker: anything
+that does not need yt-dlp belongs in Dart.
 
 ## Local validation
 
 ```console
-uv sync --locked --group build
-uv run --locked python -m unittest discover -s tests/unit -t . -v
-uv run --locked python -m unittest discover -s tests/integration -t . -v
-uv run --locked python -m unittest discover -s tests/ui -t . -v
-uv run --locked --group build python -m unittest discover -s tests/packaging -t . -v
-uv run --locked ruff check src tests tools packages/flet_background_audio/src/flet_background_audio
-uv run --locked ruff format --check src tests tools packages/flet_background_audio/src/flet_background_audio
-uv run --locked --group build ty check src tests tools
+cd packages/melody_audio && flutter pub get && flutter analyze && flutter test
+cd app && flutter pub get && flutter analyze && flutter test
+cd worker && uv sync --locked && uv run ruff check src tests && uv run ruff format --check src tests && uv run pytest
+uv sync --locked && uv run ruff check tools && uv run pytest
 ```
 
-The unit suite is the fast default. Integration tests use temporary storage and
-fake network responses. UI tests build headless controls. Packaging tests inspect
-release contracts and compiled presentations; they do not build signed native
-apps. Use `uv run --locked --group build python -m unittest discover -s tests -t . -v` to run all four groups.
-Shared fixtures live in `tests/ui_support.py`; new tests belong in the relevant
-group. Tests must not use the user's library, live cookies, or external network.
+- `app/test/core` covers storage, the library manager, and embedded artwork.
+  The data-compatibility fixtures were written by the previous Python stores;
+  never regenerate them with the Dart code.
+- `app/test/application` covers downloads (with a fake worker transport),
+  playback, and the queue.
+- `app/test/ui/screens_test.dart` renders every screen of both presentations.
+- `app/test/integration` talks to YouTube Music through the real worker and runs
+  only when `MELODY_WORKER_PYTHON` is set.
+- `worker/tests` covers the request loop and the runtime updater.
 
-CI runs quality checks and these groups independently on pull requests and main
-or master changes. Unit/integration/UI validation covers CPython
-3.14 on Linux and Windows; packaging validation uses the same 3.14 baseline.
-Native builds are a separate release workflow and depend on validation.
+Tests must not use the user's library, live cookies, or (outside
+`app/test/integration`) the network. When running the app from source, set
+`MELODY_DATA_DIR` so it never opens your real data.
 
 For stateful changes, test failure boundaries: persistence failing after bytes
-are written, a callback from an obsolete source, simultaneous commands,
-cancellation just before completion, and restart with an interrupted journal.
-Avoid tests that merely repeat an implementation detail or require live media
-downloads. Include native-device checks for background audio changes; headless
-tests cannot validate OS audio focus, process recreation, or lock-screen controls.
+are written, a callback from an obsolete decoder generation, simultaneous
+commands, cancellation just before completion, and restart with an interrupted
+receipt. Include native-device checks for background audio changes; headless
+tests cannot validate OS audio focus, process recreation, or lock-screen
+controls.
 
 ## Licensing status
 
 No project license has been selected in this checkout. This documentation does
 not grant new modification or redistribution permissions. The maintainer must
-choose a license for Melody and its local bridge before presenting the project
+choose a license for Melody and its local plugin before presenting the project
 as licensed open source. Third-party components retain their own licenses.

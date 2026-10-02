@@ -1,255 +1,183 @@
 # Architecture and invariants
 
-Melody has a Python application, two Flet presentations, a local Python/Dart
-background-audio bridge, native audio players, and an independently selected
-runtime yt-dlp wheel. These are separate state owners with explicit handoffs.
-Fewer files or fewer lines are not goals if they weaken those boundaries.
+Melody is a Flutter application. Dart owns the UI, durable state, library,
+queue, playback policy, download coordination, and artwork verification. An
+embedded CPython interpreter (via serious_python) runs exactly one thing: the
+yt-dlp worker in `worker/`. The audio engine and system media session live in
+the repository-owned `packages/melody_audio` plugin. These are separate state
+owners with explicit handoffs; fewer files are not a goal if they weaken those
+boundaries.
 
 ```mermaid
 flowchart TD
-    App[app.py: composition and UI lifecycle] --> UI[Desktop or mobile presentation]
-    App --> Application[Application services]
-    UI --> Application
-    Application --> Core[Core capabilities and storage primitives]
-    Application --> Platform[Platform paths and media-tool configuration]
-    UI --> Audio[Background-audio adapter]
-    Audio --> Native[flet_background_audio player and media session]
+    Shell[Desktop or mobile shell] --> Controllers[Feature controllers]
+    Shell --> AppState[MelodyApp: composition and cross-feature events]
+    Controllers --> Services[Application services]
+    AppState --> Services
+    Services --> Core[Core: library, storage, media identity, artwork, downloader]
+    Services --> Audio[melody_audio: just_audio engine + media session]
+    Core --> Worker[WorkerClient]
+    Worker -->|JSON over PythonBridge| Python[worker/: yt-dlp + runtime updater]
 ```
 
 ## Dependency rules
 
-- `app.py` constructs and connects services and UI controllers. It owns page
-  lifecycle integration, but no feature workflow or presentation state.
-- `ui/pages/` contains composed feature controllers. Search, library, playlist,
-  download, and settings state belongs to its controller rather than the app
-  root. Desktop and mobile view builders receive the root only to reach those
-  explicit owners and shared application services.
-- `ui/components/` contains navigation, utility-panel, player, and shared-view
-  collaborators. `MusicPlayerApp` does not inherit from them and does not
-  forward their APIs. Immutable library models and media identities may be read
-  directly by the UI; mutable capability access goes through application
-  services.
-- `application/` owns use cases that cross capabilities: download-to-library
-  registration, history, queue policy, and playback intent. It must not import
-  Flet or a presentation. `downloads.py` coordinates jobs; it does not extract,
-  convert, or transfer audio itself.
-- `core/` owns independently usable capabilities: downloading, library records,
-  canonical media identity, bounded worker pools, and filesystem primitives.
-  It must not import application services, UI, the composition root, or platform
-  configuration. The application injects native media-tool options.
-- `platform_runtime.py` and `runtime_environment.py` are infrastructure leaves.
-  New platform concerns should have named modules and explicit dependencies;
-  they must not become entry points into application services.
-- Desktop and mobile implementations cannot import one another. Shared pages
-  contain shared presentation behavior; gestures, shell structure, insets, and
-  platform-specific controls belong in the corresponding presentation.
-- UI actions run through one page-owned `PageTasks` instance. The action
-  decorator accepts a feature controller and schedules it through that
-  controller's owning app, so controllers do not own executors or event loops.
-- Type-only imports inside `TYPE_CHECKING` do not create runtime dependencies.
+- `app/lib/core/` owns independently usable capabilities: SQLite storage
+  primitives, the music library, canonical media identity, embedded-artwork
+  reading, failure classification, and the downloader. It does not import
+  application services or UI.
+- `app/lib/application/` owns use cases that cross capabilities: the
+  application store, providers (yt-dlp option building and result mapping), the
+  download coordinator, library service, queue, playback controller, thumbnail
+  cache, cookie validation, and yt-dlp runtime status. It does not import UI.
+- `app/lib/app/` composes services (`AppServices`) and holds application-wide UI
+  state (`MelodyApp`): system media synchronization, media-session actions,
+  pending download follow-ups, and Android Music export.
+- `app/lib/ui/controllers/` contains the feature workflows that were the Flet
+  page controllers (search, library, playlists and import, home
+  recommendations, settings drafts). Both presentations share them.
+- `app/lib/ui/desktop/` and `app/lib/ui/mobile/` must not import one another.
+  Shared widgets, dialogs, menu actions, and settings sections live in
+  `app/lib/ui/shared/`.
+- `worker/` contains no application policy. It receives yt-dlp options from the
+  app, returns trimmed info dictionaries and raw failure facts, and streams
+  download progress. Classification, option building, and result mapping are
+  Dart.
 
-`tools/check_architecture.py` runs in the unit suite. It checks absolute and
-relative runtime imports, literal dynamic imports, layer direction, opposite
-presentation imports, and import cycles. It cannot prove the target of an
-arbitrary computed dynamic import; add such imports only with focused tests.
+## The worker boundary
+
+The app starts the worker with `SeriousPython.run` and talks to it over
+serious_python's in-process `PythonBridge` (no sockets, no subprocess). During
+development `MELODY_WORKER_PYTHON` runs the same code in a standalone
+interpreter over newline-delimited JSON on stdio.
+
+Requests are `{"id", "op", ...}`; each gets one `{"id", "ok", "result"|"error"}`
+reply. Operations:
+
+| Operation | Purpose |
+| --- | --- |
+| `extract` | `YoutubeDL(options).extract_info(target, download=False)`, trimmed to the fields Melody reads |
+| `download` | Run yt-dlp into a staging directory owned by the app, emitting `progress` events |
+| `cancel` | Stop a download at its next progress hook |
+| `status` / `ready` event | The runtime selection result |
+| `latest_release` | Newest compatible yt-dlp on PyPI (Settings → Maintenance) |
+
+Failures carry the exception chain's messages, types, errno values, and status
+codes so `core/errors.dart` can classify them without Python policy.
 
 ## State ownership
 
 | State | Authority | Other participants |
 | --- | --- | --- |
 | Durable queue mirror, requested transport, current selection | `PlaybackController` | UI sends commands; native snapshots are persisted |
-| Live queue, automatic transitions, decoder/device state | Native playback engine | Adapter forwards track, timeline, and state observations to the controller |
-| Track UUIDs, file references, hashes, playlists | `MusicManager` | Application services coordinate registration and deletion |
-| Settings, enriched track details, history, session queue | `ApplicationStore` | Writes commit atomically; failure restores in-memory values |
-| Worker execution, cancellation, staged download files | `Downloader` | Coordinator acknowledges successful handoff |
-| Download reuse, registration, retry, durable operation history | `DownloadCoordinator` | Core does not know about the library |
-| Embedded cover artwork | Downloaded media container | Downloader verifies the final tag before committing the file |
-| Offline UI artwork keyed by remote URL | `ThumbnailCache` | Derived only from verified embedded bytes; UI and system media resolve cached forms |
-| Runtime yt-dlp selection | `yt_dlp_updater` (once per process, before first import) | `YtDlpRuntime` schedules it and exposes status; importers wait on the runtime gate |
+| Live queue, automatic transitions, decoder/device state | `NativeAudioRuntime` (melody_audio) | `NativeAudioBackend` forwards generation-filtered events to the controller |
+| Track UUIDs, file references, hashes, playlists | `MusicManager` (`library.db`) | Services coordinate registration and deletion through `mutation` |
+| Settings, track details, history, session queue, download history | `ApplicationStore` (`state.db`) | Writes commit atomically; failure restores in-memory values |
+| Staged download files, cancellation, terminal outcome | `Downloader` | The worker writes only inside the staging directory it is given |
+| Download reuse, registration, retry, receipts replay | `DownloadCoordinator` | Core does not know about the library |
+| Embedded cover artwork | The downloaded media container | The downloader reads it back before committing the file |
+| Offline UI artwork keyed by remote URL | `ThumbnailCache` | Derived only from verified embedded bytes |
+| Runtime yt-dlp selection | `worker/melody_worker/updater.py`, once per worker launch before import | `YtDlpRuntime` schedules updates and reports status |
 
-### Playback and concurrency
+Both SQLite schemas are unchanged from the Python releases, and fixtures written
+by the Python stores are part of the Dart test suite. Pre-SQLite `library.mmdb`
+and `state.json` files are still imported once and kept with a `.migrated`
+suffix.
 
-The controller owns durable Python playback intent and mirrors the native
-engine's live queue selection. Its `playing` property is read-only to callers.
-It represents requested playback while a load or native command is pending and
-is reconciled by native state/error events. It is not proof that the device has
-emitted sound. Consumers needing a consistent view can read the immutable
-`PlaybackSnapshot`.
+### Playback
 
-Commands, queue mutations, and player callbacks share the controller's reentrant
-lock. The controller always gives the complete library path queue to the managed
-player. There is no capability probe, Python byte-loading fallback, playback
-worker, or Python preload cache. The process-scoped `just_audio` player owns
-decoding, buffering, playlist transitions, and repeat. `audio_session`
-configures focus and interruption behavior. The bridge owns generation-scoped
-events and prepares replacement players for explicit selections.
-The adapter mounts a command bridge for the page lifetime. The decoder, live
-queue, playback position, and media session remain process-scoped when that
-bridge is disposed. A new page queries the native snapshot and adopts it before
-issuing a new playback command. Events from
-the retiring decoder are ignored, and completion is handled once per generation.
-Transport RPCs have their own lock, so Pause remains responsive while a candidate
-source is preparing. Callbacks must enqueue UI work or return promptly; do not
-wait for another thread that needs the controller lock.
+The controller owns durable playback intent and mirrors the native engine's live
+queue selection. `playing` reflects requested playback while a load is pending
+and is reconciled by native events; it is not proof that sound was emitted.
 
-The backend owns transport mechanics and RPC ordering. The native engine owns a
-runtime copy of the queue, lets `just_audio` advance it on completion, and emits
-a generation-scoped track-change event that Python mirrors
-and persists. Python must not independently advance a native completion event.
-Selecting a source sends autoplay and start position in the same native request;
-the decoder starts when ready without a later Python Play callback. Visible UI
-queue mutations replace or update the native queue atomically. System
-media controls operate that engine directly; only an action that cannot be
-satisfied by the installed native queue falls back to Python application policy.
-Returning from background queries the native player and reconciles observations.
-Suspending a page is not a request to stop playback. Pause preserves the active
-media session and exposes Play. On Android, any active media keeps the foreground
-media service attached while paused; only explicit Stop discards the decoder,
-releases keep-alive resources, and deactivates system controls. The Android
-notification shows transport controls without Stop; Stop is available in
-Melody's player. For library tracks, the notification also offers Repeat and
-Favorite; their labels and icons follow the current queue and favorite state.
-The native decoder emits position updates once per second while the app is
-visible or hidden. Media-session synchronization skips unchanged metadata and
-action sets, leaving only playback timeline corrections on progress ticks.
+The controller always gives the complete library path queue to the native
+engine. `just_audio` owns decoding, buffering, playlist transitions, and repeat;
+`audio_session` configures focus and interruptions. Explicit requests use even
+generations and native transitions odd ones, so events from a superseded decoder
+are ignored; completion is handled once per generation. Source and transport
+commands are serialized separately so Pause stays responsive while a replacement
+source prepares, and a load watchdog reports a decoder that never becomes ready.
 
-Android release builds patch the generated launcher activity to `singleTask`
-and disable document launching. Launcher and notification intents therefore
-route to the existing task rather than constructing a second Python/controller
-owner. The generated activity caches its Flutter engine, so removing the Android
-task does not destroy the Dart decoder while the foreground media service keeps
-the process alive. Reopening Melody attaches to that engine, and foreground
-resume reconciles the player timeline. Full Android process death still destroys
-in-memory decoder identity; the persisted queue can be restored, but automatic
-continuation is not claimed. iOS background and lock-screen behavior and Android
-lifecycle behavior still require physical-device release testing; the headless
-suite cannot certify
-operating-system policy.
+The controller must not independently advance a native completion. Queue
+mutations replace or update the native queue atomically; system media controls
+operate the engine directly and only actions the installed queue cannot satisfy
+fall back to the app. Pause keeps the media session; only Stop releases the
+decoder, keep-alive resources, and system controls. On Android the launcher
+activity is `singleTask` and caches its Flutter engine, so removing the task does
+not destroy the decoder while the foreground media service keeps the process
+alive. Full process death still loses decoder identity; the persisted queue can
+be restored, but automatic continuation is not claimed. Physical-device testing
+is still required for background, lock-screen, and lifecycle behavior.
 
-Shuffle is a one-time in-place reorder of the playback queue. Enabling it keeps
-the current track fixed and reorders only upcoming rows; starting a collection
-with Shuffle reorders the whole collection before selecting its first row.
-Next, Previous, repeat, persistence, and the queue UI then
-all follow that same visible order without making another random choice.
-Playlist order is separately authoritative in `MusicManager`: desktop drag/drop
-and mobile move actions persist a strict complete order without replacing or
-restarting the active playback queue.
+Shuffle is a one-time in-place reorder of the upcoming rows (or the whole
+collection when starting shuffled). Next, Previous, repeat, persistence, and the
+queue view then follow that visible order. Playlist order is separately
+authoritative in `MusicManager`; reordering a playlist never replaces the
+active queue.
 
-Downloads have a separate bounded worker pool. Coordinator reservations use
-canonical source keys under its lock; requests for one source share active
-work. Library file allocation, duplicate lookup, and registration are serialized
-through `MusicManager.mutation()`, including local imports and download imports.
-ApplicationStore serializes each transaction. A data directory is intended for
-one application writer; both stores keep one SQLite connection per process.
+### Downloads
 
-Thumbnail files written by yt-dlp stay in staging while metadata is written and
-the cover is burned into the final audio container. Embedding is the last media
-postprocessor. Before promotion, the worker reads the artwork back from every
-completed media file; advertised or retained artwork without a readable
-embedded cover is a terminal post-processing failure. Mutagen is a direct dependency so this works
-for all selectable MP3, M4A, and Opus formats rather than relying on an optional
-yt-dlp extra. Only verified embedded bytes are copied into the URL-keyed UI
-cache. That derived cache is committed atomically, and a cache failure does not
-invalidate the authoritative media file. Native Flet images receive the cached
-file path so Flutter loads artwork without Python reading and transporting it
-on the UI thread. Browser views receive cached bytes, and native media sessions
-receive a file URI. Neither view needs to parse audio containers while offline.
+Coordinator reservations use canonical source keys; requests for one source
+share active work. File allocation, duplicate lookup, and registration are
+serialized through `MusicManager.mutation`, including local imports. The
+downloader's queue is bounded by `concurrent_downloads` active plus as many
+pending jobs; overload is reported per song (`WorkerQueueFull`) without
+cancelling a batch.
 
-Startup loads only durable state needed for the first view. It does not fetch
-development media tools, reconcile unregistered files, or hash every completed
-download. yt-dlp selection runs in the background and contacts the network only
-when the user scheduled an update. Cheap stat-based availability filters the restored
-queue and history; full content integrity remains an explicit operation.
+yt-dlp keeps the thumbnail sidecar in staging while metadata is written and the
+cover is burned in as the last postprocessor. Before promotion the downloader
+reads the cover back from every audio file with `core/artwork.dart` (ID3v2,
+MP4 `covr`, FLAC, Ogg Opus/Vorbis); advertised artwork without a readable
+embedded cover fails the download. Only verified bytes reach the thumbnail
+cache.
+
+Before completed files are promoted, a checksum receipt
+(`.melody-download-<task>.json`) records their names, hashes, source, and task.
+Registration acknowledges it; startup verifies and replays interrupted
+handoffs and keeps malformed or mismatched receipts for repair. Cancellation is
+cooperative and decided once: cancellation accepted before completion wins and
+cleans owned outputs.
 
 ## Track identity and files
 
 A library UUID is the durable identity of a saved record. Remote identity is
-provider plus stable media ID, represented by `MediaIdentity`; these two
-identities have different jobs. YouTube Music and YouTube watch, short, shortened, live, and embed
-URLs normalize to `youtube:<media-id>`. Titles and filenames never determine
-remote equality. Local files use a content hash for duplicate detection.
-The provider ID, display name, accepted hosts, playlist validation, and canonical
-YouTube Music URL builders live together in `core.media`; provider, download,
-desktop, and mobile modules consume that shared contract instead of maintaining
-independent copies.
-SearchResult exposes remote identity; queue and playlist entries contain library
-UUIDs; core Track and application TrackDetails remain the authoritative models
-for their respective fields. Free-form yt-dlp dictionaries stop at provider and
-download-adapter boundaries. Download coordination still uses an internal
-metadata mapping; it is not a second public track model.
+provider plus stable media ID (`MediaIdentity`); YouTube Music and YouTube
+watch, short, live, embed, and youtu.be URLs normalize to `youtube:<id>`. Titles
+and filenames never determine remote equality; local files use a content hash.
 
 | File class | Owner and lifecycle |
 | --- | --- |
-| Preview stream | Ephemeral URL; does not create a permanent library track |
-| Download staging | Core-owned `.melody-download-*` temporary directory; normal failure/cancellation cleans it |
-| Completed, unregistered download | Checksum-bearing `.melody-download-<task UUID>.json` receipt owns the handoff |
-| Managed library audio | Referenced by `MusicManager`; desktop files use the selected music folder, while Android files are published through MediaStore to public `Music/Melody` and private staging is removed after an atomic metadata handoff |
-| Imported local original | Owned by the user; Melody copies it and never deletes the original |
-| Copied import staging | `.melody-import-*.tmp`; atomic rename exposes only complete files |
+| Preview stream | Ephemeral URL; never creates a library track |
+| Download staging | `Downloader`-owned `.melody-download-*` directory; removed after every outcome |
+| Completed, unregistered download | Its checksum receipt owns the handoff |
+| Managed library audio | `MusicManager`; desktop uses the music folder, Android publishes to public `Music/Melody` and removes the private copy after the record is updated |
+| Imported local original | The user's; Melody copies it and never deletes the original |
+| Copied import staging | `.melody-import-*.tmp`; an atomic rename exposes only complete files |
 | Uploaded cookies | Private application storage; explicit upload/remove only |
-| Runtime wheels | Updater cache, separate from immutable packaged yt-dlp |
+| Runtime yt-dlp wheels | `yt-dlp-runtime/`, separate from the bundled yt-dlp |
 
-Before completed download files are promoted, core writes a durable receipt with
-their final basenames, hashes, source, and task identity. A successful application
-registration and history commit acknowledge that receipt. Startup verifies and
-replays interrupted handoffs. Malformed, missing, or mismatched handoffs remain
-for repair rather than silently adopting unrelated files. Core-only download
-consumers must acknowledge the receipt after durably accepting its files.
+## Crash consistency
 
-Cancelling is cooperative. A queued worker can be cancelled immediately; an
-active yt-dlp operation stops at a progress hook or the next boundary, so a
-network call or converter may delay cancellation. Terminal completion and
-cancellation are decided under one lock: cancellation accepted before completion
-wins, cleans owned outputs, and publishes one cancelled result. Retrying starts
-fresh; partial-download resumability is not promised. Forced process termination
-can leave staging directories, which are preserved rather than deleted by an
-age-based guess while another process might own them.
+Both databases use write-ahead logging. A change writes only its rows in one
+transaction; a failure rolls back and the owner restores its in-memory model.
+The library commits with `synchronous=FULL`; application state uses `NORMAL`,
+which survives application crashes and may lose only the latest session saves
+on power loss. Each database opens with an integrity quick check. Cookies,
+receipts, and thumbnails are written to a temporary file, flushed, and renamed.
 
-## Crash consistency and recovery
-
-Library metadata (`library.db`) and application state (`state.db`) are SQLite
-databases in write-ahead-log mode (`core.storage.Database`). A change writes
-only its rows in one transaction, so a failure rolls every statement back and
-the owner restores its in-memory model. Library commits are fully synchronous;
-application state uses `synchronous=NORMAL`, which survives application crashes
-and may lose only the latest session saves on power loss. Each store opens with
-an integrity quick check. The pre-SQLite `library.mmdb` and `state.json` files
-are imported in the transaction that creates each schema and then kept beside
-it with a `.migrated` suffix. Cookies, update state, and download receipts use
-temporary writes, file flush/fsync, atomic replacement, and directory fsync
-where supported. Audio promotion happens on the destination filesystem; local imports
-copy to a temporary file there first. This avoids partial final files, but cannot
-promise durability beyond the filesystem/device's guarantees.
-
-The library and application state are separate databases, not a distributed
-transaction. Startup marks completed history with missing audio as repairable,
-replays verified download receipts, and prunes missing queue files. Readers
-tolerate stale secondary references (details, history, favorites) to deleted
-tracks. `LibraryService.reconcile()` removes them and reports unregistered
-local files without deleting them; it scans the music folder, so it is an
-explicit operation (Settings → Maintenance) and never runs at startup. Missing track records remain
-available for source-based repair. A local-import
-process kill or a failed deletion can still leave an unregistered file; automatic
-deletion without a durable ownership record is deliberately unsupported.
-
-Failure categories are network, authentication/cookies, unavailable media,
-extractor incompatibility, rate limit, disk, cancellation, unsupported URL, and
-unknown. Core results carry the category and recovery action; download history
-persists them. Recovery is user initiated: there is no automatic retry storm.
-Rate limits require waiting; cookie failures require refreshed credentials;
-storage errors require capacity/permission repair. Provider messages and download
-results should use this shared vocabulary as new providers are added.
+The two databases are not a distributed transaction. Startup marks completed
+history with missing audio as repairable, replays verified receipts, and filters
+the restored queue by file availability. `LibraryService.reconcile` (Settings →
+Maintenance) removes stale secondary references and lists unregistered files
+without deleting them.
 
 ## Remaining engineering work
 
-- Physical-device lifecycle tests for native session reattachment. Page
-  recreation adopts the retained native snapshot (`reattach_native_state`);
-  automatic continuation after full process death is not implemented.
-- A complete locked Flutter/native transitive dependency graph for each release
-  target; pinning Python packages and bridge dependencies alone is insufficient
-  for byte-for-byte reproducible native artifacts.
-- Durable deletion/local-import journals if automatic cleanup of their crash
-  leftovers is required, and multiprocess locking if simultaneous app writers
-  become a supported feature.
-- Splitting platform infrastructure by capability when it gains new concerns;
-  avoid moving files purely to reduce directory size.
+- Physical-device lifecycle tests for background playback and notification
+  reattachment on Android and iOS.
+- iOS cannot run FFmpeg as a subprocess, so downloads that require conversion
+  are not available there yet.
+- macOS bundles copy FFmpeg into `Contents/Resources/ffmpeg` after
+  `flutter build`; signing and notarization must cover those executables.
+- A complete locked native dependency graph per target for reproducible
+  artifacts.

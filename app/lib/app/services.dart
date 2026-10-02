@@ -1,4 +1,7 @@
+import "dart:async";
 import "dart:io";
+
+import "package:flutter/foundation.dart";
 
 import "package:path/path.dart" as p;
 
@@ -67,6 +70,13 @@ class AppServices {
     );
     final checkForUpdate = YtDlpRuntime.consumeUpdateRequest(store);
     final worker = WorkerClient(await _startWorker(paths, checkForUpdate));
+    unawaited(
+      worker.ready.then(
+        (status) => debugPrint(
+          "yt-dlp ${status["active_version"]} ready (${status["active_source"]})",
+        ),
+      ),
+    );
     final thumbnails = ThumbnailCache(paths.thumbnails);
     final shared = sharedYtDlpOptions(settings, ffmpegLocation: paths.ffmpegLocation);
     final downloads = await DownloadCoordinator.open(
