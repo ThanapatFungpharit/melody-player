@@ -40,8 +40,13 @@ add_definitions(-DUNICODE -D_UNICODE)
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
+  # Read every plugin's source as UTF-8 regardless of the system code page.
+  target_compile_options(${TARGET} PRIVATE /utf-8)
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
+  # flutter_media_session still includes <experimental/coroutine>, which
+  # current MSVC rejects unless the deprecation is acknowledged.
+  target_compile_definitions(${TARGET} PRIVATE "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
 
@@ -101,6 +106,13 @@ install(CODE "
   " COMPONENT Runtime)
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
+
+# Bundled FFmpeg/FFprobe, staged by tools/fetch_media_binaries.py.
+set(MELODY_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../media/windows/x86_64")
+if(EXISTS "${MELODY_MEDIA_DIR}/ffmpeg.exe")
+  install(FILES "${MELODY_MEDIA_DIR}/ffmpeg.exe" "${MELODY_MEDIA_DIR}/ffprobe.exe"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/ffmpeg" COMPONENT Runtime)
+endif()
 
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"

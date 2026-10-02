@@ -50,3 +50,8 @@ Thumbs.db
 /src/musicplayer/bin/*/*/bundle.json
 
 signing/
+
+# Screen-test review output (MELODY_SCREENSHOTS=1)
+/app/test/ui/screenshots/
+# FFmpeg staged for native builds by tools/fetch_media_binaries.py
+/app/media/

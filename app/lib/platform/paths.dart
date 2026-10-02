@@ -55,6 +55,16 @@ class AppPaths {
         ffmpegLocation: ffmpeg,
       );
     }
+    // Development and tests: keep all state and music in one throwaway folder.
+    final isolated = environment["MELODY_DATA_DIR"];
+    if (isolated != null && isolated.isNotEmpty) {
+      await Directory(isolated).create(recursive: true);
+      return AppPaths(
+        dataDirectory: isolated,
+        defaultMusicDirectory: p.join(isolated, "Music"),
+        ffmpegLocation: _desktopFfmpegDirectory(),
+      );
+    }
     final String data;
     if (Platform.isWindows) {
       final local = environment["LOCALAPPDATA"];
