@@ -1,0 +1,1 @@
+{"version": 1, "settings": {"volume": 7, "use_browser_cookies": true}, "track_details": {"00000000-0000-0000-0000-000000000001": {"artist": "Old Artist", "album": "X", "favorite": true}}, "downloads": [{"id": "d1", "url": "u", "title": "T", "artist": "Old"}], "playback": {"queue": ["00000000-0000-0000-0000-000000000001"], "current_index": 0, "shuffle": true}}
