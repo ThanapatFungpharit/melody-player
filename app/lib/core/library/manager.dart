@@ -1,3 +1,4 @@
+import "dart:async";
 import "dart:convert";
 import "dart:io";
 
@@ -36,8 +37,8 @@ const _uuid = Uuid();
 const _zeroHash =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
-// Python's uuid.UUID accepts any 128-bit value, so stored IDs need not be
-// RFC 4122 compliant.
+// Earlier releases stored any 128-bit value as an ID, so stored IDs need not
+// be RFC 4122 compliant.
 Uint8List uuidBytes(String id) => Uint8List.fromList(
   Uuid.parse(id, validationMode: ValidationMode.nonStrict),
 );
@@ -60,13 +61,16 @@ String _canonicalId(String value) {
   return id;
 }
 
+final _sha256Hex = RegExp(r"^[0-9a-fA-F]{64}$");
+
 Uint8List _hashBytes(Track track) {
   final hex = track.contentHash;
-  if (hex.length != 64 || !RegExp(r"^[0-9a-fA-F]{64}$").hasMatch(hex)) {
+  if (!_sha256Hex.hasMatch(hex)) {
     throw FormatException("Invalid content hash for track ${track.id}");
   }
   return Uint8List.fromList([
-    for (var i = 0; i < 64; i += 2) int.parse(hex.substring(i, i + 2), radix: 16),
+    for (var i = 0; i < 64; i += 2)
+      int.parse(hex.substring(i, i + 2), radix: 16),
   ]);
 }
 
@@ -82,8 +86,6 @@ List<Object?> _trackRow(Track track) => [
   _hashBytes(track),
 ];
 
-double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
-
 /// Durable owner of track records, file references, hashes, and playlists.
 ///
 /// Mutations change the in-memory model, commit one SQLite transaction, and
@@ -91,15 +93,15 @@ double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 class MusicManager {
   MusicManager._(
     this.metadataPath,
-    this.musicFolder,
+    this._musicFolder,
     this._musicRoot,
     this._additionalRoots,
     this._db,
   );
 
   final String metadataPath;
-  final String musicFolder;
-  final String _musicRoot;
+  String _musicFolder;
+  String _musicRoot;
   final List<String> _additionalRoots;
   final SqliteStore _db;
 
@@ -118,11 +120,14 @@ class MusicManager {
 
   /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
   /// imported once in the transaction that creates the schema.
+  /// [syncInBackground] keeps commits from waiting for the disk on the
+  /// calling isolate (see [SqliteStore]).
   static MusicManager open(
     String metadataPath,
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
     String? legacyMetadataPath,
+    bool syncInBackground = false,
   }) {
     Directory(musicFolder).createSync(recursive: true);
     Directory(p.dirname(metadataPath)).createSync(recursive: true);
@@ -130,7 +135,10 @@ class MusicManager {
     final additional = [
       for (final folder in additionalMusicFolders) _resolve(folder),
     ];
-    final db = SqliteStore.open(metadataPath);
+    final db = SqliteStore.open(
+      metadataPath,
+      syncInBackground: syncInBackground,
+    );
     final manager = MusicManager._(
       metadataPath,
       musicFolder,
@@ -141,13 +149,38 @@ class MusicManager {
     try {
       manager._open(legacyMetadataPath);
     } catch (_) {
-      db.close();
+      unawaited(db.close());
       rethrow;
     }
     return manager;
   }
 
-  void close() => _db.close();
+  Future<void> close() => _db.close();
+
+  /// Where managed tracks are stored; their filenames are relative to it.
+  String get musicFolder => _musicFolder;
+
+  /// [musicFolder] with links resolved: the form of every path the library
+  /// returns, such as [trackPath].
+  String get musicRoot => _musicRoot;
+
+  /// Moves the library to [folder]. Stored filenames are relative to the
+  /// music folder, so this is only possible while the library has no
+  /// tracks; callers hold [mutation] so no import can race the check.
+  void changeMusicFolder(String folder) {
+    if (_tracks.isNotEmpty) {
+      throw StateError(
+        "The music folder can only be changed while the library is empty",
+      );
+    }
+    Directory(folder).createSync(recursive: true);
+    _musicFolder = folder;
+    _musicRoot = _resolve(folder);
+    _validatedPaths.clear();
+  }
+
+  /// Completes once every committed change is on durable storage.
+  Future<void> flushed() => _db.flushed();
 
   // -- persistence -------------------------------------------------------
   void _open(String? legacyPath) {
@@ -260,7 +293,8 @@ class MusicManager {
       playlists[id] = Playlist(
         id: id,
         name: name,
-        trackIds: trackIds.where(tracks.containsKey).toList(),
+        // Playlists hold each track once; the legacy format did not enforce it.
+        trackIds: trackIds.where(tracks.containsKey).toSet().toList(),
       );
     }
     if (!reader.atEnd) {
@@ -312,7 +346,11 @@ class MusicManager {
     }
   }
 
-  static void _appendPlaylistTrack(Database db, String playlistId, String trackId) {
+  static void _appendPlaylistTrack(
+    Database db,
+    String playlistId,
+    String trackId,
+  ) {
     // Positions only order rows; deletions may leave gaps, so append after
     // the current maximum instead of at the in-memory length.
     final playlist = uuidBytes(playlistId);
@@ -354,14 +392,17 @@ class MusicManager {
       filename: relative,
       source: source,
       title: title.trim(),
-      addedAt: _now(),
+      addedAt: unixSeconds(),
       contentHash: digest,
     );
     _tracks[track.id] = track;
     _indexTrack(track);
     try {
       _commit((db) {
-        db.execute("INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)", _trackRow(track));
+        db.execute(
+          "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)",
+          _trackRow(track),
+        );
       });
     } catch (_) {
       _tracks.remove(track.id);
@@ -387,11 +428,10 @@ class MusicManager {
     _contentIndex.putIfAbsent(digest, () => {}).add(track.id);
     try {
       _commit((db) {
-        db.execute("UPDATE tracks SET filename = ?, content_hash = ? WHERE id = ?", [
-          track.filename,
-          _hashBytes(track),
-          uuidBytes(track.id),
-        ]);
+        db.execute(
+          "UPDATE tracks SET filename = ?, content_hash = ? WHERE id = ?",
+          [track.filename, _hashBytes(track), uuidBytes(track.id)],
+        );
       });
     } catch (_) {
       _removeIndexEntry(_contentIndex, digest, track.id);
@@ -412,7 +452,8 @@ class MusicManager {
     final track = _getTrack(trackId);
     final previousTitle = track.title;
     final previousSource = track.source;
-    final titleChanged = normalizedTitle != null && normalizedTitle != track.title;
+    final titleChanged =
+        normalizedTitle != null && normalizedTitle != track.title;
     final sourceChanged = source != null && source != track.source;
     if (!titleChanged && !sourceChanged) return;
     if (titleChanged) track.title = normalizedTitle;
@@ -440,18 +481,18 @@ class MusicManager {
     }
   }
 
-  void renameTrack(String trackId, String title) =>
-      updateTrack(trackId, title: title);
-
   /// Deletes the record and its playlist references; the file is untouched.
   void deleteTrack(String trackId) {
     final track = _getTrack(trackId);
-    final removed = <(Playlist, int)>[];
+    final removed = <(Playlist, List<String>)>[];
     for (final playlist in _playlists.values) {
-      final index = playlist.trackIds.indexOf(track.id);
-      if (index < 0) continue;
-      playlist.trackIds.removeAt(index);
-      removed.add((playlist, index));
+      if (!playlist.trackIds.contains(track.id)) continue;
+      // Every row: the database cascade removes them all.
+      removed.add((playlist, playlist.trackIds));
+      playlist.trackIds = [
+        for (final id in playlist.trackIds)
+          if (id != track.id) id,
+      ];
     }
     _tracks.remove(track.id);
     try {
@@ -462,8 +503,8 @@ class MusicManager {
     } catch (_) {
       _tracks[track.id] = track;
       _invalidateTrackViews();
-      for (final (playlist, index) in removed.reversed) {
-        playlist.trackIds.insert(index, track.id);
+      for (final (playlist, trackIds) in removed) {
+        playlist.trackIds = trackIds;
       }
       rethrow;
     }
@@ -542,7 +583,9 @@ class MusicManager {
         if (normalizeUuid(id) case final normalized?)
           if (rank.containsKey(normalized)) normalized,
     }.toList()..sort((a, b) => rank[a]!.compareTo(rank[b]!));
-    final end = limit == null ? selected.length : limit.clamp(0, selected.length);
+    final end = limit == null
+        ? selected.length
+        : limit.clamp(0, selected.length);
     return [for (final id in selected.take(end)) _tracks[id]!.copy()];
   }
 
@@ -599,13 +642,15 @@ class MusicManager {
     return ids == null || ids.isEmpty ? null : _tracks[ids.first]!.copy();
   }
 
-  String trackPath(String trackId) => _pathForFilename(_getTrack(trackId).filename);
+  String trackPath(String trackId) =>
+      _pathForFilename(_getTrack(trackId).filename);
 
-  /// Whether another library record still owns [filename].
+  /// Whether another library record still owns [filename]: an absolute path,
+  /// or a name relative to [musicFolder].
   bool isPathReferenced(String filename, {String? excluding}) {
     final String target;
     try {
-      target = _comparable(relativeFilename(_resolve(filename)));
+      target = _comparable(relativeFilename(filename));
     } on ArgumentError {
       return false;
     }
@@ -622,16 +667,31 @@ class MusicManager {
     try {
       path = _pathForFilename(track.filename);
     } on ArgumentError catch (error) {
-      return IntegrityProblem(track.id, track.filename, "invalid_path", "${error.message}");
+      return IntegrityProblem(
+        track.id,
+        track.filename,
+        "invalid_path",
+        "${error.message}",
+      );
     }
     final FileStat status;
     try {
       status = await File(path).stat();
     } on FileSystemException catch (error) {
-      return IntegrityProblem(track.id, track.filename, "unreadable", "Cannot read $path: $error");
+      return IntegrityProblem(
+        track.id,
+        track.filename,
+        "unreadable",
+        "Cannot read $path: $error",
+      );
     }
     if (status.type == FileSystemEntityType.notFound) {
-      return IntegrityProblem(track.id, track.filename, "missing", "Missing file: $path");
+      return IntegrityProblem(
+        track.id,
+        track.filename,
+        "missing",
+        "Missing file: $path",
+      );
     }
     if (status.type != FileSystemEntityType.file) {
       return IntegrityProblem(
@@ -642,13 +702,23 @@ class MusicManager {
       );
     }
     if (status.size <= 0) {
-      return IntegrityProblem(track.id, track.filename, "empty", "Audio file is empty: $path");
+      return IntegrityProblem(
+        track.id,
+        track.filename,
+        "empty",
+        "Audio file is empty: $path",
+      );
     }
     final String actual;
     try {
       actual = await sha256File(path);
     } on FileSystemException catch (error) {
-      return IntegrityProblem(track.id, track.filename, "unreadable", "Cannot read $path: $error");
+      return IntegrityProblem(
+        track.id,
+        track.filename,
+        "unreadable",
+        "Cannot read $path: $error",
+      );
     }
     if (actual != track.contentHash) {
       return IntegrityProblem(
@@ -677,7 +747,9 @@ class MusicManager {
 
   String createPlaylist(String name) {
     final trimmed = name.trim();
-    if (trimmed.isEmpty) throw const FormatException("Playlist name cannot be empty");
+    if (trimmed.isEmpty) {
+      throw const FormatException("Playlist name cannot be empty");
+    }
     final playlist = Playlist(id: _uuid.v4(), name: trimmed);
     _playlists[playlist.id] = playlist;
     try {
@@ -696,7 +768,9 @@ class MusicManager {
 
   void renamePlaylist(String playlistId, String name) {
     final trimmed = name.trim();
-    if (trimmed.isEmpty) throw const FormatException("Playlist name cannot be empty");
+    if (trimmed.isEmpty) {
+      throw const FormatException("Playlist name cannot be empty");
+    }
     final playlist = _getPlaylist(playlistId);
     final previous = playlist.name;
     if (previous == trimmed) return;
@@ -720,7 +794,9 @@ class MusicManager {
     _playlists = Map.of(previous)..remove(playlist.id);
     try {
       _commit((db) {
-        db.execute("DELETE FROM playlists WHERE id = ?", [uuidBytes(playlist.id)]);
+        db.execute("DELETE FROM playlists WHERE id = ?", [
+          uuidBytes(playlist.id),
+        ]);
       }, tracksChanged: false);
     } catch (_) {
       _playlists = previous;
@@ -735,7 +811,10 @@ class MusicManager {
     final previous = _playlists;
     _playlists = {};
     try {
-      _commit((db) => db.execute("DELETE FROM playlists"), tracksChanged: false);
+      _commit(
+        (db) => db.execute("DELETE FROM playlists"),
+        tracksChanged: false,
+      );
     } catch (_) {
       _playlists = previous;
       rethrow;
@@ -787,7 +866,10 @@ class MusicManager {
 
   /// Places known tracks first in the requested order with one write;
   /// existing members not listed stay after that prefix.
-  int mergeTracksIntoPlaylist(String playlistId, Iterable<String> orderedTrackIds) {
+  int mergeTracksIntoPlaylist(
+    String playlistId,
+    Iterable<String> orderedTrackIds,
+  ) {
     final playlist = _getPlaylist(playlistId);
     final ordered = <String>[];
     final orderedSet = <String>{};
@@ -797,7 +879,10 @@ class MusicManager {
     }
     final previous = playlist.trackIds;
     final previousSet = previous.toSet();
-    final merged = [...ordered, ...previous.where((id) => !orderedSet.contains(id))];
+    final merged = [
+      ...ordered,
+      ...previous.where((id) => !orderedSet.contains(id)),
+    ];
     if (listEquals(merged, previous)) return 0;
     playlist.trackIds = merged;
     try {
@@ -835,7 +920,9 @@ class MusicManager {
       throw const FormatException("Playlist order contains duplicate tracks");
     }
     if (!setEquals(normalizedSet, playlist.trackIds.toSet())) {
-      throw const FormatException("Playlist order must contain every existing track");
+      throw const FormatException(
+        "Playlist order must contain every existing track",
+      );
     }
     if (listEquals(normalized, playlist.trackIds)) return;
     final previous = playlist.trackIds;
@@ -870,7 +957,11 @@ class MusicManager {
   }
 
   /// Moves a track between playlists as one atomic metadata update.
-  void moveTrackBetweenPlaylists(String sourceId, String targetId, String trackId) {
+  void moveTrackBetweenPlaylists(
+    String sourceId,
+    String targetId,
+    String trackId,
+  ) {
     final source = _getPlaylist(sourceId);
     final target = _getPlaylist(targetId);
     final track = _getTrack(trackId);
@@ -916,7 +1007,9 @@ class MusicManager {
     final path = _resolve(absolute ? filename : p.join(_musicRoot, filename));
     if (p.isWithin(_musicRoot, path)) return p.relative(path, from: _musicRoot);
     if (!absolute || !_additionalRoots.any((root) => p.isWithin(root, path))) {
-      throw ArgumentError("Track files must be inside a configured music folder");
+      throw ArgumentError(
+        "Track files must be inside a configured music folder",
+      );
     }
     return path;
   }
@@ -980,7 +1073,9 @@ class MusicManager {
 
   Playlist _getPlaylist(String playlistId) {
     final playlist = _playlists[_canonicalId(playlistId)];
-    if (playlist == null) throw ArgumentError("No playlist with id $playlistId");
+    if (playlist == null) {
+      throw ArgumentError("No playlist with id $playlistId");
+    }
     return playlist;
   }
 }

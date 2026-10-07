@@ -27,11 +27,32 @@ const _barCoverage = 0.75;
 // Fraction of a line that must match the outermost line's color for the line
 // to belong to a letterbox bar.
 const _barMatch = 0.7;
-// Score penalty for a crop at the far edge; ambiguous art stays centered.
-// Measured on 90 hand-labeled music video thumbnails: anywhere from 0.4 to
-// 1.0 beats 0.2 for both the model and the Dart fallback, and 0.6 sits mid
-// plateau while still letting a dominant subject at the frame edge win.
-const _centerBias = 0.6;
+// Composition terms for the square crop along the long axis. Each term lies in
+// [0, 1]; the weights set what one fault costs against another.
+//
+// Cutting into the main subject is the worst fault a crop can have.
+const _subjectWeight = 3.0;
+// Secondary content that fits stays, so the crop keeps its context.
+const _contentWeight = 1.0;
+// A new crop edge through content looks accidental rather than framed.
+const _cutWeight = 1.5;
+// The main subject sits on the center or a third line.
+const _placementWeight = 1.0;
+// Visual weight is spread evenly about the crop center.
+const _balanceWeight = 1.0;
+// The content has room to breathe instead of pressing against an edge.
+const _crowdingWeight = 0.75;
+// The original was framed around its center, so ambiguous art stays there.
+const _centerWeight = 0.3;
+// Lines above this fraction of the peak, contiguous with it, are the subject.
+const _subjectThreshold = 0.35;
+// Spread of each placement target, as a fraction of the crop side.
+const _placementSpread = 0.08;
+// A subject on a third line scores this fraction of a centered one. On its own
+// it stays centered; balance or context must justify moving it to a third.
+const _thirdsPreference = 0.85;
+// Depth of the crowding margin along each crop edge, as a fraction of the side.
+const _margin = 0.1;
 // Saliency runs on cells of this many pixels per side once the shorter content
 // side has at least _binningMinimum pixels. The model is region based, so one
 // cell of a 128 pixel sample, about 8 pixels of the 512 pixel artwork, loses
@@ -47,9 +68,6 @@ const _borderBand = 0.05;
 // Variance floor for border color statistics, in squared CIELAB units, so a
 // perfectly flat backdrop does not turn codec noise into saliency.
 const _varianceFloor = 1.0;
-// Crops that keep at least this fraction of the best crop's saliency may move
-// to center the subject rather than leave it against the crop edge.
-const _cropSlack = 0.02;
 
 /// Estimates the normalized focal point of RGBA pixels for a square crop.
 ///
@@ -69,9 +87,9 @@ const _cropSlack = 0.02;
 /// a subject rather than its outline and ignore fine texture that reaches the
 /// border. Squaring the score favors distinct subjects over diffuse content.
 ///
-/// Along the long axis the result is the center of the square crop that keeps
-/// the most salient content, shifted to center the subject when that costs
-/// almost nothing, with a mild preference for the image center. Along the axis
+/// Saliency only finds what is in the picture. Along the long axis the result
+/// is the center of the square crop with the best composition, not the one
+/// holding the most salient content (see [_bestWindowCenter]). Along the axis
 /// the square covers entirely it is the saliency centroid.
 Offset calculateFocalPoint(Uint8List rgba, int width, int height) {
   final content = artworkContent(rgba, width, height);
@@ -554,21 +572,94 @@ void _normalize(Float64List values) {
   }
 }
 
-/// Normalized center of the best square window along one axis.
+/// Normalized center of the best composed square window along one axis.
+///
+/// The main subject is the contiguous run of the saliency [profile] around
+/// its peak. Every window position is scored as a photographer would judge
+/// the framing:
+///
+/// * the main subject is kept whole, along with any secondary content that
+///   fits;
+/// * new crop edges fall between objects, not through them, while an edge
+///   that matches the original frame cuts nothing new;
+/// * the subject sits on the center or a third line, the visual weight is
+///   balanced about the crop center, and nothing presses against an edge;
+/// * with nothing else to choose between windows, the original center wins.
 double _bestWindowCenter(List<double> profile, int side) {
   final length = profile.length;
-  final prefix = Float64List(length + 1);
-  for (var i = 0; i < length; i++) {
-    prefix[i + 1] = prefix[i] + profile[i];
-  }
-  double mass(int start) => prefix[start + side] - prefix[start];
   final maxStart = length - side;
+  var peak = 0.0;
+  var peakIndex = 0;
+  for (var i = 0; i < length; i++) {
+    if (profile[i] > peak) {
+      peak = profile[i];
+      peakIndex = i;
+    }
+  }
+  if (!(peak > 0) || maxStart <= 0) return 0.5;
+
+  final floor = peak * _subjectThreshold;
+  var subjectStart = peakIndex;
+  var subjectEnd = peakIndex + 1;
+  while (subjectStart > 0 && profile[subjectStart - 1] >= floor) {
+    subjectStart--;
+  }
+  while (subjectEnd < length && profile[subjectEnd] >= floor) {
+    subjectEnd++;
+  }
+  final subject = Float64List(length);
+  for (var i = subjectStart; i < subjectEnd; i++) {
+    subject[i] = profile[i];
+  }
+  final (mass, moment) = _prefixSums(profile);
+  final (subjectMass, subjectMoment) = _prefixSums(subject);
+  final total = mass[length];
+  final subjectTotal = subjectMass[length];
+  final margin = math.max(1, (side * _margin).round());
   final middle = maxStart / 2;
+
+  double placement(double position) {
+    double near(double target) {
+      final distance = (position - target) / _placementSpread;
+      return math.exp(-distance * distance / 2);
+    }
+
+    return math.max(
+      near(0.5),
+      _thirdsPreference * math.max(near(1 / 3), near(2 / 3)),
+    );
+  }
+
+  // Content on both sides of a new edge is sliced; an edge along an object's
+  // outline is not.
+  double cut(int edge) => edge <= 0 || edge >= length
+      ? 0
+      : math.min(profile[edge - 1], profile[edge]) / peak;
+
   var bestStart = 0;
-  var bestScore = -1.0;
+  var bestScore = double.negativeInfinity;
   for (var start = 0; start <= maxStart; start++) {
+    final end = start + side;
+    final inside = mass[end] - mass[start];
+    final subjectInside = subjectMass[end] - subjectMass[start];
+    var score =
+        _subjectWeight * subjectInside / subjectTotal +
+        _contentWeight * inside / total -
+        _cutWeight * math.max(cut(start), cut(end));
+    if (subjectInside > 0) {
+      final center =
+          (subjectMoment[end] - subjectMoment[start]) / subjectInside;
+      score += _placementWeight * placement((center - start) / side);
+    }
+    if (inside > 0) {
+      final center = (moment[end] - moment[start]) / inside;
+      final balance = 1 - 2 * ((center - start) / side - 0.5).abs();
+      final edges =
+          mass[start + margin] - mass[start] + mass[end] - mass[end - margin];
+      score += _balanceWeight * balance - _crowdingWeight * edges / inside;
+    }
     final offset = (start - middle).abs() / middle;
-    final score = mass(start) * (1 - _centerBias * offset * offset);
+    score += _centerWeight * (1 - offset * offset);
     if (score > bestScore ||
         (score == bestScore &&
             (start - middle).abs() < (bestStart - middle).abs())) {
@@ -576,25 +667,18 @@ double _bestWindowCenter(List<double> profile, int side) {
       bestStart = start;
     }
   }
+  return clampFocal((bestStart + side / 2) / length);
+}
 
-  // Many windows can hold a small subject equally well; the center bias alone
-  // would leave it against the crop edge. Move toward the window centered on
-  // the subject while it keeps nearly all of the chosen window's saliency.
-  final bestMass = mass(bestStart);
-  if (bestMass <= 0) return clampFocal((bestStart + side / 2) / length);
-  var weighted = 0.0;
-  for (var i = bestStart; i < bestStart + side; i++) {
-    weighted += (i + 0.5) * profile[i];
+/// Prefix sums of [values] and of their first moments about each line center.
+(Float64List, Float64List) _prefixSums(List<double> values) {
+  final sums = Float64List(values.length + 1);
+  final moments = Float64List(values.length + 1);
+  for (var i = 0; i < values.length; i++) {
+    sums[i + 1] = sums[i] + values[i];
+    moments[i + 1] = moments[i] + (i + 0.5) * values[i];
   }
-  final target = weighted / bestMass - side / 2;
-  var chosen = bestStart;
-  for (var start = 0; start <= maxStart; start++) {
-    if (mass(start) >= (1 - _cropSlack) * bestMass &&
-        (start - target).abs() < (chosen - target).abs()) {
-      chosen = start;
-    }
-  }
-  return clampFocal((chosen + side / 2) / length);
+  return (sums, moments);
 }
 
 double _centroid(List<double> profile) {

@@ -1,4 +1,8 @@
+import "../core/downloader/downloader.dart";
 import "../core/media.dart";
+import "../core/storage.dart";
+
+export "../core/downloader/downloader.dart" show DownloadStatus;
 
 enum RepeatMode {
   off("off"),
@@ -21,6 +25,76 @@ const notificationActionPairs = [
   "repeat_favorite",
 ];
 
+/// A codec yt-dlp can extract downloads to, by its `preferredcodec` name.
+///
+/// Every format here can carry cover art and lyrics tags, which downloads
+/// verify; raw AAC and WAV cannot, so they are not offered.
+enum DownloadFormat {
+  mp3(
+    "mp3",
+    "MP3",
+    ".mp3",
+    "Plays on everything: car stereos, old players, any app.",
+  ),
+  m4a(
+    "m4a",
+    "M4A (AAC)",
+    ".m4a",
+    "Smaller than MP3 at the same quality; ideal for Apple devices.",
+  ),
+  opus(
+    "opus",
+    "Opus",
+    ".opus",
+    "Best sound for the size. YouTube audio is usually Opus already, "
+        "so it is saved without re-encoding.",
+  ),
+  vorbis(
+    "vorbis",
+    "Ogg Vorbis",
+    ".ogg",
+    "Open format for players and games that support Ogg but not Opus.",
+  ),
+  flac(
+    "flac",
+    "FLAC (lossless)",
+    ".flac",
+    "Avoids a second lossy encode for editing or archiving. Much larger, "
+        "and no better than the source.",
+    lossless: true,
+  ),
+  alac(
+    "alac",
+    "ALAC (lossless)",
+    ".m4a",
+    "Lossless like FLAC, for Apple Music and iTunes libraries.",
+    lossless: true,
+  );
+
+  const DownloadFormat(
+    this.codec,
+    this.label,
+    this.extension,
+    this.reason, {
+    this.lossless = false,
+  });
+
+  final String codec;
+  final String label;
+
+  /// When to pick this format, shown in settings.
+  final String reason;
+
+  /// The suffix yt-dlp gives the extracted file.
+  final String extension;
+
+  /// Lossless codecs ignore the quality setting.
+  final bool lossless;
+
+  static DownloadFormat parse(Object? value) => DownloadFormat.values
+      .firstWhere((format) => format.codec == value, orElse: () => mp3);
+}
+
 int _int(Object? value, int fallback) => switch (value) {
   int number => number,
   num number => number.toInt(),
@@ -42,8 +116,8 @@ bool _bool(Object? value, bool fallback) => value is bool ? value : fallback;
 class AppSettings {
   AppSettings({
     required this.downloadDirectory,
-    this.volume = 5,
-    this.previousVolume = 5,
+    this.volume = 25,
+    this.previousVolume = 25,
     this.muted = false,
     this.theme = "system",
     this.audioFormat = "mp3",
@@ -76,6 +150,8 @@ class AppSettings {
   bool autoFocalPointLiveNotifications;
   String accentColor;
 
+  DownloadFormat get downloadFormat => DownloadFormat.parse(audioFormat);
+
   factory AppSettings.fromJson(
     Map<String, Object?> data, {
     required String defaultDownloadDirectory,
@@ -97,7 +173,7 @@ class AppSettings {
       ).clamp(1, 100),
       muted: _bool(data["muted"], defaults.muted),
       theme: _string(data["theme"], defaults.theme),
-      audioFormat: _string(data["audio_format"], defaults.audioFormat),
+      audioFormat: DownloadFormat.parse(data["audio_format"]).codec,
       audioQuality: _string(data["audio_quality"], defaults.audioQuality),
       concurrentDownloads: _int(
         data["concurrent_downloads"],
@@ -226,6 +302,20 @@ class SearchResult {
 
   bool get isPlaylist => kind == "playlist";
 
+  SearchResult withPlaylistTitle(String title) => SearchResult(
+    id: id,
+    title: this.title,
+    uploader: uploader,
+    duration: duration,
+    thumbnail: thumbnail,
+    url: url,
+    source: source,
+    providerId: providerId,
+    kind: kind,
+    playlistTitle: title,
+    entryCount: entryCount,
+  );
+
   MediaIdentity? get identity {
     if (isPlaylist) return null;
     return MediaIdentity.fromUrl(url) ??
@@ -242,7 +332,7 @@ class DownloadRecord {
     this.thumbnail = "",
     this.source = youtubeMusicName,
     this.kind = "track",
-    this.status = "queued",
+    this.status = DownloadStatus.queued,
     this.progress = 0,
     this.filename = "",
     this.downloadedBytes = 0,
@@ -256,7 +346,7 @@ class DownloadRecord {
     this.batchId = "",
     this.batchPosition = 0,
     this.batchSize = 0,
-  }) : createdAt = createdAt ?? DateTime.now().microsecondsSinceEpoch / 1e6,
+  }) : createdAt = createdAt ?? unixSeconds(),
        trackIds = trackIds ?? [];
 
   final String id;
@@ -266,7 +356,7 @@ class DownloadRecord {
   String thumbnail;
   String source;
   String kind;
-  String status;
+  DownloadStatus status;
   double progress;
   String filename;
   int downloadedBytes;
@@ -289,7 +379,7 @@ class DownloadRecord {
     thumbnail: _string(data["thumbnail"], ""),
     source: _string(data["source"], youtubeMusicName),
     kind: _string(data["kind"], "track"),
-    status: _string(data["status"], "queued"),
+    status: DownloadStatus.parse(data["status"]),
     progress: _double(data["progress"], 0),
     filename: _string(data["filename"], ""),
     downloadedBytes: _int(data["downloaded_bytes"], 0),
@@ -317,7 +407,7 @@ class DownloadRecord {
     "thumbnail": thumbnail,
     "source": source,
     "kind": kind,
-    "status": status,
+    "status": status.name,
     "progress": progress,
     "filename": filename,
     "downloaded_bytes": downloadedBytes,

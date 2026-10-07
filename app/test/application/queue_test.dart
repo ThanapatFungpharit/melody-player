@@ -15,6 +15,23 @@ void main() {
     expect(queue.items, ["a", "next", "b", "last"]);
   });
 
+  test("several tracks played next keep their order", () {
+    final queue = PlaybackQueue()..replace(["a", "b"]);
+    queue.addNextAll(["x", "y"]);
+    expect(queue.items, ["a", "x", "y", "b"]);
+    expect(queue.current, "a");
+
+    final empty = PlaybackQueue()..addNextAll(["x", "y", "z"]);
+    expect(empty.items, ["x", "y", "z"]);
+    expect(empty.current, "x");
+  });
+
+  test("a replacement with duplicates starts at the chosen track", () {
+    final queue = PlaybackQueue()..replace(["a", "a", "b", "c"], startIndex: 2);
+    expect(queue.items, ["a", "b", "c"]);
+    expect(queue.current, "b");
+  });
+
   test("moving rows keeps the current track", () {
     final queue = PlaybackQueue()..replace(["a", "b", "c"], startIndex: 1);
     queue.move(1, 2);
@@ -55,7 +72,8 @@ void main() {
   });
 
   test("shuffle reorders only upcoming tracks", () {
-    final queue = PlaybackQueue(random: Random(4))..replace(["a", "b", "c", "d", "e"], startIndex: 1);
+    final queue = PlaybackQueue(random: Random(4))
+      ..replace(["a", "b", "c", "d", "e"], startIndex: 1);
     expect(queue.shuffleUpcoming(), isTrue);
     expect(queue.items.take(2), ["a", "b"]);
     expect(queue.items.skip(2).toSet(), {"c", "d", "e"});
@@ -63,7 +81,8 @@ void main() {
   });
 
   test("shuffle changes the order even when the random order is unchanged", () {
-    final queue = PlaybackQueue(random: IdentityRandom())..replace(["a", "b", "c"]);
+    final queue = PlaybackQueue(random: IdentityRandom())
+      ..replace(["a", "b", "c"]);
     expect(queue.shuffleUpcoming(), isTrue);
     expect(queue.items, ["a", "c", "b"]);
   });
@@ -74,7 +93,8 @@ void main() {
   });
 
   test("a shuffled replacement reorders the whole collection once", () {
-    final queue = PlaybackQueue(random: Random(1))..replace(["a", "b", "c", "d"], shuffleOnce: true);
+    final queue = PlaybackQueue(random: Random(1))
+      ..replace(["a", "b", "c", "d"], shuffleOnce: true);
     expect(queue.currentIndex, 0);
     expect(queue.items.toSet(), {"a", "b", "c", "d"});
     queue.replace(["x", "y", "z"]);
@@ -82,7 +102,8 @@ void main() {
   });
 
   test("play next stays next after a shuffle", () {
-    final queue = PlaybackQueue(random: Random(2))..replace(["a", "b", "c", "d"]);
+    final queue = PlaybackQueue(random: Random(2))
+      ..replace(["a", "b", "c", "d"]);
     queue
       ..shuffleUpcoming()
       ..addNext("n");

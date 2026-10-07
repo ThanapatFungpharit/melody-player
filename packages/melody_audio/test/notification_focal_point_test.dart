@@ -243,6 +243,32 @@ void main() {
     expect(focalCropRect(128, 72, left).left, 0);
   });
 
+  test("the crop frames the main subject instead of slicing it", () {
+    // Pixel columns 10..40 hold the main subject and 75..95 a slightly weaker
+    // one. The most salient window keeps the second whole but cuts the main
+    // subject in half; a composed crop keeps the main subject whole and ends
+    // before the second one starts.
+    final focal = focalPointFromSaliency(
+      Float32List.fromList([
+        for (var y = 0; y < saliencyModelSize; y++)
+          for (var x = 0; x < saliencyModelSize; x++)
+            x >= 20 && x < 80
+                ? 1.0
+                : x >= 150 && x < 190
+                ? 0.9
+                : 0.0,
+      ]),
+      saliencyModelSize,
+      128,
+      72,
+      (0, 0, 128, 72),
+    );
+    final crop = focalCropRect(128, 72, focal);
+    expect(crop.left, lessThanOrEqualTo(10));
+    expect(crop.right, greaterThanOrEqualTo(40));
+    expect(crop.right, lessThanOrEqualTo(75));
+  });
+
   test("model saliency maps back through letterbox content", () {
     // The map covers only x 40..128; its salient first quarter is x 40..62,
     // so the crop centers on x 51.

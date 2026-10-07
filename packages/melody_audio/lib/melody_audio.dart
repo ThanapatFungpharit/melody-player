@@ -1,10 +1,30 @@
-/// Melody's process-scoped audio engine, media session, and native helpers.
+/// Melody's process-scoped audio engine, system media session, and Android
+/// storage services.
 library melody_audio;
 
-export "src/background_audio_session.dart"
-    show MediaActionListener, NativeMediaSessionRuntime;
-export "src/managed_audio.dart" show NativeAudioRuntime, NativeAudioListener;
-export "src/native_bridge.dart" show MelodyNative;
+export "src/android_platform.dart" show AndroidPlatform;
+export "src/audio_engine.dart"
+    show
+        AudioDurationChanged,
+        AudioEngine,
+        AudioEngineEvent,
+        AudioEngineListener,
+        AudioEngineSnapshot,
+        AudioFailed,
+        AudioLoaded,
+        AudioPlaybackState,
+        AudioPositionChanged,
+        AudioQueueItem,
+        AudioRepeatMode,
+        AudioStateChanged,
+        AudioTrackChanged,
+        MediaCommand;
+export "src/system_media_session.dart"
+    show
+        MediaActionListener,
+        MediaSessionState,
+        MediaShortcut,
+        SystemMediaSession;
 
 import "package:just_audio_media_kit/just_audio_media_kit.dart";
 

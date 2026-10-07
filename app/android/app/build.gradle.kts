@@ -1,8 +1,8 @@
 import java.io.File
 
-// AGP 8.11 and Kotlin 2.2 match the toolchain Melody's Flet releases used;
-// just_audio, audio_session, and flutter_media_session still apply the Kotlin
-// Gradle plugin, which AGP 9's built-in Kotlin rejects.
+// Stay on AGP 8.11 and Kotlin 2.2: just_audio, audio_session, and
+// flutter_media_session still apply the Kotlin Gradle plugin, which AGP 9's
+// built-in Kotlin rejects.
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -21,8 +21,9 @@ android {
     }
 
     defaultConfig {
-        // Melody's Flet releases used this identity. Keeping it makes this an
-        // in-place upgrade that retains the user's library and settings.
+        // Every Melody release has shipped with this identity (see
+        // docs/releases-and-dependencies.md). Changing it would install a
+        // separate app without the user's library and settings.
         applicationId = "com.flet.musicplayer"
         minSdk = 29
         targetSdk = flutter.targetSdkVersion
@@ -44,7 +45,7 @@ android {
 
     buildTypes {
         release {
-            // tools/build_app.py requires the release key for production
+            // melody-build (tools/build/app.py) requires the release key for production
             // builds; local release runs fall back to debug signing.
             signingConfig = signingConfigs.findByName("release")
                 ?: signingConfigs.getByName("debug")

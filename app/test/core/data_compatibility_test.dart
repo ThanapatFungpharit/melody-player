@@ -7,8 +7,9 @@ import "package:melody/application/store.dart";
 import "package:melody/core/library/manager.dart";
 import "package:path/path.dart" as p;
 
-/// The fixtures were written by Melody's previous Python stores
-/// (`library.db`, `state.db`) and its pre-SQLite formats.
+/// The fixtures were written by earlier Melody releases (`library.db`,
+/// `state.db`, and the pre-SQLite `library.mmdb` and `state.json`), not by
+/// this code. Never regenerate them.
 void main() {
   final fixtures = p.join("test", "fixtures", "data");
   final expected =
@@ -37,7 +38,7 @@ void main() {
 
   tearDown(() => root.delete(recursive: true));
 
-  test("opens a library written by the Python MusicManager", () async {
+  test("opens a library written by an earlier release", () async {
     final manager = MusicManager.open(
       p.join(root.path, "library.db"),
       p.join(root.path, "music"),
@@ -45,7 +46,7 @@ void main() {
     addTearDown(manager.close);
 
     expect(manager.counts(), (3, 2));
-    // Newest first, like the Python reader.
+    // Newest first, as earlier releases listed them.
     expect(manager.listTracks().map((track) => track.id), [
       ids["gamma"],
       ids["beta"],
@@ -54,7 +55,10 @@ void main() {
     final gamma = manager.getTrack(ids["gamma"]!);
     expect(gamma.title, "Gamma ü");
     expect(gamma.filename, p.join("sub", "Gamma.opus"));
-    expect(manager.trackPath(gamma.id), p.join(root.path, "music", "sub", "Gamma.opus"));
+    expect(
+      manager.trackPath(gamma.id),
+      p.join(root.path, "music", "sub", "Gamma.opus"),
+    );
     expect(manager.getTrack(ids["beta"]!).displayTitle, "Beta");
 
     final mix = manager.getPlaylist(ids["mix"]!);
@@ -63,11 +67,18 @@ void main() {
 
     // Identity lookups use the same canonical source keys.
     expect(
-      manager.findTrackBySource("https://www.youtube.com/watch?v=alpha123456")?.id,
+      manager
+          .findTrackBySource("https://www.youtube.com/watch?v=alpha123456")
+          ?.id,
       ids["alpha"],
     );
-    expect(manager.findTrackBySource("https://music.youtube.com/watch?v=beta1234567")?.id, ids["beta"]);
-    // Hashes written by Python verify against the files.
+    expect(
+      manager
+          .findTrackBySource("https://music.youtube.com/watch?v=beta1234567")
+          ?.id,
+      ids["beta"],
+    );
+    // Hashes written by an earlier release verify against the files.
     expect(await manager.checkTrackIntegrity(ids["alpha"]!), isNull);
     final copy = File(p.join(root.path, "copy.mp3"))
       ..writeAsBytesSync(utf8.encode("alpha audio"));
@@ -79,7 +90,9 @@ void main() {
       p.join(root.path, "library.db"),
       p.join(root.path, "music"),
     );
-    final empty = manager.listPlaylists().firstWhere((item) => item.name == "Empty");
+    final empty = manager.listPlaylists().firstWhere(
+      (item) => item.name == "Empty",
+    );
     manager.addToPlaylist(empty.id, ids["beta"]!);
     manager.removeFromPlaylist(ids["mix"]!, ids["beta"]!);
     manager.addToPlaylist(ids["mix"]!, ids["beta"]!);
@@ -98,7 +111,7 @@ void main() {
     expect(reopened.getPlaylist(empty.id).trackIds, [ids["beta"]]);
   });
 
-  test("opens application state written by the Python store", () {
+  test("opens application state written by an earlier release", () {
     final store = ApplicationStore.open(
       p.join(root.path, "state.db"),
       defaultDownloadDirectory: "/unused",
@@ -127,26 +140,39 @@ void main() {
       "repeat": "playlist",
     });
     final download = store.downloads().single;
-    expect(download.status, "completed");
+    expect(download.status, DownloadStatus.completed);
     expect(download.trackIds, [ids["alpha"]]);
     expect(download.createdAt, 1699999999.0);
   });
 
   test("Dart writes stay readable after reopening", () {
     final path = p.join(root.path, "state.db");
-    final store = ApplicationStore.open(path, defaultDownloadDirectory: "/unused");
-    store.savePlaybackUpdates({
-      "volume": {"volume": 10, "previous_volume": 10, "muted": false},
-    }, {ids["beta"]!: 2});
+    final store = ApplicationStore.open(
+      path,
+      defaultDownloadDirectory: "/unused",
+    );
+    store.savePlaybackUpdates(
+      {
+        "volume": {"volume": 10, "previous_volume": 10, "muted": false},
+      },
+      {ids["beta"]!: 2},
+    );
     store.recordPlay(ids["gamma"]!, playedAt: 1.5);
     store.close();
 
-    final reopened = ApplicationStore.open(path, defaultDownloadDirectory: "/unused");
+    final reopened = ApplicationStore.open(
+      path,
+      defaultDownloadDirectory: "/unused",
+    );
     addTearDown(reopened.close);
     expect(reopened.settings.volume, 10);
     expect(reopened.settings.accentColor, "ocean");
     expect(reopened.trackDetails(ids["beta"]!).playCount, 3);
-    expect(reopened.get("recent_tracks"), [ids["gamma"], ids["beta"], ids["alpha"]]);
+    expect(reopened.get("recent_tracks"), [
+      ids["gamma"],
+      ids["beta"],
+      ids["alpha"],
+    ]);
   });
 
   test("imports the pre-SQLite library and state once", () {
@@ -166,7 +192,10 @@ void main() {
       legacy["track1"],
     ]);
     expect(File(p.join(root.path, "library.mmdb")).existsSync(), isFalse);
-    expect(File(p.join(root.path, "library.mmdb.migrated")).existsSync(), isTrue);
+    expect(
+      File(p.join(root.path, "library.mmdb.migrated")).existsSync(),
+      isTrue,
+    );
 
     final store = ApplicationStore.open(
       p.join(directory.path, "state.db"),
@@ -184,7 +213,7 @@ void main() {
     expect(File(p.join(root.path, "state.json.migrated")).existsSync(), isTrue);
   });
 
-  test("settings defaults and clamping match the Python model", () {
+  test("settings defaults and clamping match earlier releases", () {
     final settings = AppSettings.fromJson({
       "volume": 300,
       "previous_volume": 0,

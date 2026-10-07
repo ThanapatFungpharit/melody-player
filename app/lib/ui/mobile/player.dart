@@ -1,16 +1,18 @@
 import "dart:math";
+import "dart:ui";
 
 import "package:flutter/material.dart" hide RepeatMode;
 
-import "../../app/app_state.dart";
+import "../app_state.dart";
 import "../../application/models.dart";
 import "../shared/playback_widgets.dart";
 import "../shared/theme.dart";
 import "../shared/widgets.dart";
 import "controls.dart";
-import "pages.dart";
+import "pages/lyrics_page.dart";
+import "pages/queue_page.dart";
 
-/// The mini player above the navigation bar.
+/// The mini player floating above the navigation bar.
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer(this.app, {super.key});
 
@@ -18,77 +20,112 @@ class MiniPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      color: scheme.surfaceContainerHigh,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Watch([app.playbackState, app.libraryRevision], builder: (context) {
-        final playback = app.playback;
-        final info = NowPlayingInfo.of(app);
-        final hasMedia = playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              spacing: 4,
+    final scheme = context.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+      child: Material(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(Radii.large),
+        clipBehavior: Clip.antiAlias,
+        child: Watch(
+          [app.playbackState, app.libraryRevision],
+          builder: (context) {
+            final playback = app.playback;
+            final info = NowPlayingInfo.of(app);
+            final hasMedia =
+                playback.currentTrackId != null ||
+                playback.externalTitle.isNotEmpty;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: Tooltip(
-                    message: "Open Now Playing",
-                    child: InkWell(
-                      onTap: () => pushPanel(context, app, AppPanel.player, NowPlaying(app)),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Row(
-                          spacing: 10,
-                          children: [
-                            Icon(Icons.graphic_eq_rounded, color: scheme.primary),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                spacing: 1,
-                                children: [
-                                  Text(
-                                    info.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Tooltip(
+                        message: "Open Now Playing",
+                        child: InkWell(
+                          onTap: () => pushPanel(
+                            context,
+                            app,
+                            AppPanel.player,
+                            NowPlaying(app),
+                            immersive: true,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+                            child: Row(
+                              spacing: 12,
+                              children: [
+                                Artwork(
+                                  app,
+                                  info.thumbnail,
+                                  size: 42,
+                                  seed: hasMedia ? info.title : "",
+                                ),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    spacing: 1,
+                                    children: [
+                                      Text(
+                                        info.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: context.text.titleSmall,
+                                      ),
+                                      Text(
+                                        info.credit,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: context.text.bodySmall,
+                                      ),
+                                    ],
                                   ),
-                                  Text(
-                                    info.credit,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 11),
-                                  ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                    TouchIconButton(
+                      playback.playing
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      playback.playing ? "Pause" : "Play",
+                      hasMedia ? playback.toggle : null,
+                    ),
+                    TouchIconButton(
+                      Icons.skip_next_rounded,
+                      "Next track",
+                      hasMedia ? playback.next : null,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                 ),
-                IconButton.filledTonal(
-                  onPressed: hasMedia ? playback.toggle : null,
-                  tooltip: playback.playing ? "Pause" : "Play",
-                  constraints: const BoxConstraints.tightFor(width: touchTarget, height: touchTarget),
-                  icon: Icon(playback.playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                LivePosition(
+                  app,
+                  builder: (context, positionMs) {
+                    final duration = app.playback.durationMs;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: LinearProgressIndicator(
+                        value: duration > 0 ? min(1, positionMs / duration) : 0,
+                        minHeight: 2,
+                        color: scheme.primary,
+                        backgroundColor: scheme.onSurface.withValues(
+                          alpha: 0.08,
+                        ),
+                      ),
+                    );
+                  },
                 ),
-                TouchIconButton(Icons.skip_next_rounded, "Next track", hasMedia ? playback.next : null),
               ],
-            ),
-            Watch([app.playbackProgress], builder: (context) {
-              final duration = app.playback.durationMs;
-              return LinearProgressIndicator(
-                value: min(1, app.playback.positionMs / max(1, duration)),
-                minHeight: 3,
-                color: scheme.primary,
-              );
-            }),
-          ],
-        );
-      }),
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -100,109 +137,283 @@ class NowPlaying extends StatelessWidget {
   final MelodyApp app;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final size = MediaQuery.sizeOf(context);
-    final cover = max(176.0, min(340.0, min(size.width - 64, size.height * 0.42)));
-    return Watch([app.playbackState, app.playbackVolume, app.libraryRevision], builder: (context) {
+  Widget build(BuildContext context) => Watch(
+    [app.playbackState, app.playbackVolume, app.libraryRevision],
+    builder: (context) {
+      final scheme = context.colors;
+      final dark = Theme.of(context).brightness == Brightness.dark;
       final playback = app.playback;
       final info = NowPlayingInfo.of(app);
-      final hasMedia = playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+      final hasMedia =
+          playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
       final repeat = playback.queue.repeat;
       final muted = playback.muted || playback.volume == 0;
-      return ListView(
+      // The backdrop takes the same hue as the cover placeholder, so a
+      // track keeps its color from list to full screen.
+      final tint = hasMedia
+          ? HSLColor.fromAHSL(
+              1,
+              seedHue(info.title),
+              dark ? 0.35 : 0.45,
+              dark ? 0.28 : 0.80,
+            ).toColor()
+          : scheme.surfaceContainerHigh;
+      return Stack(
+        fit: StackFit.expand,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text("Now Playing", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                stops: const [0, 0.75],
+                colors: [tint, scheme.surface],
               ),
-              TouchIconButton(
-                Icons.keyboard_arrow_down_rounded,
-                "Close Now Playing",
-                () => Navigator.of(context).maybePop(),
-              ),
-            ],
+            ),
           ),
-          Padding(padding: const EdgeInsets.all(8), child: Center(child: Artwork(app, info.thumbnail, size: cover))),
-          const SizedBox(height: 12),
-          Text(
-            info.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          Text(
-            info.credit,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-          ),
-          const SizedBox(height: 12),
-          SeekBar(app),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              TouchIconButton(
-                Icons.shuffle_rounded,
-                "Shuffle upcoming tracks",
-                playback.queue.upcomingCount >= 2 ? playback.shuffleUpcoming : null,
-              ),
-              TouchIconButton(Icons.skip_previous_rounded, "Previous track", hasMedia ? playback.previous : null),
-              IconButton.filledTonal(
-                onPressed: hasMedia ? playback.toggle : null,
-                tooltip: playback.playing ? "Pause" : "Play",
-                iconSize: 38,
-                constraints: const BoxConstraints.tightFor(width: 64, height: 64),
-                icon: Icon(playback.playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
-              ),
-              TouchIconButton(Icons.skip_next_rounded, "Next track", hasMedia ? playback.next : null),
-              IconButton(
-                onPressed: playback.cycleRepeat,
-                tooltip: repeatLabel(repeat),
-                constraints: const BoxConstraints.tightFor(width: touchTarget, height: touchTarget),
-                icon: Icon(repeatIcon(repeat), color: repeat != RepeatMode.off ? scheme.primary : null),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              IconButton(
-                onPressed: info.canFavorite ? () => app.toggleFavorite(playback.currentTrackId!) : null,
-                tooltip: info.favorite ? "Remove favorite" : "Favorite",
-                icon: Icon(
-                  info.favorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                  color: info.favorite ? Colors.pink.shade400 : null,
+          if (info.thumbnail.isNotEmpty)
+            Positioned.fill(
+              child: Opacity(
+                opacity: dark ? 0.35 : 0.3,
+                child: ImageFiltered(
+                  imageFilter: ImageFilter.blur(sigmaX: 60, sigmaY: 60),
+                  child: ShaderMask(
+                    shaderCallback: (bounds) => const LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.white, Colors.transparent],
+                    ).createShader(bounds),
+                    blendMode: BlendMode.dstIn,
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      alignment: Alignment.topCenter,
+                      child: Artwork(app, info.thumbnail, size: 400),
+                    ),
+                  ),
                 ),
               ),
-              TouchIconButton(
-                muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                muted ? "Restore sound" : "Mute",
-                playback.toggleMute,
-              ),
-              TouchIconButton(
-                Icons.stop_rounded,
-                "Stop playback and clear notification",
-                playback.mediaSessionActive ? playback.stop : null,
-              ),
-              TextButton.icon(
-                onPressed: () => pushPanel(context, app, AppPanel.queue, MobileQueue(app)),
-                icon: const Icon(Icons.queue_music_rounded),
-                label: const Text("Queue"),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            "Use your device’s volume buttons to adjust loudness.",
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final gutter = constraints.maxWidth < 360 ? 16.0 : 24.0;
+                final cover = min(
+                  constraints.maxWidth - gutter * 2,
+                  max(180.0, constraints.maxHeight - 430),
+                );
+                // Fills tall screens by spreading the gaps; scrolls when the
+                // window is too short for everything.
+                return SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(gutter, 4, gutter, 16),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: max(0, constraints.maxHeight - 20),
+                    ),
+                    child: IntrinsicHeight(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              Transform.translate(
+                                offset: const Offset(-12, 0),
+                                child: TouchIconButton(
+                                  Icons.keyboard_arrow_down_rounded,
+                                  "Close Now Playing",
+                                  () => Navigator.of(context).maybePop(),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  "NOW PLAYING",
+                                  textAlign: TextAlign.center,
+                                  style: context.text.labelSmall!.copyWith(
+                                    color: scheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: touchTarget - 12),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Spacer(),
+                          Center(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(
+                                  Radii.panel,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(
+                                      alpha: dark ? 0.45 : 0.18,
+                                    ),
+                                    blurRadius: 40,
+                                    offset: const Offset(0, 18),
+                                  ),
+                                ],
+                              ),
+                              child: Artwork(
+                                app,
+                                info.thumbnail,
+                                size: cover,
+                                seed: hasMedia ? info.title : "",
+                                radius: Radii.panel,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 28),
+                          const Spacer(),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  spacing: 4,
+                                  children: [
+                                    Text(
+                                      info.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.text.headlineSmall,
+                                    ),
+                                    Text(
+                                      info.credit,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.text.bodyLarge!.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: info.canFavorite
+                                    ? () => app.toggleFavorite(
+                                        playback.currentTrackId!,
+                                      )
+                                    : null,
+                                tooltip: info.favorite
+                                    ? "Remove favorite"
+                                    : "Favorite",
+                                iconSize: 26,
+                                icon: Icon(
+                                  info.favorite
+                                      ? Icons.favorite_rounded
+                                      : Icons.favorite_border_rounded,
+                                  color: info.favorite
+                                      ? context.palette.favorite
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                          SeekBar(app, stacked: true),
+                          const SizedBox(height: 14),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              TouchIconButton(
+                                Icons.shuffle_rounded,
+                                "Shuffle upcoming tracks",
+                                playback.queue.upcomingCount >= 2
+                                    ? playback.shuffleUpcoming
+                                    : null,
+                              ),
+                              IconButton(
+                                onPressed: hasMedia ? playback.previous : null,
+                                tooltip: "Previous track",
+                                iconSize: 38,
+                                icon: const Icon(Icons.skip_previous_rounded),
+                              ),
+                              IconButton.filled(
+                                onPressed: hasMedia ? playback.toggle : null,
+                                tooltip: playback.playing ? "Pause" : "Play",
+                                iconSize: 40,
+                                style: IconButton.styleFrom(
+                                  fixedSize: const Size.square(72),
+                                  backgroundColor: scheme.onSurface,
+                                  foregroundColor: scheme.surface,
+                                ),
+                                icon: Icon(
+                                  playback.playing
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: hasMedia ? playback.next : null,
+                                tooltip: "Next track",
+                                iconSize: 38,
+                                icon: const Icon(Icons.skip_next_rounded),
+                              ),
+                              IconButton(
+                                onPressed: playback.cycleRepeat,
+                                tooltip: repeatLabel(repeat),
+                                constraints: const BoxConstraints.tightFor(
+                                  width: touchTarget,
+                                  height: touchTarget,
+                                ),
+                                icon: Icon(
+                                  repeatIcon(repeat),
+                                  color: repeat != RepeatMode.off
+                                      ? scheme.primary
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Spacer(),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              TouchIconButton(
+                                Icons.lyrics_outlined,
+                                "Lyrics",
+                                () => pushPanel(
+                                  context,
+                                  app,
+                                  AppPanel.lyrics,
+                                  MobileLyrics(app),
+                                ),
+                              ),
+                              TouchIconButton(
+                                muted
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_up_rounded,
+                                muted ? "Restore sound" : "Mute",
+                                playback.toggleMute,
+                              ),
+                              TouchIconButton(
+                                Icons.stop_rounded,
+                                "Stop playback and clear notification",
+                                hasMedia ? playback.stop : null,
+                              ),
+                              TextButton.icon(
+                                onPressed: () => pushPanel(
+                                  context,
+                                  app,
+                                  AppPanel.queue,
+                                  MobileQueue(app),
+                                ),
+                                icon: const Icon(Icons.queue_music_rounded),
+                                label: const Text("Queue"),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
           ),
         ],
       );
-    });
-  }
+    },
+  );
 }

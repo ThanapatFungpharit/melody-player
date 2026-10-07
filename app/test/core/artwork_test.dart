@@ -9,17 +9,15 @@ import "package:path/path.dart" as p;
 void main() {
   final fixtures = p.join("test", "fixtures", "artwork");
   // Recorded from the previous mutagen-based reader for the same files.
-  final expected = (jsonDecode(
-    File(p.join(fixtures, "expected.json")).readAsStringSync(),
-  ) as Map<String, Object?>).cast<String, String>();
+  final expected =
+      (jsonDecode(File(p.join(fixtures, "expected.json")).readAsStringSync())
+              as Map<String, Object?>)
+          .cast<String, String>();
 
   for (final MapEntry(key: name, value: digest) in expected.entries) {
     test("reads the same cover as mutagen from $name", () async {
       final artwork = await readEmbeddedArtwork(p.join(fixtures, name));
-      expect(
-        artwork.isEmpty ? "" : sha256.convert(artwork).toString(),
-        digest,
-      );
+      expect(artwork.isEmpty ? "" : sha256.convert(artwork).toString(), digest);
     });
   }
 

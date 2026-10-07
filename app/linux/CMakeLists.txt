@@ -121,7 +121,7 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
-# Bundled FFmpeg/FFprobe, staged by tools/fetch_media_binaries.py.
+# Bundled FFmpeg/FFprobe, staged by tools/build/media.py (melody-fetch-media).
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
   set(MELODY_MEDIA_ARCH "arm64")
 else()

@@ -11,7 +11,7 @@ dependencies:
   audio_session: 0.2.4
   flutter:
     sdk: flutter
-  flutter_media_session: 3.0.3
+  flutter_media_session: 3.0.9
   just_audio: 0.10.6
   just_audio_media_kit: 2.1.0
   media_kit_libs_linux: 1.2.1

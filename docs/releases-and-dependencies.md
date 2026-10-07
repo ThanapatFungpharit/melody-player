@@ -5,24 +5,25 @@
 `version:` in `app/pubspec.yaml` is authoritative and must match the release tag
 being cut. It has the form `X.Y.Z+BUILD`, and the build number must equal
 `major * 1_000_000 + minor * 1_000 + patch` (minor and patch below 1000, major
-at most 2099); `tools/release_version.py` rejects anything else, and rejects a
-tag that is not exactly `v<version>`. Every published build needs a new
-version, because rebuilding the same version does not create a new Android
-version code. `tools/build_app.py` passes the version and build number to
-`flutter build` explicitly.
+at most 2099); `melody-version` (`tools/build/version.py`) rejects anything
+else, and rejects a tag that is not exactly `v<version>`. Every published build
+needs a new version, because rebuilding the same version does not create a new
+Android version code. `melody-build` (`tools/build/app.py`) passes the version
+and build number to `flutter build` explicitly.
 
 1. Change the version line and dependency pins when needed.
 2. Refresh lock files (`flutter pub get`, `uv lock` in `worker/` and the root),
    run validation, and review compatibility changes together.
-3. Build through `tools/build_app.py` from a clean checkout.
+3. Build through `uv run melody-build` from a clean checkout.
 4. Tag exactly `v<version>` to run the release workflow.
 
 ## Identity
 
-Melody's Flet releases shipped as `com.flet.musicplayer` (Flet's default
-organization plus the project name). The Flutter app keeps that application ID
-and bundle identifier, and the same signing key must be used, so installs
-upgrade in place and keep their data directory. Do not change it.
+Melody's first releases were built with the Flet framework and shipped as
+`com.flet.musicplayer` (Flet's default organization plus the project name).
+The application ID, bundle identifier, Android namespace, and Linux
+application ID keep that value, and the same signing key must be used, so
+installs upgrade in place and keep their data directory. Do not change it.
 
 ## Components
 
@@ -30,12 +31,13 @@ upgrade in place and keep their data directory. Do not change it.
 | --- | --- | --- |
 | Flutter / Dart | CI `FLUTTER_VERSION` | 3.44.8 / 3.12 |
 | serious_python | `app/pubspec.yaml` | 4.5.1 (platform packages 4.7.2) |
-| Embedded CPython | `tools/build_app.py` `PYTHON_VERSION` | 3.14 |
+| Embedded CPython | `tools/build/app.py` `PYTHON_VERSION` | 3.14 |
 | Bundled yt-dlp | `worker/pyproject.toml` + `worker/uv.lock` | 2026.8.19, exact |
+| Bundled ytmusicapi (and its `requests` stack) | `worker/pyproject.toml` + `worker/uv.lock` | 1.12.3, exact |
 | just_audio / audio_session / just_audio_media_kit | `packages/melody_audio/pubspec.yaml` | 0.10.6 / 0.2.4 / 2.1.0, exact |
 | media_kit Windows audio / Linux libraries | `packages/melody_audio/pubspec.yaml` | 1.0.9 / 1.2.1, exact |
 | flutter_media_session | `packages/melody_audio/pubspec.yaml` | 3.0.3, exact |
-| FFmpeg | `tools/fetch_media_binaries.py` | provider SHA-256 verified on every fetch |
+| FFmpeg | `tools/build/media.py` | provider SHA-256 verified on every fetch |
 
 The worker is packaged with exactly the requirements in `worker/uv.lock`
 (`uv export --frozen --no-dev`). Its own source ships as plain Python; its
@@ -43,22 +45,40 @@ dependencies are compiled to bytecode.
 
 `flutter_media_session` still includes `<experimental/coroutine>`, which current
 MSVC rejects. `app/windows/CMakeLists.txt` defines
-`_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS` for all targets, as
-Flet's template did; remove it once the plugin moves to C++20 coroutines.
+`_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS` for all targets; remove
+it once the plugin moves to C++20 coroutines.
 
 Native builds also involve Flutter, platform SDKs, and transitive Dart and
 native packages; artifacts are not claimed to be bitwise reproducible.
 
-## Runtime yt-dlp selection
+## Runtime package selection
 
-The bundled yt-dlp is immutable. Runtime wheels are stored under the app data
-directory's `yt-dlp-runtime` and never replace the bundled distribution. The
-accepted update window is `>=2026.8.19,<2027`, defined in
-`worker/src/melody_worker/updater.py`; changing it requires a reviewed change
-and extractor/download regression tests.
+yt-dlp and ytmusicapi are updated the same way, each with its own storage,
+state, and session lock. Each `RuntimePackage` in
+`worker/src/melody_worker/updater/packages.py` defines the accepted update window, the
+archive members a genuine wheel must contain, and the import/API probe:
 
-The worker selects its runtime once per launch, before yt-dlp is first
-imported, and reports the result in its `ready` event. A normal launch is
+| Package | Runtime storage | Accepted window | Activated as |
+| --- | --- | --- | --- |
+| yt-dlp | `yt-dlp-runtime` | `>=2026.8.19,<2027` | the wheel itself on `sys.path` |
+| ytmusicapi | `ytmusicapi-runtime` | `>=1.12.3,<2` | an extracted copy of the wheel |
+
+ytmusicapi loads gettext catalogs from files beside its modules, which a
+zipped wheel cannot provide, so its verified wheel is extracted next to it.
+The extraction records the wheel's SHA-256 and is reused only while every
+member still matches the wheel by size and CRC-32; otherwise it is replaced.
+The bundled copy has the same constraint on Android, where serious_python
+zip-imports site-packages from `sitepackages.zip`: `melody-build` lists it in
+`SERIOUS_PYTHON_ANDROID_EXTRACT_PACKAGES` (`ANDROID_EXTRACT_PACKAGES` in
+`tools/build/app.py`) so it is unpacked to disk, and the worker reports a
+non-zip-safe package that was still imported from an archive as unavailable.
+Changing either window requires a reviewed change and regression tests
+(extractor/download tests for yt-dlp; search, radio, playlist, and lyrics
+mapping for ytmusicapi).
+
+The bundled packages are immutable. Runtime wheels never replace the bundled
+distributions. The worker selects each runtime once per launch, before the
+package is first imported, and reports the results in its `ready` event. A normal launch is
 offline: it re-validates installed wheels and activates `current`, or uses the
 bundled package. It holds a session lock for the process lifetime; a second
 process that cannot acquire it uses the bundled package without changing the

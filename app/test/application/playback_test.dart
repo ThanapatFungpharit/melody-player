@@ -9,6 +9,7 @@ import "package:melody/application/queue.dart";
 import "package:melody/application/store.dart";
 import "package:melody/audio/audio_backend.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody_audio/melody_audio.dart" show AudioQueueItem;
 import "package:path/path.dart" as p;
 
 class FakeBackend implements TrackPlayerBackend {
@@ -17,8 +18,8 @@ class FakeBackend implements TrackPlayerBackend {
   double volume = 0;
   int pauseCount = 0;
   final List<int> seekedTo = [];
-  final List<(List<Map<String, String>>, int, String)> queues = [];
-  final List<(List<Map<String, String>>, int, String)> queueUpdates = [];
+  final List<(List<AudioQueueItem>, int, RepeatMode)> queues = [];
+  final List<(List<AudioQueueItem>, int, RepeatMode)> queueUpdates = [];
   int cancelledLoads = 0;
   int discardedSources = 0;
 
@@ -45,19 +46,22 @@ class FakeBackend implements TrackPlayerBackend {
 
   @override
   void setQueue(
-    List<Map<String, String>> items,
+    List<AudioQueueItem> items,
     int currentIndex, {
-    required String repeatMode,
+    required RepeatMode repeat,
     bool autoplay = false,
     int positionMs = 0,
   }) {
-    queues.add((items, currentIndex, repeatMode));
+    queues.add((items, currentIndex, repeat));
     if (autoplay) playedAt.add(positionMs);
   }
 
   @override
-  void updateQueue(List<Map<String, String>> items, int currentIndex, {required String repeatMode}) =>
-      queueUpdates.add((items, currentIndex, repeatMode));
+  void updateQueue(
+    List<AudioQueueItem> items,
+    int currentIndex, {
+    required RepeatMode repeat,
+  }) => queueUpdates.add((items, currentIndex, repeat));
 
   @override
   void cancelLoad() => cancelledLoads++;
@@ -89,7 +93,10 @@ void main() {
     root = await Directory.systemTemp.createTemp("melody-playback");
     music = p.join(root.path, "music");
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
-    store = ApplicationStore.open(p.join(root.path, "state.db"), defaultDownloadDirectory: music);
+    store = ApplicationStore.open(
+      p.join(root.path, "state.db"),
+      defaultDownloadDirectory: music,
+    );
     backend = FakeBackend();
   });
 
@@ -108,45 +115,51 @@ void main() {
       }(),
   ];
 
-  PlaybackController controller({void Function(String)? onError}) => PlaybackController(
-    manager,
-    LibraryService(manager, store),
-    store,
-    backend,
-    onError: onError,
+  PlaybackController controller({void Function(String)? onError}) =>
+      PlaybackController(
+        manager,
+        LibraryService(manager, store),
+        store,
+        backend,
+        onError: onError,
+      );
+
+  Map<String, Object?> saved() =>
+      (store.get("playback") as Map).cast<String, Object?>();
+
+  test(
+    "the native queue owns completion and the controller mirrors track changes",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3"]);
+      final playback = controller();
+      playback.playTracks(ids);
+      final (items, index, repeat) = backend.queues.last;
+      expect(items.map((item) => item.trackId), ids);
+      expect((index, repeat), (0, RepeatMode.off));
+      expect(backend.playedAt, [0]);
+
+      playback
+        ..onLoaded()
+        ..onDuration(1000)
+        ..onCompleted();
+      expect(playback.currentTrackId, ids[0]);
+      expect(playback.playing, isFalse);
+      expect(backend.queues, hasLength(1));
+
+      playback.onTrackChanged(ids[1], 1);
+      expect(playback.currentTrackId, ids[1]);
+      expect(playback.playing, isTrue);
+      expect(playback.loading, isTrue);
+      expect(saved()["current_index"], 1);
+
+      playback.onStopped();
+      expect(playback.playing, isFalse);
+      expect(playback.mediaSessionActive, isFalse);
+      expect(playback.positionMs, 0);
+      expect(playback.currentTrackId, isNull);
+      expect(playback.queue.items, isEmpty);
+    },
   );
-
-  Map<String, Object?> saved() => (store.get("playback") as Map).cast<String, Object?>();
-
-  test("the native queue owns completion and the controller mirrors track changes", () async {
-    final ids = await tracks(["one.mp3", "two.mp3"]);
-    final playback = controller();
-    playback.playTracks(ids);
-    final (items, index, repeat) = backend.queues.last;
-    expect(items.map((item) => item["track_id"]), ids);
-    expect((index, repeat), (0, "off"));
-    expect(backend.playedAt, [0]);
-
-    playback
-      ..onLoaded()
-      ..onDuration(1000)
-      ..onCompleted();
-    expect(playback.currentTrackId, ids[0]);
-    expect(playback.playing, isFalse);
-    expect(backend.queues, hasLength(1));
-
-    playback.onTrackChanged(ids[1], 1);
-    expect(playback.currentTrackId, ids[1]);
-    expect(playback.playing, isTrue);
-    expect(playback.snapshot.loading, isTrue);
-    expect(saved()["current_index"], 1);
-
-    playback.onStopped();
-    expect(playback.playing, isFalse);
-    expect(playback.mediaSessionActive, isFalse);
-    expect(playback.positionMs, 0);
-    expect(playback.currentTrackId, ids[1]);
-  });
 
   test("queue mutations update the native queue without reloading", () async {
     final ids = await tracks(["one.mp3", "two.mp3"]);
@@ -157,28 +170,34 @@ void main() {
     expect(backend.queues, hasLength(1));
     expect(backend.queueUpdates, hasLength(2));
     final (latest, index, repeat) = backend.queueUpdates.last;
-    expect(latest.map((item) => item["track_id"]), ids);
-    expect((index, repeat), (0, "track"));
+    expect(latest.map((item) => item.trackId), ids);
+    expect((index, repeat), (0, RepeatMode.track));
     expect(playback.queue.repeat, RepeatMode.track);
   });
 
-  test("shuffle upcoming reorders on every tap and is never persisted as a mode", () async {
-    final ids = await tracks(["one.mp3", "two.mp3", "three.mp3", "four.mp3"]);
-    final playback = controller()..playTracks(ids);
-    playback.queue = PlaybackQueue(
-      items: playback.queue.items,
-      currentIndex: playback.queue.currentIndex,
-      random: IdentityRandom(),
-    );
-    expect(playback.shuffleUpcoming(), isTrue);
-    expect(playback.queue.items, [ids[0], ids[2], ids[3], ids[1]]);
-    expect(playback.shuffleUpcoming(), isTrue);
-    expect(playback.queue.items, [ids[0], ids[3], ids[1], ids[2]]);
-    expect(backend.queues, hasLength(1));
-    expect(backend.queueUpdates, hasLength(2));
-    expect(backend.queueUpdates.last.$1.map((item) => item["track_id"]), playback.queue.items);
-    expect(saved().containsKey("shuffle"), isFalse);
-  });
+  test(
+    "shuffle upcoming reorders on every tap and is never persisted as a mode",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3", "three.mp3", "four.mp3"]);
+      final playback = controller()..playTracks(ids);
+      playback.queue = PlaybackQueue(
+        items: playback.queue.items,
+        currentIndex: playback.queue.currentIndex,
+        random: IdentityRandom(),
+      );
+      expect(playback.shuffleUpcoming(), isTrue);
+      expect(playback.queue.items, [ids[0], ids[2], ids[3], ids[1]]);
+      expect(playback.shuffleUpcoming(), isTrue);
+      expect(playback.queue.items, [ids[0], ids[3], ids[1], ids[2]]);
+      expect(backend.queues, hasLength(1));
+      expect(backend.queueUpdates, hasLength(2));
+      expect(
+        backend.queueUpdates.last.$1.map((item) => item.trackId),
+        playback.queue.items,
+      );
+      expect(saved().containsKey("shuffle"), isFalse);
+    },
+  );
 
   test("events from a retiring player cannot corrupt a handoff", () async {
     final ids = await tracks(["one.mp3", "two.mp3"]);
@@ -200,7 +219,7 @@ void main() {
     expect(playback.positionMs, 9000);
   });
 
-  test("stop is distinct from pause and ends the media session", () async {
+  test("stop is distinct from pause and unloads the music", () async {
     final [id] = await tracks(["song.mp3"]);
     final playback = controller()
       ..playTrack(id)
@@ -211,54 +230,91 @@ void main() {
     playback.stop();
     expect(playback.mediaSessionActive, isFalse);
     expect(playback.playing, isFalse);
-    expect(playback.currentTrackId, id);
+    expect(playback.loading, isFalse);
+    expect(playback.currentTrackId, isNull);
+    expect(playback.queue.items, isEmpty);
     expect(playback.positionMs, 0);
+    expect(backend.discardedSources, 1);
+    expect(saved()["queue"], isEmpty);
+  });
+
+  test("stop releases a selection that is still preparing", () async {
+    final playback = controller();
+    playback.beginPendingTrack("Remote song");
+    expect(playback.loading, isTrue);
+    playback.stop();
+    expect(playback.loading, isFalse);
+    expect(playback.externalTitle, isEmpty);
+  });
+
+  test("a failed pending selection leaves the preparing state", () async {
+    final playback = controller();
+    final generation = playback.beginPendingTrack("Remote song");
+    expect(playback.isCurrentRequest(generation), isTrue);
+    playback.onBackendError("Couldn’t play Remote song.");
+    expect(playback.loading, isFalse);
+    expect(playback.playing, isFalse);
+    expect(playback.externalTitle, isEmpty);
+    expect(playback.isCurrentRequest(generation), isFalse);
   });
 
   test("bulk queue updates notify once each", () async {
     final playback = controller();
     playback.queue.replace(["current"]);
-    final changes = <String>[];
+    final changes = <PlaybackChange>[];
     playback.changes.listen(changes.add);
     playback
       ..addNextMany(["next-one", "next-two"])
       ..addLastMany(["last-one", "last-two"]);
-    expect(playback.queue.items, ["current", "next-one", "next-two", "last-one", "last-two"]);
-    expect(changes, ["queue", "queue"]);
+    expect(playback.queue.items, [
+      "current",
+      "next-one",
+      "next-two",
+      "last-one",
+      "last-two",
+    ]);
+    expect(changes, [PlaybackChange.queue, PlaybackChange.queue]);
   });
 
   test("library playback sends file paths to the native player", () async {
     final ids = await tracks(["song.mp3", "next.mp3"]);
     controller().playTracks(ids);
     final (items, index, repeat) = backend.queues.last;
-    expect(items.map((item) => item["source"]), [
+    expect(items.map((item) => item.source), [
       p.join(p.normalize(p.absolute(music)), "song.mp3"),
       p.join(p.normalize(p.absolute(music)), "next.mp3"),
     ]);
-    expect((index, repeat), (0, "off"));
+    expect((index, repeat), (0, RepeatMode.off));
     expect(backend.source, "");
     expect(backend.playedAt, [0]);
   });
 
-  test("a replacement cancels preparation and installs the new queue", () async {
-    final ids = await tracks(["one.mp3", "two.mp3"]);
-    controller()
-      ..playTrack(ids[0])
-      ..playTrack(ids[1]);
-    expect(backend.cancelledLoads, 1);
-    expect(backend.queues, hasLength(2));
-    final (items, index, _) = backend.queues.last;
-    expect(items[index]["track_id"], ids[1]);
-  });
+  test(
+    "a replacement cancels preparation and installs the new queue",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3"]);
+      controller()
+        ..playTrack(ids[0])
+        ..playTrack(ids[1]);
+      expect(backend.cancelledLoads, 1);
+      expect(backend.queues, hasLength(2));
+      final (items, index, _) = backend.queues.last;
+      expect(items[index].trackId, ids[1]);
+    },
+  );
 
-  test("the requested start survives filtering and duplicate removal", () async {
-    final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
-    final playback = controller()..playTracks(["not-a-uuid", ids[0], ids[1]], startIndex: 1);
-    expect(playback.currentTrackId, ids[0]);
-    playback.playTracks([ids[0], ids[0], ids[1], ids[2]], startIndex: 2);
-    expect(playback.queue.items, ids);
-    expect(playback.currentTrackId, ids[1]);
-  });
+  test(
+    "the requested start survives filtering and duplicate removal",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+      final playback = controller()
+        ..playTracks(["not-a-uuid", ids[0], ids[1]], startIndex: 1);
+      expect(playback.currentTrackId, ids[0]);
+      playback.playTracks([ids[0], ids[0], ids[1], ids[2]], startIndex: 2);
+      expect(playback.queue.items, ids);
+      expect(playback.currentTrackId, ids[1]);
+    },
+  );
 
   test("next at the end of the queue stops and rewinds", () async {
     final [id] = await tracks(["song.mp3"]);
@@ -269,6 +325,51 @@ void main() {
     expect(playback.positionMs, 0);
     expect(backend.pauseCount, 1);
     expect(backend.seekedTo, [0]);
+  });
+
+  test("next at the end keeps the current track's pending load", () async {
+    final ids = await tracks(["one.mp3", "two.mp3"]);
+    final playback = controller()
+      ..playTracks(ids)
+      ..onLoaded()
+      ..next();
+    expect(playback.currentTrackId, ids[1]);
+    expect(playback.loading, isTrue);
+    playback.next();
+    // Cancelling would leave the first track's decoder active, so the pause
+    // and rewind (and a later resume) would play the wrong song.
+    expect(backend.cancelledLoads, 0);
+    expect(playback.currentTrackId, ids[1]);
+    expect(playback.playing, isFalse);
+    expect(backend.pauseCount, 1);
+    expect(backend.seekedTo, [0]);
+  });
+
+  test("playing a repeated queue row sends that row to the engine", () async {
+    final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    final playback = controller()
+      ..playTracks(ids)
+      ..addNext(ids[2]);
+    expect(playback.queue.items, [ids[0], ids[2], ids[1], ids[2]]);
+    playback.playQueueIndex(3);
+    expect(playback.queue.currentIndex, 3);
+    final (items, index, _) = backend.queues.last;
+    expect(index, 3);
+    expect(items[index].trackId, ids[2]);
+  });
+
+  test("the queue's track plays while a remote selection is pending", () async {
+    final [id] = await tracks(["song.mp3"]);
+    final playback = controller()
+      ..playTracks([id])
+      ..onLoaded()
+      ..onPlaying(true);
+    final generation = playback.beginPendingTrack("Remote song");
+    expect(playback.currentTrackId, id);
+    playback.playTrack(id);
+    expect(backend.queues, hasLength(2));
+    expect(playback.externalTitle, isEmpty);
+    expect(playback.isCurrentRequest(generation), isFalse);
   });
 
   test("next after an unqueued stream releases the source", () {
@@ -310,40 +411,61 @@ void main() {
     expect(backend.discardedSources, 0);
   });
 
-  test("a restored queue drops invalid tracks and keeps the current one", () async {
-    final [id] = await tracks(["song.mp3"]);
-    store.set("playback", {
-      "queue": ["not-a-uuid", id],
-      "current_index": 1,
-      "position_ms": 3456,
-      "repeat": "off",
-    });
-    final playback = controller();
-    expect(playback.queue.items, [id]);
-    expect(playback.currentTrackId, id);
-    expect(playback.positionMs, 3456);
-  });
+  test(
+    "a restored queue drops invalid tracks and keeps the current one",
+    () async {
+      final [id] = await tracks(["song.mp3"]);
+      store.set("playback", {
+        "queue": ["not-a-uuid", id],
+        "current_index": 1,
+        "position_ms": 3456,
+        "repeat": "off",
+      });
+      final playback = controller();
+      expect(playback.queue.items, [id]);
+      expect(playback.currentTrackId, id);
+      expect(playback.positionMs, 3456);
+    },
+  );
 
   test("an invalid restored position does not prevent startup", () async {
     final [id] = await tracks(["song.mp3"]);
-    store.set("playback", {"queue": [id], "current_index": 0, "position_ms": "invalid"});
+    store.set("playback", {
+      "queue": [id],
+      "current_index": 0,
+      "position_ms": "invalid",
+    });
     final playback = controller();
     expect(playback.currentTrackId, id);
     expect(playback.positionMs, 0);
   });
 
-  test("a restored queue loads its source before resuming at the saved position", () async {
-    final [id] = await tracks(["song.mp3"]);
-    store.set("playback", {"queue": [id], "current_index": 0, "position_ms": 3456});
-    controller().toggle();
-    final (items, index, _) = backend.queues.last;
-    expect(items[index]["source"], p.join(p.normalize(p.absolute(music)), "song.mp3"));
-    expect(backend.playedAt, [3456]);
-  });
+  test(
+    "a restored queue loads its source before resuming at the saved position",
+    () async {
+      final [id] = await tracks(["song.mp3"]);
+      store.set("playback", {
+        "queue": [id],
+        "current_index": 0,
+        "position_ms": 3456,
+      });
+      controller().toggle();
+      final (items, index, _) = backend.queues.last;
+      expect(
+        items[index].source,
+        p.join(p.normalize(p.absolute(music)), "song.mp3"),
+      );
+      expect(backend.playedAt, [3456]);
+    },
+  );
 
   test("a native failure repairs optimistic play intent", () async {
     final [id] = await tracks(["song.mp3"]);
-    store.set("playback", {"queue": [id], "current_index": 0, "position_ms": 1234});
+    store.set("playback", {
+      "queue": [id],
+      "current_index": 0,
+      "position_ms": 1234,
+    });
     final playback = controller()
       ..toggle()
       ..onBackendError("native source is missing");
@@ -361,6 +483,86 @@ void main() {
     expect(backend.pauseCount, 0);
     expect(backend.discardedSources, 1);
     expect(playback.mediaSessionActive, isFalse);
+  });
+
+  test("removing a row that is already gone does nothing", () async {
+    final ids = await tracks(["one.mp3", "two.mp3"]);
+    final playback = controller()..playTracks(ids);
+    final loads = backend.queues.length;
+    playback
+      ..removeQueueItem(2)
+      ..removeQueueItem(-1);
+    expect(playback.queue.items, ids);
+    expect(backend.queues, hasLength(loads));
+  });
+
+  test("removing a track drops every row of it with one reload", () async {
+    final [one, two, three] = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    final playback = controller()..playTracks([one, two, three]);
+    playback
+      ..addLast(one)
+      ..addNext(one);
+    final loads = backend.queues.length;
+    playback.removeTrack(one);
+    expect(playback.queue.items, [two, three]);
+    expect(playback.currentTrackId, two);
+    expect(backend.queues, hasLength(loads + 1));
+    expect(playback.playing, isTrue);
+  });
+
+  test("playing a track missing from the library keeps the queue", () async {
+    final ids = await tracks(["one.mp3", "two.mp3"]);
+    final errors = <String>[];
+    final playback = controller(onError: errors.add)..playTracks(ids);
+    playback.playTrack("00000000-0000-4000-8000-000000000000");
+    expect(playback.queue.items, ids);
+    expect(playback.currentTrackId, ids[0]);
+    expect(errors, ["This track is no longer in your library."]);
+  });
+
+  test("an unavailable selection starts at the next available track", () async {
+    final [one, two, three] = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    const missing = "00000000-0000-4000-8000-000000000000";
+    final playback = controller()
+      ..playTracks([one, missing, two], startIndex: 1);
+    expect(playback.queue.items, [one, two]);
+    expect(playback.currentTrackId, two);
+    playback.playTracks([one, three, missing], startIndex: 2);
+    expect(playback.currentTrackId, three);
+  });
+
+  test("a queued track deleted elsewhere does not block the queue", () async {
+    final [one, two, three] = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    final playback = controller();
+    playback.queue.replace([one, two, three]);
+    manager.deleteTrack(two);
+    playback.playQueueIndex(0);
+    expect(playback.queue.items, [one, three]);
+    final (items, index, _) = backend.queues.last;
+    expect(items.map((item) => item.trackId), [one, three]);
+    expect(index, 0);
+
+    // A deleted selection plays its successor from the start.
+    manager.deleteTrack(one);
+    playback
+      ..onBackendError("decoder lost")
+      ..seek(4000)
+      ..toggle();
+    expect(playback.currentTrackId, three);
+    expect(backend.queues.last.$1.map((item) => item.trackId), [three]);
+    expect(backend.playedAt.last, 0);
+  });
+
+  test("a queue whose tracks all left the library releases", () async {
+    final [one] = await tracks(["one.mp3"]);
+    final errors = <String>[];
+    final playback = controller(onError: errors.add)..playTracks([one]);
+    manager.deleteTrack(one);
+    playback.playQueueIndex(0);
+    expect(playback.queue.items, isEmpty);
+    expect(playback.playing, isFalse);
+    expect(backend.discardedSources, greaterThan(0));
+    expect(errors, ["This track is no longer in your library."]);
   });
 
   test("clear queue keeps the current track until it is removed", () async {
@@ -408,6 +610,49 @@ void main() {
     expect(backend.playedAt, [4567]);
   });
 
+  test("playing from a position restarts a finished track there", () async {
+    final [id] = await tracks(["song.mp3"]);
+    final playback = controller()
+      ..playTrack(id)
+      ..onLoaded()
+      ..onDuration(9000)
+      ..onCompleted();
+    expect(playback.playing, isFalse);
+    backend.playedAt.clear();
+    playback.playFrom(3000);
+    expect(playback.playing, isTrue);
+    expect(playback.positionMs, 3000);
+    expect(backend.playedAt, [3000]);
+  });
+
+  test("playing from the start of a paused track rewinds first", () async {
+    final [id] = await tracks(["song.mp3"]);
+    final playback = controller()
+      ..playTrack(id)
+      ..onLoaded()
+      ..onDuration(9000)
+      ..onPosition(4000)
+      ..toggle();
+    backend.playedAt.clear();
+    playback.playFrom(0);
+    expect(playback.playing, isTrue);
+    expect(backend.seekedTo, [0]);
+    expect(backend.playedAt, [-1]);
+  });
+
+  test("playing from a position reloads a released track there", () async {
+    final [id] = await tracks(["song.mp3"]);
+    final playback = controller()
+      ..playTrack(id)
+      ..onLoaded()
+      ..onBackendError("The decoder failed.");
+    backend.playedAt.clear();
+    playback.playFrom(2500);
+    expect(playback.playing, isTrue);
+    expect(backend.queues, hasLength(2));
+    expect(backend.playedAt, [2500]);
+  });
+
   test("timeline events and seeks are clamped to the duration", () async {
     final [id] = await tracks(["song.mp3"]);
     final playback = controller()
@@ -434,14 +679,15 @@ void main() {
   });
 
   test("volume previews skip persistence until committed", () {
-    final changes = <String>[];
+    final changes = <PlaybackChange>[];
     final playback = controller();
+    final saved = store.settings.volume;
     playback.changes.listen(changes.add);
     playback.setVolume(35, persist: false);
-    expect(store.settings.volume, 5);
+    expect(store.settings.volume, saved);
     playback.setVolume(35);
     expect(store.settings.volume, 35);
-    expect(changes, ["volume", "volume"]);
+    expect(changes, [PlaybackChange.volume, PlaybackChange.volume]);
   });
 
   test("a failure repairs loaded state and the next toggle reloads", () async {
@@ -455,7 +701,7 @@ void main() {
     expect(errors, ["native load failed"]);
     expect(store.trackDetails(id).playCount, 0);
     expect(backend.discardedSources, 1);
-    expect(playback.snapshot.loading, isFalse);
+    expect(playback.loading, isFalse);
     playback.toggle();
     expect(backend.playedAt, [0, 0]);
     playback
@@ -477,22 +723,32 @@ void main() {
   test("a playing event clears a missing loaded event", () async {
     final [id] = await tracks(["song.mp3"]);
     final playback = controller()..playTrack(id);
-    expect(playback.snapshot.loading, isTrue);
+    expect(playback.loading, isTrue);
     playback.onPlaying(true);
     expect(playback.playing, isTrue);
-    expect(playback.snapshot.loading, isFalse);
+    expect(playback.loading, isFalse);
   });
 
-  test("coalesced persistence records repeated plays at their latest position", () async {
-    final ids = await tracks(["one.mp3", "two.mp3"]);
-    final persistence = PlaybackPersistence(store, (_) {});
-    persistence.save(playback: {"queue": ids, "current_index": 0, "position_ms": 0, "repeat": "off"});
-    persistence
-      ..recordPlay(ids[0])
-      ..recordPlay(ids[1])
-      ..recordPlay(ids[0])
-      ..flush();
-    expect(store.trackDetails(ids[0]).playCount, 2);
-    expect(store.get("recent_tracks"), [ids[0], ids[1]]);
-  });
+  test(
+    "coalesced persistence records repeated plays at their latest position",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3"]);
+      final persistence = PlaybackPersistence(store, (_) {});
+      persistence.save(
+        playback: {
+          "queue": ids,
+          "current_index": 0,
+          "position_ms": 0,
+          "repeat": "off",
+        },
+      );
+      persistence
+        ..recordPlay(ids[0])
+        ..recordPlay(ids[1])
+        ..recordPlay(ids[0])
+        ..flush();
+      expect(store.trackDetails(ids[0]).playCount, 2);
+      expect(store.get("recent_tracks"), [ids[0], ids[1]]);
+    },
+  );
 }

@@ -1,12 +1,13 @@
 import "package:flutter/material.dart";
 
-import "../../../app/app_state.dart";
+import "../../app_state.dart";
 import "../../../core/library/models.dart";
 import "../../../core/media.dart";
 import "../../controllers/home_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/format.dart";
+import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
 import "../controls.dart";
 
@@ -17,7 +18,11 @@ class PlaylistsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([app.playlists, app.libraryRevision]),
+    listenable: Listenable.merge([
+      app.playlists,
+      app.libraryRevision,
+      app.playbackState,
+    ]),
     builder: (context, _) {
       final selected = app.playlists.selectedPlaylistId;
       if (selected != null && app.services.manager.hasPlaylist(selected)) {
@@ -27,49 +32,46 @@ class PlaylistsPage extends StatelessWidget {
       final playlists = app.services.manager.listPlaylists();
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        spacing: 20,
         children: [
-          ResponsiveGrid(
-            spacing: 10,
-            center: true,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            spacing: 8,
             children: [
-              const GridCell(Heading("Playlists", "A collection for every mood and moment."), md: 7),
-              GridCell(
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Wrap(
-                    spacing: 8,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: () => showImportPlaylistDialog(context, app),
-                        icon: const Icon(Icons.playlist_add_rounded),
-                        label: const Text("Import playlist"),
-                      ),
-                      PrimaryButton(
-                        "New playlist",
-                        Icons.add_rounded,
-                        () => showCreatePlaylistDialog(context, app),
-                      ),
-                    ],
-                  ),
+              const Expanded(
+                child: Heading(
+                  "Playlists",
+                  "A collection for every mood and moment.",
                 ),
-                md: 5,
+              ),
+              OutlinedButton.icon(
+                onPressed: () => showImportPlaylistDialog(context, app),
+                icon: const Icon(Icons.playlist_add_rounded, size: 20),
+                label: const Text("Import playlist"),
+              ),
+              PrimaryButton(
+                "New playlist",
+                Icons.add_rounded,
+                () => showCreatePlaylistDialog(context, app),
               ),
             ],
           ),
+          const SizedBox(height: 24),
           Expanded(
             child: playlists.isEmpty
-                ? const Center(
-                    child: EmptyState(
-                      Icons.queue_music_rounded,
-                      "Create a playlist or import one from $youtubeMusicName to get started.",
-                    ),
+                ? const EmptyState(
+                    Icons.queue_music_rounded,
+                    "Create a playlist or import one from $youtubeMusicName to get started.",
                   )
                 : SingleChildScrollView(
-                    child: Wrap(
-                      spacing: 14,
-                      runSpacing: 18,
-                      children: [for (final playlist in playlists) PlaylistCard(app, playlist)],
+                    child: Transform.translate(
+                      offset: const Offset(-10, 0),
+                      child: CoverGrid(
+                        children: [
+                          for (final playlist in playlists)
+                            (width) =>
+                                PlaylistCard(app, playlist, width: width),
+                        ],
+                      ),
                     ),
                   ),
           ),
@@ -79,52 +81,31 @@ class PlaylistsPage extends StatelessWidget {
   );
 }
 
+String _playlistArtwork(MelodyApp app, Playlist playlist) =>
+    playlist.trackIds.isEmpty
+    ? ""
+    : app.services.library.details(playlist.trackIds.first).thumbnail;
+
 class PlaylistCard extends StatelessWidget {
-  const PlaylistCard(this.app, this.playlist, {super.key});
+  const PlaylistCard(this.app, this.playlist, {super.key, this.width = 196});
 
   final MelodyApp app;
   final Playlist playlist;
+  final double width;
 
   @override
   Widget build(BuildContext context) {
     final count = playlist.trackIds.length;
-    final artwork = count > 0 ? app.services.library.details(playlist.trackIds.first).thumbnail : "";
-    return Surface(
-      width: 204,
-      padding: const EdgeInsets.all(12),
-      radius: 20,
-      hover: true,
+    return CoverCard(
+      app: app,
+      width: width,
+      title: playlist.name,
+      subtitle: plural(count, "track"),
+      artwork: _playlistArtwork(app, playlist),
+      playlist: true,
       onTap: () => app.playlists.openPlaylist(playlist.id),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        spacing: 7,
-        children: [
-          Stack(
-            children: [
-              Artwork(app, artwork, size: 180, playlist: true),
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: IconButton.filled(
-                  onPressed: count > 0 ? () => app.playlists.play(playlist) : null,
-                  tooltip: "Play ${playlist.name}",
-                  icon: const Icon(Icons.play_arrow_rounded, size: 24),
-                ),
-              ),
-            ],
-          ),
-          Text(
-            playlist.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-          ),
-          Text(
-            plural(count, "track"),
-            style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-          ),
-        ],
-      ),
+      onPlay: count > 0 ? () => app.playlists.play(playlist) : null,
+      playTooltip: "Play ${playlist.name}",
     );
   }
 }
@@ -144,55 +125,127 @@ class _PlaylistDetail extends StatelessWidget {
       for (final item in app.services.manager.listPlaylists())
         if (item.id != playlist.id) item,
     ];
-    final details = app.services.library.detailsMany(visible.map((track) => track.id));
-    final scheme = Theme.of(context).colorScheme;
+    final details = app.services.library.detailsMany(
+      visible.map((track) => track.id),
+    );
+    final scheme = context.colors;
+    final hue = seedHue(playlist.name);
+    final wash = HSLColor.fromAHSL(1, hue, 0.45, 0.5).toColor();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 16,
       children: [
-        Row(
-          spacing: 8,
-          children: [
-            IconButton(
-              onPressed: app.playlists.closePlaylist,
-              tooltip: "All playlists",
-              icon: const Icon(Icons.arrow_back_rounded),
+        // A soft wash tinted like the playlist's cover placeholder.
+        Container(
+          padding: const EdgeInsets.fromLTRB(8, 8, 24, 24),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Radii.panel),
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [wash.withValues(alpha: 0.22), wash.withValues(alpha: 0)],
             ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 2,
-                children: [
-                  Text(
-                    playlist.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                  ),
-                  Text(plural(tracks.length, "track"), style: TextStyle(color: scheme.onSurfaceVariant)),
-                ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 12,
+            children: [
+              IconButton(
+                onPressed: app.playlists.closePlaylist,
+                tooltip: "All playlists",
+                icon: const Icon(Icons.arrow_back_rounded),
               ),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  spacing: 28,
+                  children: [
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(Radii.large),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.14),
+                            blurRadius: 28,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Artwork(
+                        app,
+                        _playlistArtwork(app, playlist),
+                        size: 176,
+                        playlist: true,
+                        seed: playlist.name,
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        spacing: 8,
+                        children: [
+                          Text("PLAYLIST", style: context.text.labelSmall),
+                          Text(
+                            playlist.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.text.displaySmall,
+                          ),
+                          Text(
+                            plural(tracks.length, "track"),
+                            style: context.text.bodyMedium!.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          spacing: 6,
+          children: [
+            PlayCircle(
+              onPressed: tracks.isEmpty
+                  ? null
+                  : () => app.playlists.play(playlist),
+              tooltip: "Play",
+              size: 54,
             ),
-            OutlinedButton.icon(
-              onPressed: () => showBulkAddTracksDialog(context, app, playlist),
-              icon: const Icon(Icons.playlist_add_rounded),
-              label: const Text("Add to playlist"),
-            ),
-            PrimaryButton("Play", Icons.play_arrow_rounded, tracks.isEmpty ? null : () => app.playlists.play(playlist)),
+            const SizedBox(width: 4),
             IconButton(
-              onPressed: tracks.isEmpty ? null : () => app.playlists.shuffle(playlist),
+              onPressed: tracks.isEmpty
+                  ? null
+                  : () => app.playlists.shuffle(playlist),
               tooltip: "Shuffle playlist",
               icon: const Icon(Icons.shuffle_rounded),
             ),
             IconButton(
-              onPressed: tracks.isEmpty ? null : () => queueCollection(app, tracks),
+              onPressed: tracks.isEmpty
+                  ? null
+                  : () => queueCollection(app, tracks),
               tooltip: "Add playlist to queue",
               icon: const Icon(Icons.add_to_queue_rounded),
             ),
-            ActionMenu(() => playlistActions(context, app, playlist, tracks)),
+            ActionMenu(() => playlistActions(context, app, playlist)),
+            const Spacer(),
+            OutlinedButton.icon(
+              onPressed: () => showBulkAddTracksDialog(context, app, playlist),
+              icon: const Icon(Icons.playlist_add_rounded, size: 20),
+              label: const Text("Add tracks"),
+            ),
           ],
         ),
-        const Divider(height: 1),
+        const SizedBox(height: 18),
+        if (tracks.isNotEmpty) ...[
+          const TrackListHeader(leadingWidth: 28, trailingWidth: 48),
+          const SizedBox(height: 8),
+        ],
         Expanded(
           child: tracks.isEmpty
               ? const EmptyState(
@@ -214,85 +267,62 @@ class _PlaylistDetail extends StatelessWidget {
                   itemBuilder: (context, index) {
                     final track = visible[index];
                     final position = start + index;
-                    return Padding(
+                    final info = details[track.id]!;
+                    return TrackListRow(
                       key: ValueKey("${playlist.id}:$position:${track.id}"),
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Surface(
-                        padding: const EdgeInsets.all(10),
-                        child: Row(
-                          spacing: 8,
-                          children: [
-                            ReorderableDragStartListener(
-                              index: index,
-                              child: const MouseRegion(
-                                cursor: SystemMouseCursors.grab,
-                                child: Tooltip(
-                                  message: "Drag to reorder",
-                                  child: SizedBox(width: 28, height: 44, child: Icon(Icons.drag_indicator_rounded, size: 20)),
-                                ),
-                              ),
-                            ),
-                            SizedBox(
+                      app: app,
+                      number: position + 1,
+                      leading: ReorderableDragStartListener(
+                        index: index,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.grab,
+                          child: Tooltip(
+                            message: "Drag to reorder",
+                            child: SizedBox(
                               width: 28,
-                              child: Text(
-                                "${position + 1}",
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: scheme.onSurfaceVariant),
+                              height: 40,
+                              child: Icon(
+                                Icons.drag_indicator_rounded,
+                                size: 18,
+                                color: scheme.outline,
                               ),
                             ),
-                            Artwork(app, details[track.id]!.thumbnail, size: 48),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                spacing: 3,
-                                children: [
-                                  Text(
-                                    track.displayTitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                                  ),
-                                  Text(
-                                    details[track.id]!.credit,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Text(
-                              formatDuration(details[track.id]!.duration),
-                              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-                            ),
-                            IconButton(
-                              onPressed: () => app.playback.playTracks(
-                                [for (final item in tracks) item.id],
-                                startIndex: position,
-                              ),
-                              tooltip: "Play from here",
-                              icon: const Icon(Icons.play_arrow_rounded),
-                            ),
-                            ActionMenu(
-                              () => playlistTrackActions(
-                                context,
-                                app,
-                                playlist,
-                                track,
-                                position,
-                                others,
-                                details[track.id]!,
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
+                      title: track.displayTitle,
+                      subtitle: info.credit,
+                      artwork: info.thumbnail,
+                      duration: formatDuration(info.duration),
+                      current: app.playback.currentTrackId == track.id,
+                      onPlay: () => app.playback.playTracks([
+                        for (final item in tracks) item.id,
+                      ], startIndex: position),
+                      playTooltip: "Play from here",
+                      trailing: [
+                        ActionMenu(
+                          () => playlistTrackActions(
+                            context,
+                            app,
+                            playlist,
+                            track,
+                            position,
+                            others,
+                            info,
+                          ),
+                        ),
+                      ],
                     );
                   },
                 ),
         ),
         if (tracks.length > 50)
-          PageNavigation(total: tracks.length, start: start, end: end, onChange: app.playlists.changePage),
+          PageNavigation(
+            total: tracks.length,
+            start: start,
+            end: end,
+            onChange: app.playlists.changePage,
+          ),
       ],
     );
   }

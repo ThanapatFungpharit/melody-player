@@ -11,27 +11,72 @@ import "../core/errors.dart";
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
 import "../core/media.dart";
+import "../core/storage.dart";
 import "../worker/worker_client.dart";
+import "lyrics.dart";
 import "models.dart";
 import "store.dart";
 import "thumbnails.dart";
 
-final _downloadUrlPattern = RegExp(r'''https?://[^\s<>"']+''', caseSensitive: false);
+final _downloadUrlPattern = RegExp(
+  r'''https?://[^\s<>"']+''',
+  caseSensitive: false,
+);
 
 /// Unique HTTP(S) URLs from lines, bullets, or pasted prose.
 List<String> extractDownloadUrls(String value) {
   final seen = <String>{};
   return [
     for (final match in _downloadUrlPattern.allMatches(value))
-      if (match.group(0)!.replaceAll(RegExp(r"[.,;]+$"), "") case final url
+      if (_trimProse(match.group(0)!) case final url
           when url.isNotEmpty && seen.add(url))
         url,
   ];
 }
 
+/// Drops sentence punctuation after a URL, and a closing bracket that the
+/// URL never opened, as in "(https://youtu.be/…)".
+String _trimProse(String url) {
+  var end = url.length;
+  while (end > 0) {
+    final last = url[end - 1];
+    if (".,;".contains(last)) {
+      end--;
+      continue;
+    }
+    final open = switch (last) {
+      ")" => "(",
+      "]" => "[",
+      _ => null,
+    };
+    if (open == null) break;
+    final head = url.substring(0, end);
+    if (open.allMatches(head).length >= last.allMatches(head).length) break;
+    end--;
+  }
+  return url.substring(0, end);
+}
+
 class DuplicateDownloadError implements Exception {
   @override
   String toString() => "This track is already downloading.";
+}
+
+/// What [DownloadCoordinator.request] did with a result: found an intact
+/// library [track], or joined or started the download [task].
+class DownloadRequest {
+  const DownloadRequest.existing(Track this.track)
+    : task = null,
+      started = false;
+
+  const DownloadRequest.task(String this.task, {required this.started})
+    : track = null;
+
+  final Track? track;
+  final String? task;
+
+  /// This call started [task], so only this caller may cancel it.
+  final bool started;
 }
 
 /// A group of independently scheduled song downloads.
@@ -55,8 +100,11 @@ Map<String, Object?> downloadOptions(
   "postprocessors": [
     {
       "key": "FFmpegExtractAudio",
-      "preferredcodec": settings.audioFormat,
-      "preferredquality": settings.audioQuality == "best" ? "0" : settings.audioQuality,
+      "preferredcodec": settings.downloadFormat.codec,
+      "preferredquality":
+          settings.downloadFormat.lossless || settings.audioQuality == "best"
+          ? "0"
+          : settings.audioQuality,
     },
     {"key": "FFmpegMetadata"},
     // Keep the sidecar in staging after yt-dlp burns it into the media; the
@@ -68,13 +116,12 @@ Map<String, Object?> downloadOptions(
   ...sharedOptions,
 };
 
-double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
-
 /// Turns downloader jobs into persistent, library-aware operations.
 ///
-/// Worker callbacks can arrive many times per second. Notification and
-/// durable-history intervals cap that work, while terminal state changes are
-/// written and published immediately.
+/// Worker callbacks can arrive many times per second. Listeners hear about
+/// byte progress at most every [progressNotifyInterval]; status changes are
+/// written and published immediately. Byte progress is never persisted: a
+/// download still active at startup is reported as interrupted.
 class DownloadCoordinator extends ChangeNotifier {
   DownloadCoordinator._(
     this.manager,
@@ -82,23 +129,24 @@ class DownloadCoordinator extends ChangeNotifier {
     this.settings,
     this.thumbnails,
     this._downloader,
+    this.lyrics,
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
-  static const progressPersistInterval = Duration(seconds: 1);
   static const maxRetainedRecords = 250;
-  static const activeStatuses = {"queued", "downloading", "processing"};
 
   final MusicManager manager;
   final ApplicationStore store;
   final AppSettings settings;
   final ThumbnailCache? thumbnails;
   final Downloader _downloader;
+
+  /// Supplies lyrics to embed in downloaded files.
+  final LyricsLibrary? lyrics;
   final Map<String, DownloadRecord> _records = {};
   final Map<String, String> _activeBySource = {};
   final Stopwatch _clock = Stopwatch()..start();
   Duration _lastNotify = Duration.zero;
-  Duration _lastPersist = Duration.zero;
 
   /// Called with each published record change (terminal ones included).
   void Function(DownloadRecord record)? onRecord;
@@ -109,6 +157,7 @@ class DownloadCoordinator extends ChangeNotifier {
     AppSettings settings,
     WorkerClient worker, {
     ThumbnailCache? thumbnails,
+    LyricsLibrary? lyrics,
     Map<String, Object?> sharedOptions = const {},
   }) async {
     final coordinator = DownloadCoordinator._(
@@ -120,9 +169,10 @@ class DownloadCoordinator extends ChangeNotifier {
         worker,
         settings.downloadDirectory,
         maxWorkers: settings.concurrentDownloads,
-        audioExtensions: {".${settings.audioFormat.toLowerCase()}"},
+        audioExtensions: {settings.downloadFormat.extension},
         options: downloadOptions(settings, sharedOptions),
       ),
+      lyrics,
     );
     await coordinator._recover();
     return coordinator;
@@ -132,24 +182,32 @@ class DownloadCoordinator extends ChangeNotifier {
     for (final record in store.downloads()) {
       _records[record.id] = record;
     }
+    // Before any job starts, so only earlier processes' directories qualify.
+    final abandoned = await _downloader.removeAbandonedStaging();
+    if (abandoned > 0) {
+      debugPrint("Removed $abandoned abandoned download staging folder(s)");
+    }
     await _recoverHandoffs();
+    final available = await _availableTrackIds();
     var recovered = false;
     for (final record in _records.values) {
-      if (record.status == "completed" &&
+      if (record.status == DownloadStatus.completed &&
           record.trackIds.isNotEmpty &&
-          !record.trackIds.every(_trackFileAvailable)) {
+          !record.trackIds.every(available.contains)) {
         recovered = true;
         record
-          ..status = "failed"
-          ..error = "The downloaded library file is missing. Retry to restore it."
+          ..status = DownloadStatus.failed
+          ..error =
+              "The downloaded library file is missing. Retry to restore it."
           ..errorKind = "disk"
           ..recovery = "retry";
       }
-      if (activeStatuses.contains(record.status)) {
+      if (record.status.isActive) {
         recovered = true;
         record
-          ..status = "failed"
-          ..error = "The application closed before this download finished. Retry it.";
+          ..status = DownloadStatus.failed
+          ..error =
+              "The application closed before this download finished. Retry it.";
       }
     }
     if (recovered) _persist();
@@ -160,7 +218,9 @@ class DownloadCoordinator extends ChangeNotifier {
     final records = [for (final record in _records.values) record.copy()];
     records.sort((a, b) {
       final created = b.createdAt.compareTo(a.createdAt);
-      return created != 0 ? created : a.batchPosition.compareTo(b.batchPosition);
+      return created != 0
+          ? created
+          : a.batchPosition.compareTo(b.batchPosition);
     });
     return records;
   }
@@ -169,32 +229,27 @@ class DownloadCoordinator extends ChangeNotifier {
 
   int activeCount() => _activeBySource.length;
 
-  bool isSourceActive(String url) => _activeBySource.containsKey(sourceKey(url));
-
   /// The canonical intact library track for [url], if one exists.
   Future<Track?> availableTrack(String url) async {
     if (url.isEmpty) return null;
     final existing = manager.findTrackBySource(url);
     if (existing == null) return null;
     try {
-      return await manager.checkTrackIntegrity(existing.id) == null ? existing : null;
+      return await manager.checkTrackIntegrity(existing.id) == null
+          ? existing
+          : null;
     } on Object {
       return null;
     }
   }
 
-  /// Reuses an existing track or active job before scheduling new work.
-  /// Returns null when the media is already in the library.
-  Future<String?> request(SearchResult result) async =>
-      (await requestWithOwnership(result)).$1;
-
-  /// Like [request], and reports whether this call created the task, so a
-  /// caller can cancel only work it owns.
-  Future<(String?, bool)> requestWithOwnership(SearchResult result) {
+  /// Reuses an intact library track or an active job before scheduling new
+  /// work.
+  Future<DownloadRequest> request(SearchResult result) {
     if (result.url.isEmpty) {
       throw ArgumentError("This result does not provide a downloadable URL.");
     }
-    return _requestWithOwnership({
+    return _request({
       "url": result.url,
       "title": result.title,
       "uploader": result.uploader,
@@ -222,11 +277,12 @@ class DownloadCoordinator extends ChangeNotifier {
       throw ArgumentError("At least one $youtubeMusicName URL is required.");
     }
     final batchId = const Uuid().v4();
-    final createdAt = _now();
+    final createdAt = unixSeconds();
     final keys = <String>{};
     final unique = [
       for (final source in sources)
-        if (sourceKey(source) case final key when key.isEmpty || keys.add(key)) source,
+        if (sourceKey(source) case final key when key.isEmpty || keys.add(key))
+          source,
     ];
     final tasks = <String>[];
     for (final (index, source) in unique.indexed) {
@@ -238,8 +294,7 @@ class DownloadCoordinator extends ChangeNotifier {
         "created_at": createdAt,
       };
       try {
-        final (task, _) = await _requestWithOwnership(metadata);
-        if (task != null) tasks.add(task);
+        if ((await _request(metadata)).task case final task?) tasks.add(task);
       } catch (error) {
         // Record this song's scheduling failure, then continue the batch.
         debugPrint("Batch download could not be scheduled: $source: $error");
@@ -249,18 +304,22 @@ class DownloadCoordinator extends ChangeNotifier {
     return DownloadBatch(batchId, tasks, unique.length);
   }
 
-  Future<(String?, bool)> _requestWithOwnership(Map<String, Object?> metadata) async {
+  Future<DownloadRequest> _request(Map<String, Object?> metadata) async {
     final url = "${metadata["url"] ?? ""}";
-    if (url.isEmpty) throw ArgumentError("A $youtubeMusicName URL is required.");
+    if (url.isEmpty) {
+      throw ArgumentError("A $youtubeMusicName URL is required.");
+    }
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
-    if (metadata["kind"] != "playlist" && await availableTrack(url) != null) {
-      return (null, false);
+    if (metadata["kind"] != "playlist") {
+      if (await availableTrack(url) case final track?) {
+        return DownloadRequest.existing(track);
+      }
     }
     final active = _activeRecordForSource(url);
-    if (active != null) return (active.id, false);
-    return (_start(metadata), true);
+    if (active != null) return DownloadRequest.task(active.id, started: false);
+    return DownloadRequest.task(_start(metadata), started: true);
   }
 
   String _start(Map<String, Object?> metadata) {
@@ -270,12 +329,16 @@ class DownloadCoordinator extends ChangeNotifier {
     }
     if (_activeRecordForSource(url) != null) throw DuplicateDownloadError();
     String? task;
+    final lyrics = this.lyrics;
     task = _downloader.start(
       url,
       onProgress: (progress) {
         if (task != null) _handleProgress(progress, metadata);
       },
       onComplete: (result) => unawaited(_handleComplete(result, metadata)),
+      lyrics: lyrics == null
+          ? null
+          : () async => (await lyrics.load(url))?.toLrc(),
     );
     // Register the source before returning so a second request in the gap
     // before the first progress callback joins this task.
@@ -284,11 +347,38 @@ class DownloadCoordinator extends ChangeNotifier {
     return task;
   }
 
+  /// Moves later downloads and the library to [folder] at once, so a file
+  /// is never stored in one folder and recorded relative to another. Runs
+  /// under the library lock, where no download can be importing, and only
+  /// while nothing is downloading and the library is empty.
+  Future<void> changeDirectory(String folder) => manager.mutation.run(() {
+    if (_activeBySource.isNotEmpty) {
+      throw const FormatException(
+        "The music folder can't be changed while downloads are in progress.",
+      );
+    }
+    if (manager.counts().$1 > 0) {
+      throw const FormatException(
+        "The music folder can only be changed while the library is empty.",
+      );
+    }
+    final previous = manager.musicFolder;
+    manager.changeMusicFolder(folder);
+    try {
+      _downloader.changeOutputDirectory(folder);
+    } catch (_) {
+      manager.changeMusicFolder(previous);
+      rethrow;
+    }
+  });
+
   bool cancel(String recordId) => _downloader.cancel(recordId);
 
   Future<String> retry(String recordId) async {
     final original = _records[recordId];
-    if (original == null) throw ArgumentError("Download history entry was not found.");
+    if (original == null) {
+      throw ArgumentError("Download history entry was not found.");
+    }
     return _start({
       "url": original.url,
       "title": original.title,
@@ -297,26 +387,33 @@ class DownloadCoordinator extends ChangeNotifier {
       "source": original.source,
       "kind": original.kind,
       "duration": 0.0,
+      // URL batches start with placeholder titles that yt-dlp replaces.
+      "resolve_metadata": original.batchId.isNotEmpty,
     });
   }
 
   void clearFinished() {
-    _records.removeWhere((_, record) => !activeStatuses.contains(record.status));
+    _records.removeWhere((_, record) => !record.status.isActive);
     _persist();
     notifyListeners();
   }
 
   void shutdown() => _downloader.shutdown(cancelPending: true);
 
-  void _handleProgress(DownloadProgress progress, Map<String, Object?> metadata) {
+  void _handleProgress(
+    DownloadProgress progress,
+    Map<String, Object?> metadata,
+  ) {
     final record = _ensureRecord(progress.task, metadata);
     final previous = record.status;
     record
       ..status = progress.status == DownloadStatus.completed
-          ? "processing"
-          : progress.status.name
+          ? DownloadStatus.processing
+          : progress.status
       ..progress = progress.progress
-      ..filename = progress.filename.isEmpty ? "" : p.basename(progress.filename)
+      ..filename = progress.filename.isEmpty
+          ? ""
+          : p.basename(progress.filename)
       ..downloadedBytes = progress.downloadedBytes
       ..totalBytes = progress.totalBytes
       ..error = friendlyDownloadError(progress.error);
@@ -326,22 +423,22 @@ class DownloadCoordinator extends ChangeNotifier {
       if (progress.thumbnail.isNotEmpty) record.thumbnail = progress.thumbnail;
     }
     // A terminal snapshot is followed by the completion handler.
-    if (const {"failed", "cancelled"}.contains(record.status)) return;
+    if (record.status.isUnsuccessful) return;
     final now = _clock.elapsed;
     final changed = record.status != previous;
-    if (changed || now - _lastPersist >= progressPersistInterval) {
-      _persist();
-      _lastPersist = now;
-    }
+    if (changed) _persist();
     if (changed || now - _lastNotify >= progressNotifyInterval) {
       _lastNotify = now;
       _publish(record);
     }
   }
 
-  Future<void> _handleComplete(DownloadResult result, Map<String, Object?> metadata) async {
+  Future<void> _handleComplete(
+    DownloadResult result,
+    Map<String, Object?> metadata,
+  ) async {
     final record = _ensureRecord(result.task, metadata);
-    var status = result.status.name;
+    var status = result.status;
     var error = result.failure?.message ?? friendlyDownloadError(result.error);
     List<String>? imported;
     String? storedName;
@@ -349,11 +446,11 @@ class DownloadCoordinator extends ChangeNotifier {
       imported = [];
       final storedPaths = <String>[];
       try {
-        await _cacheThumbnail(record.thumbnail, result.artwork);
         for (final path in result.files) {
           final (trackId, stored) = await _importDownloadedFile(
             path,
             metadata,
+            title: record.title,
             uploader: record.uploader,
             thumbnail: record.thumbnail,
           );
@@ -361,9 +458,11 @@ class DownloadCoordinator extends ChangeNotifier {
           storedPaths.add(stored);
         }
         if (storedPaths.isNotEmpty) storedName = p.basename(storedPaths.first);
+        // Only once a track uses it, so a failed import leaves no entry.
+        await _cacheThumbnail(record.thumbnail, result.artwork);
       } catch (failure) {
         debugPrint("Downloaded media could not be imported: $failure");
-        status = "failed";
+        status = DownloadStatus.failed;
         error = "Downloaded, but could not add to the library: $failure";
         imported = null;
       }
@@ -377,20 +476,19 @@ class DownloadCoordinator extends ChangeNotifier {
       record
         ..progress = 1.0
         ..trackIds = imported
-        ..completedAt = _now();
+        ..completedAt = unixSeconds();
       if (storedName != null) record.filename = storedName;
     }
     final identity = sourceKey(record.url);
-    if (_activeBySource[identity] == record.id) _activeBySource.remove(identity);
+    if (_activeBySource[identity] == record.id) {
+      _activeBySource.remove(identity);
+    }
     _prune();
     _persist();
-    if (record.status == "completed") {
-      try {
-        final receipt = File(receiptPath(settings.downloadDirectory, result.task));
-        if (await receipt.exists()) await receipt.delete();
-      } on FileSystemException catch (failure) {
-        debugPrint("Could not acknowledge completed download receipt: $failure");
-      }
+    if (record.status == DownloadStatus.completed) {
+      await _deleteReceipt(
+        File(receiptPath(_downloader.outputDirectory, result.task)),
+      );
     }
     _publish(record);
   }
@@ -398,7 +496,9 @@ class DownloadCoordinator extends ChangeNotifier {
   /// Caches artwork verified in the media file; the file stays canonical.
   Future<void> _cacheThumbnail(String url, Uint8List? artwork) async {
     final cache = thumbnails;
-    if (cache == null || url.isEmpty || artwork == null || artwork.isEmpty) return;
+    if (cache == null || url.isEmpty || artwork == null || artwork.isEmpty) {
+      return;
+    }
     try {
       await cache.storeBytes(url, artwork);
     } on Object catch (error) {
@@ -407,10 +507,12 @@ class DownloadCoordinator extends ChangeNotifier {
   }
 
   /// Finishes downloads whose bytes survived but whose registration was
-  /// interrupted. Ambiguous receipts stay for repair; unrelated files in the
-  /// music folder are never adopted.
+  /// interrupted, then retires each receipt. Only files that still match
+  /// their checksums are adopted; missing or changed ones are left as they
+  /// are, and unrelated files in the music folder are never touched. A
+  /// receipt is kept only when importing fails, to retry next launch.
   Future<void> _recoverHandoffs() async {
-    final directory = Directory(settings.downloadDirectory);
+    final directory = Directory(_downloader.outputDirectory);
     if (!await directory.exists()) return;
     final receipts = [
       await for (final entity in directory.list())
@@ -420,18 +522,42 @@ class DownloadCoordinator extends ChangeNotifier {
           entity,
     ];
     for (final file in receipts) {
+      final Receipt receipt;
       try {
-        final receipt = await readReceipt(file.path);
+        receipt = await readReceipt(file.path);
+      } on FormatException catch (error) {
+        // It can vouch for no file, so it goes; the files it names stay.
+        debugPrint("Discarding unreadable receipt ${file.path}: $error");
+        await _deleteReceipt(file);
+        continue;
+      } on Object catch (error) {
+        debugPrint("Could not read download receipt ${file.path}: $error");
+        continue;
+      }
+      if (receipt.unverified > 0) {
+        debugPrint(
+          "${receipt.unverified} file(s) of download ${receipt.taskId} are "
+          "missing or changed; they are left as they are",
+        );
+      }
+      if (receipt.files.isEmpty) {
+        await _deleteReceipt(file);
+        continue;
+      }
+      try {
         final existing = _records[receipt.taskId];
         final metadata = _urlMetadata(
           receipt.url,
-          title: existing?.title ?? p.basenameWithoutExtension(receipt.files.first),
+          title:
+              existing?.title ??
+              p.basenameWithoutExtension(receipt.files.first),
         );
         final trackIds = <String>[];
         for (final path in receipt.files) {
           final (trackId, _) = await _importDownloadedFile(
             path,
             metadata,
+            title: "${metadata["title"]}",
             uploader: existing?.uploader ?? "",
             thumbnail: existing?.thumbnail ?? "",
           );
@@ -439,20 +565,29 @@ class DownloadCoordinator extends ChangeNotifier {
         }
         final record = _ensureRecord(receipt.taskId, metadata);
         record
-          ..status = "completed"
+          ..status = DownloadStatus.completed
           ..progress = 1.0
           ..error = ""
           ..errorKind = ""
           ..recovery = ""
           ..trackIds = trackIds
-          ..completedAt = _now()
+          ..completedAt = unixSeconds()
           ..filename = p.basename(manager.trackPath(trackIds.first));
         _activeBySource.remove(sourceKey(receipt.url));
         _persist();
-        await file.delete();
       } on Object catch (error) {
         debugPrint("Could not reconcile download receipt ${file.path}: $error");
+        continue;
       }
+      await _deleteReceipt(file);
+    }
+  }
+
+  static Future<void> _deleteReceipt(File receipt) async {
+    try {
+      if (await receipt.exists()) await receipt.delete();
+    } on FileSystemException catch (error) {
+      debugPrint("Could not remove download receipt ${receipt.path}: $error");
     }
   }
 
@@ -460,6 +595,7 @@ class DownloadCoordinator extends ChangeNotifier {
   Future<(String, String)> _importDownloadedFile(
     String path,
     Map<String, Object?> metadata, {
+    required String title,
     required String uploader,
     required String thumbnail,
   }) => manager.mutation.run(() async {
@@ -474,29 +610,37 @@ class DownloadCoordinator extends ChangeNotifier {
       sourceName: "${metadata["source"] ?? youtubeMusicName}",
     );
     final existing =
-        manager.findTrackBySource(source) ?? await manager.findTrackByContent(path);
+        manager.findTrackBySource(source) ??
+        await manager.findTrackByContent(path);
     if (existing != null) {
-      if (!store.hasTrackDetails(existing.id)) store.saveTrackDetails(existing.id, details);
+      if (!store.hasTrackDetails(existing.id)) {
+        store.saveTrackDetails(existing.id, details);
+      }
       return (existing.id, await _reuseLibraryTrack(existing, path, source));
     }
-    final title = "${metadata["title"] ?? ""}";
     final trackId = await manager.addTrack(
       path,
       source: source,
-      title: title.isNotEmpty ? title : p.basenameWithoutExtension(path),
+      title: title.trim().isNotEmpty ? title : p.basenameWithoutExtension(path),
     );
     store.saveTrackDetails(trackId, details);
     return (trackId, manager.trackPath(trackId));
   });
 
   /// Keeps intact audio, or repairs the file without replacing the record.
-  Future<String> _reuseLibraryTrack(Track track, String path, String source) async {
+  Future<String> _reuseLibraryTrack(
+    Track track,
+    String path,
+    String source,
+  ) async {
     final previousPath = manager.trackPath(track.id);
     final problem = await manager.checkTrackIntegrity(track.id);
     String stored;
     if (problem == null) {
       stored = previousPath;
-      if (!p.equals(p.absolute(path), p.absolute(stored))) await File(path).delete();
+      if (!p.equals(p.absolute(path), p.absolute(stored))) {
+        await File(path).delete();
+      }
     } else {
       await manager.replaceTrackFile(track.id, path);
       stored = manager.trackPath(track.id);
@@ -505,6 +649,7 @@ class DownloadCoordinator extends ChangeNotifier {
           if (!manager.isPathReferenced(previousPath)) {
             final previous = File(previousPath);
             if (await previous.exists()) await previous.delete();
+            await LyricsLibrary.deleteSidecar(previousPath);
           }
         } on FileSystemException catch (error) {
           debugPrint("Could not remove the superseded library file: $error");
@@ -516,10 +661,13 @@ class DownloadCoordinator extends ChangeNotifier {
   }
 
   DownloadRecord _ensureRecord(String task, Map<String, Object?> metadata) {
-    final record = _records.putIfAbsent(task, () => _recordFromMetadata(task, metadata));
+    final record = _records.putIfAbsent(
+      task,
+      () => _recordFromMetadata(task, metadata),
+    );
     _prune();
     final identity = sourceKey(record.url);
-    if (identity.isNotEmpty && activeStatuses.contains(record.status)) {
+    if (identity.isNotEmpty && record.status.isActive) {
       _activeBySource[identity] = record.id;
     }
     return record;
@@ -527,9 +675,9 @@ class DownloadCoordinator extends ChangeNotifier {
 
   void _recordStartFailure(Map<String, Object?> metadata, Object error) {
     final record = _recordFromMetadata(const Uuid().v4(), metadata)
-      ..status = "failed"
+      ..status = DownloadStatus.failed
       ..error = friendlyDownloadError("$error")
-      ..completedAt = _now();
+      ..completedAt = unixSeconds();
     _records[record.id] = record;
     _prune();
     _persist();
@@ -549,7 +697,7 @@ class DownloadCoordinator extends ChangeNotifier {
     final excess = _records.length - maxRetainedRecords;
     if (excess <= 0) return;
     final finished =
-        _records.values.where((record) => !activeStatuses.contains(record.status)).toList()
+        _records.values.where((record) => !record.status.isActive).toList()
           ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     for (final record in finished.take(excess)) {
       _records.remove(record.id);
@@ -570,14 +718,26 @@ class DownloadCoordinator extends ChangeNotifier {
     return id == null ? null : _records[id];
   }
 
-  /// Cheap startup availability; full hashes remain explicit checks.
-  bool _trackFileAvailable(String trackId) {
-    try {
-      final status = File(manager.trackPath(trackId)).statSync();
-      return status.type == FileSystemEntityType.file && status.size > 0;
-    } on Object {
-      return false;
+  /// Completed downloads' tracks whose files exist and are not empty. Cheap
+  /// startup availability, checked in one batch off the UI isolate; full
+  /// hashes remain explicit checks.
+  Future<Set<String>> _availableTrackIds() async {
+    final paths = <String, String>{};
+    for (final record in _records.values) {
+      if (record.status != DownloadStatus.completed) continue;
+      for (final trackId in record.trackIds) {
+        try {
+          paths[trackId] ??= manager.trackPath(trackId);
+        } on Object {
+          // An unknown track or invalid path counts as unavailable.
+        }
+      }
     }
+    final existing = await existingFiles(paths.values, nonEmpty: true);
+    return {
+      for (final MapEntry(key: id, value: path) in paths.entries)
+        if (existing.contains(path)) id,
+    };
   }
 }
 
@@ -606,6 +766,12 @@ DownloadRecord _recordFromMetadata(String id, Map<String, Object?> metadata) =>
         _ => null,
       },
       batchId: "${metadata["batch_id"] ?? ""}",
-      batchPosition: switch (metadata["batch_position"]) { int value => value, _ => 0 },
-      batchSize: switch (metadata["batch_size"]) { int value => value, _ => 0 },
+      batchPosition: switch (metadata["batch_position"]) {
+        int value => value,
+        _ => 0,
+      },
+      batchSize: switch (metadata["batch_size"]) {
+        int value => value,
+        _ => 0,
+      },
     );

@@ -16,23 +16,20 @@ concurrency:
 env:
   FLUTTER_VERSION: "3.44.8"
 
+# Every job runs `melody-check` (tools/checks/check.py), the same checks
+# `uv run melody-check` runs locally.
 jobs:
   worker:
-    name: yt-dlp worker (Python 3.14)
+    name: Python worker (Python 3.14)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: worker
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --python 3.14
-      - run: uv run --locked ruff check src tests
-      - run: uv run --locked ruff format --check src tests
-      - run: uv run --locked pytest -q
+      - run: uv run --locked melody-check worker
 
   tools:
     name: Build tools
@@ -44,10 +41,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --python 3.14
-      - run: uv run --locked ruff check tools
-      - run: uv run --locked ruff format --check tools
-      - run: uv run --locked pytest -q
-      - run: uv run --locked python tools/release_version.py
+      - run: uv run --locked melody-check tools
 
   flutter:
     name: Flutter (${{ matrix.os }})
@@ -59,6 +53,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -66,15 +63,5 @@ jobs:
       - name: Install Linux audio libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libmpv-dev
-      - name: Audio plugin
-        working-directory: packages/melody_audio
-        run: |
-          flutter pub get
-          flutter analyze
-          flutter test
-      - name: App
-        working-directory: app
-        run: |
-          flutter pub get
-          flutter analyze
-          flutter test
+      - run: uv sync --locked --python 3.14
+      - run: uv run --locked melody-check audio app

@@ -109,19 +109,6 @@ class MediaIdentity {
   int get hashCode => Object.hash(provider, mediaId);
 }
 
-/// A YouTube Music radio URL seeded by a specific track.
-String youtubeMusicRadioUrl(String source) {
-  final identity = MediaIdentity.fromUrl(source);
-  if (identity == null || identity.provider != youtubeProviderId) {
-    throw ArgumentError("A YouTube track URL is required to start a radio mix");
-  }
-  return Uri.https(youtubeMusicHost, "/watch", {
-    "v": identity.mediaId,
-    "list": "RDAMVM${identity.mediaId}",
-    "start_radio": "1",
-  }).toString();
-}
-
 /// The deduplication key for a source: its media identity when known,
 /// otherwise a normalized URL without tracking parameters.
 String sourceKey(String source) {
@@ -132,10 +119,11 @@ String sourceKey(String source) {
   final uri = Uri.tryParse(trimmed);
   if (uri == null) return trimmed;
   final query = uri.queryParametersAll;
-  final names = query.keys
-      .where((name) => !name.toLowerCase().startsWith("utm_"))
-      .toList()
-    ..sort();
+  final names =
+      query.keys
+          .where((name) => !name.toLowerCase().startsWith("utm_"))
+          .toList()
+        ..sort();
   final filtered = [
     for (final name in names)
       for (final value in query[name]!)

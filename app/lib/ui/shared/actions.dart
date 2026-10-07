@@ -2,7 +2,7 @@ import "dart:async";
 
 import "package:flutter/material.dart";
 
-import "../../app/app_state.dart";
+import "../app_state.dart";
 import "../../application/models.dart";
 import "../../core/library/models.dart";
 import "dialogs.dart";
@@ -10,7 +10,12 @@ import "dialogs.dart";
 /// One entry in a track, result, or collection action menu. Desktop shows
 /// these in popup menus; mobile shows them in a bottom sheet.
 class MenuAction {
-  const MenuAction(this.label, this.icon, this.onSelected, {this.enabled = true});
+  const MenuAction(
+    this.label,
+    this.icon,
+    this.onSelected, {
+    this.enabled = true,
+  });
 
   final String label;
   final IconData icon;
@@ -25,8 +30,16 @@ List<MenuAction> libraryTrackActions(
   TrackDetails details,
   List<Playlist> playlists,
 ) => [
-  MenuAction("Play next", Icons.queue_play_next_rounded, () => app.playback.addNext(track.id)),
-  MenuAction("Add to queue", Icons.add_to_queue_rounded, () => app.playback.addLast(track.id)),
+  MenuAction(
+    "Play next",
+    Icons.queue_play_next_rounded,
+    () => app.playback.addNext(track.id),
+  ),
+  MenuAction(
+    "Add to queue",
+    Icons.add_to_queue_rounded,
+    () => app.playback.addLast(track.id),
+  ),
   for (final playlist in playlists)
     MenuAction(
       "Add to ${playlist.name}",
@@ -38,7 +51,11 @@ List<MenuAction> libraryTrackActions(
     Icons.favorite_border_rounded,
     () => app.toggleFavorite(track.id),
   ),
-  MenuAction("Edit title", Icons.edit_rounded, () => showRenameTrackDialog(context, app, track)),
+  MenuAction(
+    "Edit title",
+    Icons.edit_rounded,
+    () => showRenameTrackDialog(context, app, track),
+  ),
   MenuAction(
     "View details",
     Icons.info_outline_rounded,
@@ -68,18 +85,27 @@ List<MenuAction> searchResultActions(
         Icons.download_rounded,
         () => search.downloadResult(result),
       ),
-    MenuAction("Play next", Icons.queue_play_next_rounded, () => search.actOnResult(result, "next")),
-    MenuAction("Add to queue", Icons.add_to_queue_rounded, () => search.actOnResult(result, "queue")),
+    MenuAction(
+      "Play next",
+      Icons.queue_play_next_rounded,
+      () => search.actOnResult(result, TrackAction.playNext),
+    ),
+    MenuAction(
+      "Add to queue",
+      Icons.add_to_queue_rounded,
+      () => search.actOnResult(result, TrackAction.queue),
+    ),
     MenuAction(
       favorite ? "Remove favorite" : "Favorite",
       Icons.favorite_border_rounded,
-      () => search.actOnResult(result, "favorite"),
+      () => search.actOnResult(result, TrackAction.favorite),
     ),
     for (final playlist in playlists)
       MenuAction(
         "Add to ${playlist.name}",
         Icons.playlist_add_rounded,
-        () => search.actOnResult(result, "playlist", playlist.id),
+        () =>
+            search.actOnResult(result, TrackAction.addToPlaylist, playlist.id),
       ),
     MenuAction(
       "View details",
@@ -112,8 +138,16 @@ List<MenuAction> playlistTrackActions(
       () => app.run(() => playlists.reorder(playlist.id, index, index + 2)),
       enabled: index < playlist.trackIds.length - 1,
     ),
-    MenuAction("Play next", Icons.queue_play_next_rounded, () => app.playback.addNext(track.id)),
-    MenuAction("Add to queue", Icons.add_to_queue_rounded, () => app.playback.addLast(track.id)),
+    MenuAction(
+      "Play next",
+      Icons.queue_play_next_rounded,
+      () => app.playback.addNext(track.id),
+    ),
+    MenuAction(
+      "Add to queue",
+      Icons.add_to_queue_rounded,
+      () => app.playback.addLast(track.id),
+    ),
     MenuAction(
       details.favorite ? "Remove favorite" : "Favorite",
       Icons.favorite_border_rounded,
@@ -128,12 +162,26 @@ List<MenuAction> playlistTrackActions(
       MenuAction(
         "Copy to ${target.name}",
         Icons.content_copy_rounded,
-        () => app.run(() => playlists.transferTrack(playlist.id, target.id, track.id, move: false)),
+        () => app.run(
+          () => playlists.transferTrack(
+            playlist.id,
+            target.id,
+            track.id,
+            move: false,
+          ),
+        ),
       ),
       MenuAction(
         "Move to ${target.name}",
         Icons.drive_file_move_outline,
-        () => app.run(() => playlists.transferTrack(playlist.id, target.id, track.id, move: true)),
+        () => app.run(
+          () => playlists.transferTrack(
+            playlist.id,
+            target.id,
+            track.id,
+            move: true,
+          ),
+        ),
       ),
     ],
     MenuAction(
@@ -168,7 +216,6 @@ List<MenuAction> playlistActions(
   BuildContext context,
   MelodyApp app,
   Playlist playlist,
-  List<Track> tracks,
 ) => [
   MenuAction(
     "Export playlist",

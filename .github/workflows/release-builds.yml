@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: version
-        run: python tools/release_version.py
+        run: python -m tools.build.version
 
   validate:
     needs: preflight
@@ -39,7 +39,7 @@ jobs:
           cache: true
       - run: uv sync --locked --python 3.14 --no-dev
       - name: Build Windows bundle
-        run: uv run --locked python tools/build_app.py windows --architecture x86_64
+        run: uv run --locked melody-build windows --architecture x86_64
       - uses: actions/upload-artifact@v7
         with:
           name: melody-windows-x86_64-${{ needs.preflight.outputs.version }}
@@ -63,7 +63,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libmpv-dev
       - run: uv sync --locked --python 3.14 --no-dev
       - name: Build Linux bundle
-        run: uv run --locked python tools/build_app.py linux --architecture x86_64
+        run: uv run --locked melody-build linux --architecture x86_64
       - name: Archive with executable permissions
         run: tar -czf build/melody-linux-x86_64-${{ needs.preflight.outputs.version }}.tar.gz -C build/linux .
       - uses: actions/upload-artifact@v7
@@ -98,7 +98,7 @@ jobs:
           cache: true
       - run: uv sync --locked --python 3.14 --no-dev
       - name: Build macOS bundle
-        run: uv run --locked python tools/build_app.py macos --architecture ${{ matrix.architecture }}
+        run: uv run --locked melody-build macos --architecture ${{ matrix.architecture }}
       - name: Archive with permissions and symlinks
         run: tar -czf build/melody-macos-${{ matrix.architecture }}-${{ needs.preflight.outputs.version }}.tar.gz -C build/macos .
       - uses: actions/upload-artifact@v7
@@ -144,7 +144,7 @@ jobs:
           cache: true
       - run: uv sync --locked --python 3.14 --no-dev
       - name: Build Android ${{ matrix.target }}
-        run: uv run --locked python tools/build_app.py ${{ matrix.target }}
+        run: uv run --locked melody-build ${{ matrix.target }}
       - uses: actions/upload-artifact@v7
         with:
           name: melody-android-${{ matrix.target }}-${{ needs.preflight.outputs.version }}

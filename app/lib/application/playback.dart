@@ -1,6 +1,8 @@
 import "dart:async";
 
 import "package:flutter/foundation.dart";
+import "package:melody_audio/melody_audio.dart"
+    show AudioEngineSnapshot, AudioQueueItem;
 import "package:path/path.dart" as p;
 
 import "../audio/audio_backend.dart";
@@ -67,30 +69,25 @@ class PlaybackPersistence {
   }
 }
 
-class PlaybackSnapshot {
-  const PlaybackSnapshot({
-    required this.currentTrackId,
-    required this.queue,
-    required this.playing,
-    required this.loading,
-    required this.positionMs,
-    required this.durationMs,
-    required this.generation,
-  });
+/// What a [PlaybackController.changes] event invalidates, so widgets rebuild
+/// only for what they show.
+enum PlaybackChange {
+  /// Transport state: playing, paused, stopped, or an error.
+  state,
 
-  final String? currentTrackId;
-  final List<String> queue;
-  final bool playing;
-  final bool loading;
-  final int positionMs;
-  final int durationMs;
-  final int generation;
+  /// The current track or stream changed.
+  track,
+  queue,
+
+  /// Position or duration.
+  progress,
+  volume,
+
+  /// The decoder finished preparing.
+  loading,
 }
 
-/// Coordinates persistent queue semantics with the managed native player.
-///
-/// [changes] carries scoped invalidations: state, track, queue, progress,
-/// volume, and loading. UI widgets rebuild only for what they show.
+/// Coordinates persistent queue semantics with the native audio engine.
 class PlaybackController {
   PlaybackController(
     this.manager,
@@ -103,8 +100,12 @@ class PlaybackController {
     this.onError,
   }) : _artworkUri = artworkUri ?? ((source) => source) {
     final settings = store.settings;
-    final restored = settings.resumeSession ? store.get("playback", const {}) : const {};
-    final persisted = restored is Map ? restored.cast<String, Object?>() : <String, Object?>{};
+    final restored = settings.resumeSession
+        ? store.get("playback", const {})
+        : const {};
+    final persisted = restored is Map
+        ? restored.cast<String, Object?>()
+        : <String, Object?>{};
     queue = PlaybackQueue.fromJson(persisted);
     final originalItems = List.of(queue.items);
     final originalIndex = queue.currentIndex;
@@ -123,11 +124,15 @@ class PlaybackController {
     if (queue.items.isEmpty) {
       queue.currentIndex = -1;
     } else {
-      queue.currentIndex = currentAvailable ? before : before.clamp(0, queue.items.length - 1);
+      queue.currentIndex = currentAvailable
+          ? before
+          : before.clamp(0, queue.items.length - 1);
     }
     if (currentAvailable) {
       final position = persisted["position_ms"];
-      if (position is num && position.isFinite) positionMs = position.toInt().clamp(0, 1 << 52);
+      if (position is num && position.isFinite) {
+        positionMs = position.toInt().clamp(0, 1 << 52);
+      }
     }
     volume = settings.volume;
     muted = settings.muted;
@@ -144,8 +149,10 @@ class PlaybackController {
   final String Function(String source) _artworkUri;
   void Function(String message)? onError;
 
-  final StreamController<String> _changes = StreamController.broadcast(sync: true);
-  Stream<String> get changes => _changes.stream;
+  final StreamController<PlaybackChange> _changes = StreamController.broadcast(
+    sync: true,
+  );
+  Stream<PlaybackChange> get changes => _changes.stream;
 
   late PlaybackQueue queue;
   int positionMs = 0;
@@ -173,28 +180,24 @@ class PlaybackController {
   String? get currentTrackId => queue.current;
   bool get mediaSessionActive => _mediaSessionActive;
 
-  PlaybackSnapshot get snapshot => PlaybackSnapshot(
-    currentTrackId: currentTrackId,
-    queue: List.unmodifiable(queue.items),
-    playing: _playing,
-    loading: loading,
-    positionMs: positionMs,
-    durationMs: durationMs,
-    generation: _loadGeneration,
-  );
-
   /// Mirrors a decoder that outlived the previous widget tree.
-  void onNativeReattach(Map<String, Object?> state) {
-    final trackId = state["track_id"];
-    if (trackId is String && queue.items.contains(trackId)) {
-      queue.select(queue.items.indexOf(trackId));
+  void onNativeReattach(AudioEngineSnapshot state) {
+    final trackId = state.trackId;
+    if (trackId != null && queue.items.contains(trackId)) {
+      final row = state.queueIndex;
+      queue.select(
+        row >= 0 && row < queue.items.length && queue.items[row] == trackId
+            ? row
+            : queue.items.indexOf(trackId),
+      );
       _clearExternal();
     } else {
-      final source = "${state["source"] ?? ""}";
-      final title = "${state["title"] ?? ""}";
-      externalTitle = title.isNotEmpty ? title : p.basenameWithoutExtension(source);
-      externalUploader = "${state["artist"] ?? ""}";
-      final artwork = "${state["artwork_uri"] ?? ""}";
+      final source = state.source ?? "";
+      externalTitle = state.title.isNotEmpty
+          ? state.title
+          : p.basenameWithoutExtension(source);
+      externalUploader = state.artist;
+      final artwork = state.artworkUri;
       externalThumbnail = artwork.toLowerCase().startsWith("file:")
           ? Uri.parse(artwork).toFilePath()
           : artwork;
@@ -202,12 +205,12 @@ class PlaybackController {
     _sourceLoaded = true;
     _playerLoading = false;
     _loading = false;
-    _playing = state["playing"] == true;
+    _playing = state.playing;
     _mediaSessionActive = true;
-    positionMs = ((state["position_ms"] as num?)?.toInt() ?? 0).clamp(0, 1 << 52);
-    durationMs = ((state["duration_ms"] as num?)?.toInt() ?? 0).clamp(0, 1 << 52);
+    positionMs = (state.position?.inMilliseconds ?? 0).clamp(0, 1 << 52);
+    durationMs = (state.duration?.inMilliseconds ?? 0).clamp(0, 1 << 52);
     _persist();
-    _notify("track");
+    _notify(PlaybackChange.track);
   }
 
   void playTracks(List<String> trackIds, {int startIndex = 0}) =>
@@ -217,29 +220,49 @@ class PlaybackController {
   void playTracksShuffled(List<String> trackIds) =>
       _playTracks(trackIds, startIndex: 0, shuffleOnce: true);
 
-  void _playTracks(List<String> trackIds, {required int startIndex, required bool shuffleOnce}) {
-    final selectedIndex = trackIds.isEmpty ? -1 : startIndex.clamp(0, trackIds.length - 1);
-    final selected = selectedIndex >= 0 ? trackIds[selectedIndex] : null;
+  void _playTracks(
+    List<String> trackIds, {
+    required int startIndex,
+    required bool shuffleOnce,
+  }) {
+    final selectedIndex = trackIds.isEmpty
+        ? -1
+        : startIndex.clamp(0, trackIds.length - 1);
     final seen = <String>{};
     final available = <String>[];
-    for (final item in trackIds) {
+    // The selection, or else the first available track after it: an
+    // unavailable selection starts with what would have played next.
+    int? availableIndex;
+    for (final (index, item) in trackIds.indexed) {
+      if (index == selectedIndex && seen.contains(item)) {
+        availableIndex = available.indexOf(item);
+      }
       if (seen.contains(item) || !manager.hasTrack(item)) continue;
       seen.add(item);
+      if (index >= selectedIndex) availableIndex ??= available.length;
       available.add(item);
     }
     if (available.isEmpty) {
       _error("There are no available tracks to play.");
       return;
     }
-    final availableIndex = selected != null && seen.contains(selected)
-        ? available.indexOf(selected)
-        : selectedIndex.clamp(0, available.length - 1);
-    queue.replace(available, startIndex: availableIndex, shuffleOnce: shuffleOnce);
+    // Nothing after the selection is available; start with the last before.
+    availableIndex ??= available.length - 1;
+    queue.replace(
+      available,
+      startIndex: availableIndex,
+      shuffleOnce: shuffleOnce,
+    );
     _loadCurrent(autoplay: true);
   }
 
   /// Plays an ephemeral stream without adding it to the library.
-  void playStream(String source, {required String title, String uploader = "", String thumbnail = ""}) {
+  void playStream(
+    String source, {
+    required String title,
+    String uploader = "",
+    String thumbnail = "",
+  }) {
     _cancelPendingLoad();
     externalTitle = title;
     externalUploader = uploader;
@@ -259,12 +282,24 @@ class PlaybackController {
   }
 
   void playTrack(String trackId) {
-    if (trackId == currentTrackId && _loading) return;
+    // Ignore a repeated tap only while this library track is already
+    // preparing to play. A pending remote selection (`_loading`) leaves the
+    // queue's row stale, so tapping that row must still switch to it.
+    if (trackId == currentTrackId &&
+        _playerLoading &&
+        _playing &&
+        externalTitle.isEmpty) {
+      return;
+    }
     final index = queue.items.indexOf(trackId);
     if (index >= 0) {
       queue.select(index);
-    } else {
+    } else if (manager.hasTrack(trackId)) {
       queue.replace([trackId]);
+    } else {
+      // A stale row (deleted meanwhile) must not discard the queue.
+      _error("This track is no longer in your library.");
+      return;
     }
     _loadCurrent(autoplay: true);
   }
@@ -327,18 +362,23 @@ class PlaybackController {
   }
 
   void next() {
-    final wasExternal = externalTitle.isNotEmpty;
+    // A pending remote selection has no queue row to rewind to either.
+    final wasExternal = externalTitle.isNotEmpty || _loading;
     final sourceWasLoaded = _sourceLoaded;
     final wasPlaying = _playing;
-    _clearExternal();
+    // _loadCurrent and _release supersede pending work themselves. At the
+    // end of a library queue the current row stays selected, so a load still
+    // preparing it must survive: cancelling would keep the previous track's
+    // decoder, and the pause and rewind below would reach that track instead.
     if (queue.next() != null) {
       _loadCurrent(autoplay: true);
       return;
     }
     if (wasExternal) {
       // A stream has no queue selection to resume after Next.
-      stop();
-      _notify("track");
+      _release();
+      _persist();
+      _notify(PlaybackChange.track);
       return;
     }
     if (sourceWasLoaded) {
@@ -348,7 +388,7 @@ class PlaybackController {
     _playing = false;
     positionMs = 0;
     _persist();
-    _notify("track");
+    _notify(PlaybackChange.track);
   }
 
   void previous() {
@@ -361,28 +401,36 @@ class PlaybackController {
     }
   }
 
-  /// Terminates playback while keeping the library queue selection. Pause
-  /// keeps the media session; Stop releases the source and system controls.
+  /// Unloads the music: releases the source and system controls and empties
+  /// the queue, so the player shows nothing until the next selection. Pause
+  /// keeps everything loaded.
   void stop() {
+    _release();
+    _unload();
+  }
+
+  /// Releases the decoder and system controls while keeping the queue.
+  void _release() {
     _cancelPendingLoad(discardSource: true);
     _sourceLoaded = false;
     _playing = false;
-    _playerLoading = false;
     _mediaSessionActive = false;
     positionMs = 0;
     durationMs = 0;
-    _pendingPlayRecordId = null;
-    if (externalTitle.isNotEmpty) {
-      externalTitle = "";
-      externalUploader = "";
-      externalThumbnail = "";
-    }
+    externalTitle = "";
+    externalUploader = "";
+    externalThumbnail = "";
+  }
+
+  void _unload() {
+    queue.clear();
     _persist();
-    _notify("state");
+    _notify(PlaybackChange.queue);
+    _notify(PlaybackChange.track);
   }
 
   void seek(int position) {
-    positionMs = position.clamp(0, durationMs > 0 ? durationMs : (position < 0 ? 0 : position));
+    positionMs = _clampPosition(position);
     if (_loading) {
       _persist();
       _notify();
@@ -391,13 +439,47 @@ class PlaybackController {
     if (!_sourceLoaded) {
       // A restored queue keeps its resume position until the source loads.
       _persist();
-      _notify("progress");
+      _notify(PlaybackChange.progress);
       return;
     }
     backend.seek(positionMs);
     _persist();
-    _notify("progress");
+    _notify(PlaybackChange.progress);
   }
+
+  /// Seeks and starts playback, so a tapped lyric line plays even when the
+  /// track is paused, finished, or stopped.
+  void playFrom(int position) {
+    if (_playing) {
+      seek(position);
+      return;
+    }
+    if (currentTrackId == null && externalTitle.isEmpty) return;
+    if (_loading || _playerLoading || !_sourceLoaded) {
+      // Toggle carries the new position into the pending or reloaded source.
+      seek(position);
+      toggle();
+      return;
+    }
+    positionMs = _clampPosition(position);
+    if (positionMs > 0) {
+      // The engine seeks before starting and restarts a completed source.
+      backend.play(positionMs);
+    } else {
+      // play(0) keeps the current position, so rewind explicitly.
+      backend.seek(0);
+      backend.resume();
+    }
+    _playing = true;
+    _mediaSessionActive = true;
+    _persist();
+    _notify();
+  }
+
+  int _clampPosition(int position) => position.clamp(
+    0,
+    durationMs > 0 ? durationMs : (position < 0 ? 0 : position),
+  );
 
   void addNext(String trackId) {
     queue.addNext(trackId);
@@ -412,9 +494,7 @@ class PlaybackController {
   /// Inserts several tracks next with one update cycle.
   int addNextMany(Iterable<String> trackIds) {
     final items = trackIds.toList();
-    for (final id in items.reversed) {
-      queue.addNext(id);
-    }
+    queue.addNextAll(items);
     if (items.isNotEmpty) _queueChanged();
     return items.length;
   }
@@ -432,26 +512,44 @@ class PlaybackController {
   void _queueChanged() {
     _syncQueue();
     _persist();
-    _notify("queue");
+    _notify(PlaybackChange.queue);
   }
 
   void removeQueueItem(int index) {
-    final wasCurrent = index == queue.currentIndex;
-    queue.removeAt(index);
+    // A row tapped as the list changed underneath it may be gone.
+    if (index < 0 || index >= queue.items.length) return;
+    _removeQueueRows([index]);
+  }
+
+  /// Removes every row of [trackId], reloading at most once, so a track
+  /// queued several times leaves the queue in one step.
+  void removeTrack(String trackId) => _removeQueueRows([
+    for (final (index, item) in queue.items.indexed)
+      if (item == trackId) index,
+  ]);
+
+  /// Removes ascending [rows].
+  void _removeQueueRows(List<int> rows) {
+    if (rows.isEmpty) return;
+    final wasCurrent = rows.contains(queue.currentIndex);
+    for (final index in rows.reversed) {
+      queue.removeAt(index);
+    }
     if (wasCurrent && externalTitle.isEmpty) {
       if (queue.current != null) {
         _loadCurrent(autoplay: _playing);
       } else {
         // An empty native queue keeps its decoder; release it explicitly.
-        stop();
-        _notify("queue");
+        _release();
+        _persist();
+        _notify(PlaybackChange.queue);
         return;
       }
     } else {
       _syncQueue();
     }
     _persist();
-    _notify("queue");
+    _notify(PlaybackChange.queue);
   }
 
   /// Applies a drag-and-drop reorder. [newIndex] is the drop slot.
@@ -470,15 +568,16 @@ class PlaybackController {
 
   /// Drops queued library tracks and stops a loaded library source.
   void clearLibraryState() {
-    final libraryActive = externalTitle.isEmpty && (currentTrackId != null || _sourceLoaded);
+    final libraryActive =
+        externalTitle.isEmpty && (currentTrackId != null || _sourceLoaded);
     queue.clear();
     if (libraryActive) {
-      stop();
+      _release();
     } else {
       _syncQueue();
-      _persist();
     }
-    _notify("queue");
+    _persist();
+    _notify(PlaybackChange.queue);
   }
 
   bool shuffleUpcoming() {
@@ -504,7 +603,7 @@ class PlaybackController {
     }
     backend.setVolume(muted ? 0 : volume / 100);
     if (persist) _saveVolume();
-    _notify("volume");
+    _notify(PlaybackChange.volume);
   }
 
   void toggleMute() {
@@ -517,7 +616,7 @@ class PlaybackController {
     }
     backend.setVolume(muted ? 0 : volume / 100);
     _saveVolume();
-    _notify("volume");
+    _notify(PlaybackChange.volume);
   }
 
   /// Applies live playback settings without touching the queue or session.
@@ -526,7 +625,7 @@ class PlaybackController {
     previousVolume = settings.previousVolume;
     muted = settings.muted;
     backend.setVolume(muted ? 0 : volume / 100);
-    _notify("volume");
+    _notify(PlaybackChange.volume);
   }
 
   // -- decoder callbacks ---------------------------------------------------
@@ -540,7 +639,7 @@ class PlaybackController {
       _persist();
       _lastPersistedPosition = now;
     }
-    _notify("progress");
+    _notify(PlaybackChange.progress);
   }
 
   void onDuration(int duration) {
@@ -550,7 +649,7 @@ class PlaybackController {
       positionMs = durationMs;
       _persist();
     }
-    _notify("progress");
+    _notify(PlaybackChange.progress);
   }
 
   void onPlaying(bool playing) {
@@ -569,7 +668,10 @@ class PlaybackController {
       if (persistence != null) {
         persistence.recordPlay(trackId);
       } else {
-        library.recordPlay(trackId, playback: queue.toJson(positionMs: positionMs));
+        library.recordPlay(
+          trackId,
+          playback: queue.toJson(positionMs: positionMs),
+        );
       }
     }
     _notify();
@@ -607,25 +709,27 @@ class PlaybackController {
     durationMs = 0;
     _pendingPlayRecordId = trackId;
     _persist();
-    _notify("track");
+    _notify(PlaybackChange.track);
   }
 
-  /// Adopts Stop after the native player handled a system action.
+  /// Adopts Stop after the native player handled a system action; it unloads
+  /// like the in-app Stop button.
   void onStopped() {
     if (_closed) return;
-    _sourceLoaded = false;
-    _playerLoading = false;
+    // The engine already released its decoders; only supersede pending work.
+    _loadGeneration++;
     _loading = false;
+    _playerLoading = false;
+    _pendingPlayRecordId = null;
+    _sourceLoaded = false;
     _playing = false;
     _mediaSessionActive = false;
     positionMs = 0;
     durationMs = 0;
-    _pendingPlayRecordId = null;
     externalTitle = "";
     externalUploader = "";
     externalThumbnail = "";
-    _persist();
-    _notify();
+    _unload();
   }
 
   /// Reconciles optimistic state after a decoder failure.
@@ -658,53 +762,80 @@ class PlaybackController {
 
   void onLoaded() {
     _playerLoading = false;
-    _notify("loading");
+    _notify(PlaybackChange.loading);
   }
 
   // -- internals -----------------------------------------------------------
 
   bool _loadCurrent({required bool autoplay, int positionMs = 0}) {
+    final selected = currentTrackId;
+    _pruneUnavailable();
     final trackId = currentTrackId;
-    if (trackId == null) return false;
+    if (trackId == null) {
+      if (selected != null) {
+        // Every queued track left the library.
+        _release();
+        _error("This track is no longer in your library.");
+        _persist();
+        _notify(PlaybackChange.queue);
+        _notify(PlaybackChange.track);
+      }
+      return false;
+    }
+    // A pruned selection's successor starts from the beginning.
+    if (trackId != selected) positionMs = 0;
     _clearExternal();
     if (autoplay) _mediaSessionActive = true;
     try {
-      _activateQueue(trackId, autoplay: autoplay, positionMs: positionMs < 0 ? 0 : positionMs);
+      _activateQueue(
+        trackId,
+        autoplay: autoplay,
+        positionMs: positionMs < 0 ? 0 : positionMs,
+      );
     } catch (error) {
+      // Nothing reached the engine: silence the previous track rather than
+      // leave it playing under a stopped player.
+      _cancelPendingLoad(discardSource: true);
       _playing = false;
       _sourceLoaded = false;
-      _error("This track is unavailable: ${error is ArgumentError ? error.message : error}");
+      _mediaSessionActive = false;
+      _error(
+        "This track is unavailable: ${error is ArgumentError ? error.message : error}",
+      );
       _persist();
-      _notify("track");
+      _notify(PlaybackChange.track);
       return false;
     }
-    _notify("track");
+    _notify(PlaybackChange.track);
     return true;
   }
 
-  List<Map<String, String>> _queueItems() {
+  List<AudioQueueItem> _queueItems() {
     final details = library.detailsMany(queue.items);
     return [
       for (final trackId in queue.items)
-        () {
-          final track = manager.getTrack(trackId);
-          final extra = details[trackId];
-          return {
-            "track_id": trackId,
-            // A native path; the decoder validates existence and format.
-            "source": manager.trackPath(trackId),
-            "title": track.displayTitle,
-            "artist": extra?.uploader ?? "",
-            "album": extra?.sourceName ?? "",
-            "artwork_uri": extra == null ? "" : _artworkUri(extra.thumbnail),
-          };
-        }(),
+        AudioQueueItem(
+          trackId: trackId,
+          // A native path; the decoder validates existence and format.
+          source: manager.trackPath(trackId),
+          title: manager.getTrack(trackId).displayTitle,
+          artist: details[trackId]?.uploader ?? "",
+          album: details[trackId]?.sourceName ?? "",
+          artworkUri: details[trackId] == null
+              ? ""
+              : _artworkUri(details[trackId]!.thumbnail),
+        ),
     ];
   }
 
-  void _activateQueue(String trackId, {required bool autoplay, required int positionMs}) {
+  void _activateQueue(
+    String trackId, {
+    required bool autoplay,
+    required int positionMs,
+  }) {
     final items = _queueItems();
-    final index = queue.items.indexOf(trackId);
+    // The selected row, not the first copy: the queue may repeat a track.
+    final index = queue.currentIndex;
     _sourceLoaded = true;
     _playerLoading = true;
     this.positionMs = positionMs;
@@ -714,27 +845,39 @@ class PlaybackController {
     backend.setQueue(
       items,
       index,
-      repeatMode: queue.repeat.value,
+      repeat: queue.repeat,
       autoplay: autoplay,
       positionMs: positionMs,
     );
     _persist();
   }
 
+  /// Drops rows whose track left the library, so one stale row cannot keep
+  /// the whole queue from reaching the engine.
+  void _pruneUnavailable() {
+    for (var index = queue.items.length - 1; index >= 0; index--) {
+      if (!manager.hasTrack(queue.items[index])) queue.removeAt(index);
+    }
+  }
+
   /// Sends every queue mutation to the authoritative native player.
   void _syncQueue() {
     if (externalTitle.isNotEmpty || _closed) return;
-    final List<Map<String, String>> items;
+    final List<AudioQueueItem> items;
     try {
       items = _queueItems();
     } on Object {
       return;
     }
-    backend.updateQueue(items, queue.currentIndex, repeatMode: queue.repeat.value);
+    backend.updateQueue(items, queue.currentIndex, repeat: queue.repeat);
   }
 
   void _saveVolume() {
-    final values = {"volume": volume, "previous_volume": previousVolume, "muted": muted};
+    final values = {
+      "volume": volume,
+      "previous_volume": previousVolume,
+      "muted": muted,
+    };
     final persistence = this.persistence;
     if (persistence != null) {
       persistence.save(volume: values);
@@ -800,9 +943,10 @@ class PlaybackController {
     return _loadGeneration;
   }
 
-  bool isCurrentRequest(int generation) => !_closed && generation == _loadGeneration;
+  bool isCurrentRequest(int generation) =>
+      !_closed && generation == _loadGeneration;
 
-  void _notify([String change = "state"]) {
+  void _notify([PlaybackChange change = PlaybackChange.state]) {
     if (!_changes.isClosed) _changes.add(change);
   }
 

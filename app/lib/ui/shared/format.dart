@@ -6,7 +6,9 @@ String formatDuration(double seconds) {
   final hours = total ~/ 3600;
   final minutes = (total % 3600) ~/ 60;
   final secs = (total % 60).toString().padLeft(2, "0");
-  return hours > 0 ? "$hours:${minutes.toString().padLeft(2, "0")}:$secs" : "$minutes:$secs";
+  return hours > 0
+      ? "$hours:${minutes.toString().padLeft(2, "0")}:$secs"
+      : "$minutes:$secs";
 }
 
 String formatMilliseconds(int milliseconds) =>
@@ -16,19 +18,25 @@ String formatBytes(int value) {
   var size = value.toDouble();
   for (final unit in const ["B", "KB", "MB", "GB"]) {
     if (size < 1024 || unit == "GB") {
-      return unit == "B" ? "${size.toStringAsFixed(0)} $unit" : "${size.toStringAsFixed(1)} $unit";
+      return unit == "B"
+          ? "${size.toStringAsFixed(0)} $unit"
+          : "${size.toStringAsFixed(1)} $unit";
     }
     size /= 1024;
   }
   return "${size.toStringAsFixed(1)} GB";
 }
 
+String downloadStatusLabel(DownloadStatus status) =>
+    "${status.name[0].toUpperCase()}${status.name.substring(1)}";
+
 String downloadDetail(DownloadRecord record) {
-  if (record.status == "completed") {
-    final count = record.trackIds.length;
-    return "Added $count track${count != 1 ? "s" : ""} to your library";
+  if (record.status == DownloadStatus.completed) {
+    return "Added ${plural(record.trackIds.length, "track")} to your library";
   }
-  if (record.status == "processing") return "Converting audio and embedding metadata…";
+  if (record.status == DownloadStatus.processing) {
+    return "Converting audio…";
+  }
   if (record.totalBytes > 0) {
     return "${formatBytes(record.downloadedBytes)} of ${formatBytes(record.totalBytes)} • "
         "${(record.progress * 100).round()}%";

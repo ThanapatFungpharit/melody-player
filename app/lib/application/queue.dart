@@ -17,8 +17,9 @@ class PlaybackQueue {
   RepeatMode repeat;
   final Random _random;
 
-  String? get current =>
-      currentIndex >= 0 && currentIndex < items.length ? items[currentIndex] : null;
+  String? get current => currentIndex >= 0 && currentIndex < items.length
+      ? items[currentIndex]
+      : null;
 
   int get upcomingCount => items.length - max(0, currentIndex + 1);
 
@@ -28,7 +29,11 @@ class PlaybackQueue {
     bool shuffleOnce = false,
   }) {
     items = trackIds.toSet().toList();
-    currentIndex = items.isEmpty ? -1 : startIndex.clamp(0, items.length - 1);
+    // [startIndex] indexes [trackIds]; duplicates dropped before it would
+    // otherwise shift the selection onto a later track.
+    currentIndex = items.isEmpty
+        ? -1
+        : items.indexOf(trackIds[startIndex.clamp(0, trackIds.length - 1)]);
     if (shuffleOnce && items.isNotEmpty) {
       // Starting a collection shuffled is a one-time reorder. Later selections
       // and queue replacements never inherit a shuffle mode.
@@ -44,13 +49,19 @@ class PlaybackQueue {
     return current;
   }
 
-  void addNext(String trackId) {
+  void addNext(String trackId) => addNextAll([trackId]);
+
+  /// Inserts [trackIds] after the current track, in their given order. An
+  /// empty queue starts with the first of them.
+  void addNextAll(Iterable<String> trackIds) {
+    final added = trackIds.toList();
+    if (added.isEmpty) return;
     if (items.isEmpty || currentIndex < 0) {
-      items.insert(0, trackId);
+      items.insertAll(0, added);
       currentIndex = max(currentIndex, 0);
       return;
     }
-    items.insert(currentIndex + 1, trackId);
+    items.insertAll(currentIndex + 1, added);
   }
 
   void addLast(String trackId) {

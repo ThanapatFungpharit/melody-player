@@ -1,7 +1,8 @@
 import "package:flutter/material.dart";
 
-import "../../../app/app_state.dart";
+import "../../app_state.dart";
 import "../../shared/settings_sections.dart";
+import "../../shared/theme.dart";
 import "../controls.dart";
 import "../shell.dart";
 
@@ -19,26 +20,25 @@ class _SettingsPanelState extends State<SettingsPanel> {
   void initState() {
     super.initState();
     widget.app.settingsDraft.reset();
-    widget.app.settingsDraft.refreshYtDlpStatus();
+    widget.app.settingsDraft.refreshPackageStatus();
   }
 
   @override
   Widget build(BuildContext context) {
     final app = widget.app;
-    final scheme = Theme.of(context).colorScheme;
+    final scheme = context.colors;
     Widget card(SettingsSection section) => Container(
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(Radii.panel),
       ),
       // List tiles paint on the nearest Material, not on this decoration.
       child: Material(
         type: MaterialType.transparency,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          spacing: 16,
+          spacing: 18,
           children: [SectionHeader(section), section.body],
         ),
       ),
@@ -47,20 +47,9 @@ class _SettingsPanelState extends State<SettingsPanel> {
       listenable: app.settingsDraft,
       builder: (context, _) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        spacing: 16,
+        spacing: 20,
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [scheme.primaryContainer, scheme.surfaceContainerLow],
-              ),
-            ),
-            child: ContextHeader(app, "Settings", "Shape your listening experience."),
-          ),
+          ContextHeader(app, "Settings", "Shape your listening experience."),
           Expanded(
             child: SingleChildScrollView(
               child: ResponsiveGrid(
@@ -91,30 +80,32 @@ class _SettingsPanelState extends State<SettingsPanel> {
             ),
           ),
           Container(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.only(top: 16),
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: scheme.outlineVariant),
+              border: Border(top: BorderSide(color: scheme.outlineVariant)),
             ),
             child: Row(
+              spacing: 10,
               children: [
+                Icon(
+                  Icons.lock_outline_rounded,
+                  size: 16,
+                  color: scheme.onSurfaceVariant,
+                ),
                 Expanded(
                   child: Text(
                     "Changes are saved locally on this device.",
-                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                    style: context.text.bodySmall,
                   ),
                 ),
-                TextButton(onPressed: app.settingsDraft.cancel, child: const Text("Cancel")),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 180,
-                  height: 48,
-                  child: FilledButton.icon(
-                    onPressed: () => app.run(app.settingsDraft.save),
-                    icon: const Icon(Icons.save_rounded),
-                    label: const Text("Save settings"),
-                  ),
+                TextButton(
+                  onPressed: app.settingsDraft.cancel,
+                  child: const Text("Cancel"),
+                ),
+                FilledButton.icon(
+                  onPressed: () => app.run(app.settingsDraft.save),
+                  icon: const Icon(Icons.check_rounded, size: 20),
+                  label: const Text("Save settings"),
                 ),
               ],
             ),

@@ -3,12 +3,14 @@ import "dart:collection";
 
 import "package:flutter/foundation.dart";
 
-import "../../app/app_state.dart";
+import "../app_state.dart";
 import "../../application/models.dart";
-import "../../application/providers.dart";
+import "../../application/catalog.dart";
+import "../../application/downloads.dart";
 import "../../core/downloader/downloader.dart";
 import "../../core/library/models.dart";
 import "../../core/media.dart";
+import "../shared/widgets.dart" show pageBounds;
 import "library_controller.dart";
 
 class _ImportSession {
@@ -56,10 +58,15 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The visible page of [total] tracks, clamping a stale offset.
   (int, int) visibleRange(int total) {
-    final start = pageOffset.clamp(0, total <= 0 ? 0 : (total - 1) ~/ libraryPageSize * libraryPageSize);
+    final (start, end) = pageBounds(
+      total,
+      pageOffset,
+      pageSize: libraryPageSize,
+    );
     pageOffset = start;
-    return (start, (start + libraryPageSize).clamp(0, total));
+    return (start, end);
   }
 
   void changePage(int direction) {
@@ -69,7 +76,8 @@ class PlaylistsController extends ChangeNotifier {
 
   void play(Playlist playlist) => app.playback.playTracks(playlist.trackIds);
 
-  void shuffle(Playlist playlist) => app.playback.playTracksShuffled(playlist.trackIds);
+  void shuffle(Playlist playlist) =>
+      app.playback.playTracksShuffled(playlist.trackIds);
 
   String create(String name) {
     final id = app.services.manager.createPlaylist(name);
@@ -99,7 +107,10 @@ class PlaylistsController extends ChangeNotifier {
   }
 
   int addTracks(String playlistId, List<String> trackIds) {
-    final added = app.services.manager.addTracksToPlaylist(playlistId, trackIds);
+    final added = app.services.manager.addTracksToPlaylist(
+      playlistId,
+      trackIds,
+    );
     app.touchLibrary();
     return added;
   }
@@ -111,7 +122,9 @@ class PlaylistsController extends ChangeNotifier {
 
   /// Moves a row; [newIndex] is the drop slot, as reorderable lists report.
   void reorder(String playlistId, int oldIndex, int newIndex) {
-    final ordered = List.of(app.services.manager.getPlaylist(playlistId).trackIds);
+    final ordered = List.of(
+      app.services.manager.getPlaylist(playlistId).trackIds,
+    );
     if (oldIndex < 0 || oldIndex >= ordered.length) return;
     final item = ordered.removeAt(oldIndex);
     final target = newIndex > oldIndex ? newIndex - 1 : newIndex;
@@ -124,7 +137,12 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  void transferTrack(String source, String target, String trackId, {required bool move}) {
+  void transferTrack(
+    String source,
+    String target,
+    String trackId, {
+    required bool move,
+  }) {
     if (move) {
       app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
     } else {
@@ -146,7 +164,7 @@ class PlaylistsController extends ChangeNotifier {
     importLoading = true;
     notifyListeners();
     try {
-      final remote = await app.services.providers.loadPlaylist(url);
+      final remote = await app.services.catalog.loadPlaylist(url);
       if (generation == _generation) await _import(remote, generation);
     } catch (error) {
       app.reportFailure(error);
@@ -182,7 +200,8 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
     app.showMessage("Importing ${session.total} tracks into “$name”…");
     try {
-      while ((session.pending.isNotEmpty || session.activeDownloads.isNotEmpty) &&
+      while ((session.pending.isNotEmpty ||
+              session.activeDownloads.isNotEmpty) &&
           identical(_session, session)) {
         var changed = false;
         var queueFull = false;
@@ -190,10 +209,9 @@ class PlaylistsController extends ChangeNotifier {
         // backpressure, then refill after terminal notifications wake us.
         while (session.pending.isNotEmpty && identical(_session, session)) {
           final (key, result) = session.pending.first;
-          final String? task;
-          final bool owned;
+          final DownloadRequest request;
           try {
-            (task, owned) = await app.services.downloads.requestWithOwnership(result);
+            request = await app.services.downloads.request(result);
           } on WorkerQueueFull {
             queueFull = true;
             break;
@@ -202,24 +220,21 @@ class PlaylistsController extends ChangeNotifier {
             session.pending.removeFirst();
             continue;
           }
+          final task = request.task;
           if (!identical(_session, session)) {
-            if (task != null && owned) app.services.downloads.cancel(task);
+            if (task != null && request.started) {
+              app.services.downloads.cancel(task);
+            }
             return;
           }
           if (task == null) {
-            final existing = await app.services.downloads.availableTrack(result.url);
-            if (existing != null) {
-              session.resolved[key] = existing.id;
-              session.reused++;
-              changed = true;
-            } else {
-              // It resolved locally but vanished before the follow-up read.
-              session.failed++;
-            }
+            session.resolved[key] = request.track!.id;
+            session.reused++;
+            changed = true;
             session.pending.removeFirst();
             continue;
           }
-          session.activeDownloads[key] = (task, owned);
+          session.activeDownloads[key] = (task, request.started);
           session.pending.removeFirst();
         }
         if (!identical(_session, session)) return;
@@ -229,12 +244,13 @@ class PlaylistsController extends ChangeNotifier {
         var terminalSeen = false;
         for (final entry in session.activeDownloads.entries.toList()) {
           final record = app.services.downloads.get(entry.value.$1);
-          if (record == null || !const {"completed", "failed", "cancelled"}.contains(record.status)) {
+          if (record == null || !record.status.isFinished) {
             continue;
           }
           terminalSeen = true;
           session.activeDownloads.remove(entry.key);
-          if (record.status == "completed" && record.trackIds.isNotEmpty) {
+          if (record.status == DownloadStatus.completed &&
+              record.trackIds.isNotEmpty) {
             session.resolved[entry.key] = record.trackIds.first;
             session.downloaded++;
             changed = true;
@@ -244,8 +260,7 @@ class PlaylistsController extends ChangeNotifier {
         }
         if (changed) {
           app.services.manager.mergeTracksIntoPlaylist(playlistId, [
-            for (final key in session.order)
-              ?session.resolved[key],
+            for (final key in session.order) ?session.resolved[key],
           ]);
           app.touchLibrary();
         }
@@ -255,7 +270,10 @@ class PlaylistsController extends ChangeNotifier {
           await _wakeup.future;
         } else if (queueFull) {
           // The downloader may be busy with unrelated work.
-          await _wakeup.future.timeout(const Duration(milliseconds: 200), onTimeout: () {});
+          await _wakeup.future.timeout(
+            const Duration(milliseconds: 200),
+            onTimeout: () {},
+          );
         }
       }
       _finish(session);
@@ -274,7 +292,8 @@ class PlaylistsController extends ChangeNotifier {
   /// cancels the downloads it created.
   bool abandonImport([String? playlistId]) {
     final session = _session;
-    if (playlistId != null && (session == null || session.playlistId != playlistId)) {
+    if (playlistId != null &&
+        (session == null || session.playlistId != playlistId)) {
       return false;
     }
     _generation++;

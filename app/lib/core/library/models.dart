@@ -31,9 +31,7 @@ class Track {
   /// The visible title: the stored title or the file's stem.
   String get displayTitle {
     final trimmed = title.trim();
-    return trimmed.isNotEmpty
-        ? trimmed
-        : p.basenameWithoutExtension(filename);
+    return trimmed.isNotEmpty ? trimmed : p.basenameWithoutExtension(filename);
   }
 }
 

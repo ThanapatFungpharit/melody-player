@@ -7,11 +7,19 @@ import "package:just_audio_platform_interface/just_audio_platform_interface.dart
 class RecordingMediaSessionPlatform extends FlutterMediaSessionPlatform {
   final List<PlaybackState> states = [];
   final List<MediaMetadata> metadata = [];
+  final List<Set<MediaAction>?> availableActions = [];
   Completer<MediaMetadata>? nextMetadata;
   bool failNextDeactivate = false;
 
+  /// Holds the next activation until completed.
+  Completer<void>? activateGate;
+
   @override
-  Future<void> activate() async {}
+  Future<void> activate() async {
+    final gate = activateGate;
+    activateGate = null;
+    await gate?.future;
+  }
 
   @override
   Future<void> deactivate() async {
@@ -34,7 +42,9 @@ class RecordingMediaSessionPlatform extends FlutterMediaSessionPlatform {
   }
 
   @override
-  Future<void> updateAvailableActions(Set<MediaAction>? actions) async {}
+  Future<void> updateAvailableActions(Set<MediaAction>? actions) async {
+    availableActions.add(actions);
+  }
 
   @override
   Future<bool> requestNotificationPermission() async => true;
@@ -58,8 +68,11 @@ class RecordingMediaSessionPlatform extends FlutterMediaSessionPlatform {
     String? iconPath,
   }) async {}
 
+  /// Actions pressed on lock-screen, notification, or desktop controls.
+  final StreamController<MediaAction> actions = StreamController.broadcast();
+
   @override
-  Stream<MediaAction> get onMediaAction => const Stream.empty();
+  Stream<MediaAction> get onMediaAction => actions.stream;
 }
 
 /// A just_audio platform whose decoders load instantly unless blocked.
@@ -69,12 +82,17 @@ class FakeJustAudioPlatform extends JustAudioPlatform {
   /// Holds the next decoder's load until completed.
   Completer<void>? loadGate;
 
+  /// Makes the next decoder stay completed after a seek, like media_kit.
+  bool completionOutlivesSeek = false;
+
   FakeAudioPlayer get last => players.last;
 
   @override
   Future<AudioPlayerPlatform> init(InitRequest request) async {
-    final player = FakeAudioPlayer(request.id, loadGate);
+    final player = FakeAudioPlayer(request.id, loadGate)
+      ..completionOutlivesSeek = completionOutlivesSeek;
     loadGate = null;
+    completionOutlivesSeek = false;
     players.add(player);
     return player;
   }
@@ -115,7 +133,9 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   Duration _position = Duration.zero;
   int _index = 0;
   bool playing = false;
+  int playRequests = 0;
   bool disposed = false;
+  bool completionOutlivesSeek = false;
   Completer<void>? _playing;
 
   Duration get position => _position;
@@ -153,6 +173,17 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
     _broadcast();
   }
 
+  /// Stalls the decoder for network data, then resumes where it was.
+  void stall() {
+    _state = ProcessingStateMessage.buffering;
+    _broadcast();
+  }
+
+  void recover() {
+    _state = ProcessingStateMessage.ready;
+    _broadcast();
+  }
+
   void complete() {
     _position = trackDuration;
     _state = ProcessingStateMessage.completed;
@@ -178,6 +209,7 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
 
   @override
   Future<PlayResponse> play(PlayRequest request) async {
+    playRequests++;
     playing = true;
     _broadcast();
     await (_playing = Completer<void>()).future;
@@ -198,7 +230,7 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
     seeks.add(request.position);
     _position = request.position ?? Duration.zero;
     _index = request.index ?? _index;
-    if (_state == ProcessingStateMessage.completed) {
+    if (_state == ProcessingStateMessage.completed && !completionOutlivesSeek) {
       _state = ProcessingStateMessage.ready;
     }
     _broadcast();

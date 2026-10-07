@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 build/
+# ...but tools/build is source
+!/tools/build/
 /artifacts/
 dist/
 wheels/
@@ -12,11 +14,12 @@ wheels/
 # uv virtual environment
 .venv/
 
-# Flet and Flutter/Dart generated state
-.flet/
+# Flutter/Dart generated state
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
+# Gradle caches, such as the one Android Studio leaves in a plugin's android/
+.gradle/
 
 # Local environment and credentials (keep shareable templates)
 .env
@@ -30,7 +33,6 @@ cookies.txt
 # Local diagnostics and temporary files
 *.log
 *.tmp
-/ty_output.txt
 
 # Local editor and operating-system state
 .idea/
@@ -41,18 +43,13 @@ cookies.txt
 .DS_Store
 Thumbs.db
 
-# FFmpeg resources regenerated from tools/fetch_media_binaries.py
-# Keep other resources (such as licenses) visible to Git.
-/src/musicplayer/bin/*/*/ffmpeg
-/src/musicplayer/bin/*/*/ffprobe
-/src/musicplayer/bin/*/*/ffmpeg.exe
-/src/musicplayer/bin/*/*/ffprobe.exe
-/src/musicplayer/bin/*/*/bundle.json
-
+# Local Android signing material
+.signing
 signing/
 
 # Screen-test review output (MELODY_SCREENSHOTS=1)
 /app/test/ui/screenshots/
-# FFmpeg staged for native builds by tools/fetch_media_binaries.py
+
+# FFmpeg staged for native builds by tools/build/media.py (melody-fetch-media)
 /app/media/
 /app/android/app/src/main/jniLibs/

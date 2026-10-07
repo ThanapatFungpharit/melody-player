@@ -3,7 +3,6 @@ import "dart:io";
 
 import "../core/storage.dart";
 
-const cookieFileName = "cookies.txt";
 const maxCookieFileSize = 10 * 1024 * 1024;
 final _netscapeHeader = RegExp(
   r"^#(?: Netscape)? HTTP Cookie File\b",
@@ -33,12 +32,16 @@ class ValidatedCookieFile {
 /// Browser-extension JSON exports, browser databases, and arbitrary text are
 /// rejected before anything is persisted or passed to yt-dlp.
 ValidatedCookieFile validateCookieFile(List<int> content, {DateTime? now}) {
-  if (content.isEmpty) throw CookieFileError("The selected cookie file is empty.");
+  if (content.isEmpty) {
+    throw CookieFileError("The selected cookie file is empty.");
+  }
   if (content.length > maxCookieFileSize) {
     throw CookieFileError("The selected cookie file is larger than 10 MB.");
   }
   if (content.contains(0)) {
-    throw CookieFileError("Unsupported cookie format. Upload a Netscape cookies.txt file.");
+    throw CookieFileError(
+      "Unsupported cookie format. Upload a Netscape cookies.txt file.",
+    );
   }
   String text;
   try {
@@ -51,7 +54,9 @@ ValidatedCookieFile validateCookieFile(List<int> content, {DateTime? now}) {
   if (text.startsWith("﻿")) text = text.substring(1);
   final lines = const LineSplitter().convert(text);
   if (lines.isEmpty || !_netscapeHeader.hasMatch(lines.first.trim())) {
-    throw CookieFileError("Unsupported cookie format. Upload a Netscape cookies.txt file.");
+    throw CookieFileError(
+      "Unsupported cookie format. Upload a Netscape cookies.txt file.",
+    );
   }
   final nowSeconds = (now ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000;
   var cookies = 0;
@@ -72,7 +77,9 @@ ValidatedCookieFile validateCookieFile(List<int> content, {DateTime? now}) {
     }
     final [domain, subdomains, path, secure, expires, name, value] = fields;
     if (domain.isEmpty || path.isEmpty || (name.isEmpty && value.isEmpty)) {
-      throw CookieFileError("Incomplete Netscape cookie record on line $number.");
+      throw CookieFileError(
+        "Incomplete Netscape cookie record on line $number.",
+      );
     }
     const flags = {"TRUE", "FALSE"};
     if (!flags.contains(subdomains) || !flags.contains(secure)) {
@@ -106,7 +113,10 @@ ValidatedCookieFile validateCookieFile(List<int> content, {DateTime? now}) {
 }
 
 /// Atomically installs a validated cookie file in app-private storage.
-Future<String> installCookieFile(ValidatedCookieFile cookieFile, String destination) async {
+Future<String> installCookieFile(
+  ValidatedCookieFile cookieFile,
+  String destination,
+) async {
   await atomicWrite(destination, cookieFile.content);
   if (!Platform.isWindows) {
     try {

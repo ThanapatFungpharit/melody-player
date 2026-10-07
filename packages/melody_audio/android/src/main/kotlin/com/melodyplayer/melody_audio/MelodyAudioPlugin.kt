@@ -78,6 +78,8 @@ class MelodyAudioPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val mimeType = when (extension) {
             "webm" -> "audio/webm"
             "mp4", "m4a" -> "audio/mp4"
+            "ogg", "oga", "opus" -> "audio/ogg"
+            "flac" -> "audio/flac"
             else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
                 ?.takeIf { it.startsWith("audio/") } ?: "audio/mpeg"
         }

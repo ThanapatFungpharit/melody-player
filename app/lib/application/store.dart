@@ -1,3 +1,4 @@
+import "dart:async";
 import "dart:convert";
 import "dart:io";
 
@@ -31,8 +32,6 @@ Object? _clone(Object? value) =>
 
 bool _sameJson(Object? a, Object? b) => _encode(a) == _encode(b);
 
-double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
-
 /// SQLite persistence for state outside MusicManager's domain: preferences,
 /// playback session, enriched metadata, favorites, histories, and download
 /// history. Each top-level value is one JSON row and each track's details
@@ -62,13 +61,13 @@ class ApplicationStore {
     try {
       store._data = store._open(legacyPath);
     } catch (_) {
-      db.close();
+      unawaited(db.close());
       rethrow;
     }
     return store;
   }
 
-  void close() => _db.close();
+  Future<void> close() => _db.close();
 
   Map<String, Object?> _open(String? legacyPath) {
     if (_db.hasTable("state")) {
@@ -122,8 +121,10 @@ class ApplicationStore {
     return _migrate({..._defaults(), ...raw});
   }
 
-  static int _version(Map<String, Object?> data) =>
-      switch (data["version"]) { num value => value.toInt(), _ => 1 };
+  static int _version(Map<String, Object?> data) => switch (data["version"]) {
+    num value => value.toInt(),
+    _ => 1,
+  };
 
   static Map<String, Object?> _migrate(Map<String, Object?> data) {
     if (_version(data) < 2) {
@@ -365,7 +366,9 @@ class ApplicationStore {
     Map<String, int> plays,
   ) {
     final updates = <String, Object?>{};
-    if (changes.containsKey("playback")) updates["playback"] = changes["playback"];
+    if (changes.containsKey("playback")) {
+      updates["playback"] = changes["playback"];
+    }
     if (changes["volume"] case final Map volume) {
       updates["settings"] = {
         ...(_data["settings"] as Map).cast<String, Object?>(),
@@ -378,11 +381,13 @@ class ApplicationStore {
     };
     final playback = _data["playback"];
     final hasQueue =
-        playback is Map && playback["queue"] is List && (playback["queue"] as List).isNotEmpty;
+        playback is Map &&
+        playback["queue"] is List &&
+        (playback["queue"] as List).isNotEmpty;
     if (!hasQueue && !updates.containsKey("playback")) accepted.clear();
     final details = <String, Object?>{};
     if (accepted.isNotEmpty) {
-      final now = _now();
+      final now = unixSeconds();
       for (final entry in accepted.entries) {
         final item = trackDetails(entry.key)
           ..playCount += entry.value

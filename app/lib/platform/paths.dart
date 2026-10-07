@@ -32,27 +32,36 @@ class AppPaths {
   String get legacyLibrary => p.join(dataDirectory, "library.mmdb");
   String get thumbnails => p.join(dataDirectory, "thumbnails");
   String get ytDlpRuntime => p.join(dataDirectory, "yt-dlp-runtime");
+  String get ytMusicRuntime => p.join(dataDirectory, "ytmusicapi-runtime");
+
+  /// yt-dlp's `cachedir` (YouTube player code and signature data). Without
+  /// it yt-dlp writes to `~/.cache/yt-dlp`, outside Melody's data.
+  String get ytDlpCache => p.join(dataDirectory, "yt-dlp-cache");
+
+  /// Saved lyrics, so they show without a connection.
+  String get lyrics => p.join(dataDirectory, "lyrics");
   String get cookieFile => p.join(dataDirectory, "cookies.txt");
 
   static Future<AppPaths> resolve() async {
     final environment = Platform.environment;
     final home = environment["HOME"] ?? environment["USERPROFILE"] ?? ".";
-    if (Platform.isAndroid || Platform.isIOS) {
-      // The Flet releases stored data in "<application support>/data".
+    if (Platform.isAndroid) {
+      // Earlier releases stored data in "<application support>/data"; keep
+      // it so installs upgrade in place.
       final support = await getApplicationSupportDirectory();
       final data = p.join(support.path, "data");
       await Directory(data).create(recursive: true);
-      String? public;
-      String? ffmpeg;
-      if (Platform.isAndroid) {
-        public = p.join(await MelodyNative.publicMusicDirectory(), "Melody");
-        ffmpeg = p.join(await MelodyNative.nativeLibraryDirectory(), "libffmpeg.so");
-      }
       return AppPaths(
         dataDirectory: data,
         defaultMusicDirectory: p.join(data, "Music"),
-        publicMusicDirectory: public,
-        ffmpegLocation: ffmpeg,
+        publicMusicDirectory: p.join(
+          await AndroidPlatform.publicMusicDirectory(),
+          "Melody",
+        ),
+        ffmpegLocation: p.join(
+          await AndroidPlatform.nativeLibraryDirectory(),
+          "libffmpeg.so",
+        ),
       );
     }
     // Development and tests: keep all state and music in one throwaway folder.

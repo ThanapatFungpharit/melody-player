@@ -5,11 +5,15 @@
 #include <gdk/gdkx.h>
 #endif
 
+#include <cstdio>
+#include <cstring>
+
 #include "flutter/generated_plugin_registrant.h"
 
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  FlMethodChannel* app_icon_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -17,6 +21,39 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+}
+
+// Shows the icon Dart draws for the saved accent color on the window. X11 uses
+// it; Wayland shells take the icon from the desktop entry instead.
+static void app_icon_cb(FlMethodChannel* channel, FlMethodCall* call,
+                        gpointer user_data) {
+  GtkWindow* window = GTK_WINDOW(user_data);
+  FlValue* images = fl_method_call_get_args(call);
+  g_autoptr(FlMethodResponse) response = nullptr;
+  if (strcmp(fl_method_call_get_name(call), "setImages") != 0 ||
+      fl_value_get_type(images) != FL_VALUE_TYPE_MAP) {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  } else {
+    GList* icons = nullptr;
+    for (size_t i = 0; i < fl_value_get_length(images); i++) {
+      FlValue* png = fl_value_get_map_value(images, i);
+      if (fl_value_get_type(png) != FL_VALUE_TYPE_UINT8_LIST) continue;
+      g_autoptr(GdkPixbufLoader) loader =
+          gdk_pixbuf_loader_new_with_type("png", nullptr);
+      gboolean loaded = gdk_pixbuf_loader_write(
+          loader, fl_value_get_uint8_list(png), fl_value_get_length(png),
+          nullptr);
+      loaded = gdk_pixbuf_loader_close(loader, nullptr) && loaded;
+      GdkPixbuf* pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
+      if (loaded && pixbuf != nullptr) {
+        icons = g_list_append(icons, g_object_ref(pixbuf));
+      }
+    }
+    if (icons != nullptr) gtk_window_set_icon_list(window, icons);
+    g_list_free_full(icons, g_object_unref);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  }
+  fl_method_call_respond(call, response, nullptr);
 }
 
 // Implements GApplication::activate.
@@ -52,7 +89,20 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "Melody");
   }
 
-  gtk_window_set_default_size(window, 1540, 960);
+  // MELODY_WINDOW_SIZE=390x844 opens the window at another size, such as a
+  // phone's, while developing (see tools/dev/env.py).
+  int width = 1540;
+  int height = 960;
+  const gchar* size = g_getenv("MELODY_WINDOW_SIZE");
+  int requested_width = 0;
+  int requested_height = 0;
+  if (size != nullptr &&
+      sscanf(size, "%dx%d", &requested_width, &requested_height) == 2 &&
+      requested_width > 0 && requested_height > 0) {
+    width = requested_width;
+    height = requested_height;
+  }
+  gtk_window_set_default_size(window, width, height);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
@@ -74,6 +124,14 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->app_icon_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "melody/app_icon", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(
+      self->app_icon_channel, app_icon_cb, g_object_ref(window),
+      g_object_unref);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
@@ -121,6 +179,7 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  g_clear_object(&self->app_icon_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

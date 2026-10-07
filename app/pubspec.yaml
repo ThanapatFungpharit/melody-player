@@ -8,7 +8,6 @@ environment:
 
 dependencies:
   crypto: ^3.0.7
-  ffi: ^2.2.0
   file_picker: ^11.0.3
   flutter:
     sdk: flutter
@@ -24,7 +23,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  flutter_media_session: 3.0.3
+  # The screen tests replace the media-session platform with a quiet fake.
+  flutter_media_session: 3.0.9
+  integration_test:
+    sdk: flutter
 
 flutter:
   uses-material-design: true

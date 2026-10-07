@@ -10,7 +10,7 @@ import "notification_saliency.dart";
 
 // Names the automatic crop algorithm in cache keys. Change it whenever crops
 // change so artwork prepared by an earlier version is not reused.
-const _automaticMode = "auto-u2netp256-int8-1";
+const _automaticMode = "auto-u2netp256-int8-composition-2";
 
 /// Prepares square media-session art in Flutter before the OS renders its panel.
 class NotificationArtwork {

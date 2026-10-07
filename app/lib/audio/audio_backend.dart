@@ -3,22 +3,23 @@ import "dart:async";
 import "package:flutter/foundation.dart";
 import "package:melody_audio/melody_audio.dart";
 
+import "../application/models.dart";
 import "../core/storage.dart";
 
 /// The decoder contract the playback controller drives.
 abstract class TrackPlayerBackend {
   void load(String source, {bool autoplay = false, int positionMs = 0});
   void setQueue(
-    List<Map<String, String>> items,
+    List<AudioQueueItem> items,
     int currentIndex, {
-    required String repeatMode,
+    required RepeatMode repeat,
     bool autoplay = false,
     int positionMs = 0,
   });
   void updateQueue(
-    List<Map<String, String>> items,
+    List<AudioQueueItem> items,
     int currentIndex, {
-    required String repeatMode,
+    required RepeatMode repeat,
   });
   void play([int positionMs = 0]);
   void pause();
@@ -39,74 +40,16 @@ class BackendCallbacks {
   void Function(String trackId, int index)? onTrackChanged;
   void Function()? onStopped;
   void Function(String message)? onError;
-  void Function(String action, int? seekPositionMs)? onMediaAction;
+  void Function(MediaCommand command, int? seekPositionMs)? onMediaAction;
 }
 
-/// Media-session snapshot published to lock-screen and notification controls.
-class MediaSessionSnapshot {
-  const MediaSessionSnapshot({
-    required this.title,
-    this.artist = "",
-    this.album = "",
-    this.artworkUri = "",
-    this.autoFocalPoint = false,
-    this.durationMs = 0,
-    this.positionMs = 0,
-    this.playing = false,
-    this.loading = false,
-    this.hasNext = true,
-    this.hasPrevious = true,
-    this.repeatMode = "off",
-    this.canRepeat = false,
-    this.canShuffle = false,
-    this.canFavorite = false,
-    this.favorite = false,
-    this.notificationActionPair = "shuffle_favorite",
-    this.keepAlive = false,
-  });
+AudioRepeatMode audioRepeatMode(RepeatMode mode) => switch (mode) {
+  RepeatMode.off => AudioRepeatMode.off,
+  RepeatMode.track => AudioRepeatMode.track,
+  RepeatMode.playlist => AudioRepeatMode.queue,
+};
 
-  final String title;
-  final String artist;
-  final String album;
-  final String artworkUri;
-  final bool autoFocalPoint;
-  final int durationMs;
-  final int positionMs;
-  final bool playing;
-  final bool loading;
-  final bool hasNext;
-  final bool hasPrevious;
-  final String repeatMode;
-  final bool canRepeat;
-  final bool canShuffle;
-  final bool canFavorite;
-  final bool favorite;
-  final String notificationActionPair;
-  final bool keepAlive;
-
-  Map<String, Object?> toPayload() => {
-    "title": title.trim(),
-    "artist": artist,
-    "album": album,
-    "artwork_uri": artworkUri,
-    "auto_focal_point_live_notifications": autoFocalPoint,
-    "duration_ms": durationMs < 0 ? 0 : durationMs,
-    "position_ms": positionMs < 0 ? 0 : positionMs,
-    "playing": playing,
-    "loading": loading,
-    "has_next": hasNext,
-    "has_previous": hasPrevious,
-    "repeat_mode": repeatMode,
-    "can_repeat": canRepeat,
-    "can_shuffle": canShuffle,
-    "can_favorite": canFavorite,
-    "favorite": favorite,
-    "notification_action_pair": notificationActionPair,
-    "keep_alive": keepAlive,
-  };
-}
-
-/// Generation-safe adapter around the process-scoped native player.
+/// Generation-safe adapter around the process-scoped [AudioEngine].
 ///
 /// Every explicit request takes a new even generation; native queue
 /// transitions use odd ones. Events from a superseded generation are
@@ -114,18 +57,18 @@ class MediaSessionSnapshot {
 /// stays responsive while a replacement source prepares.
 class NativeAudioBackend implements TrackPlayerBackend {
   NativeAudioBackend({
-    NativeAudioRuntime? runtime,
-    NativeMediaSessionRuntime? session,
+    AudioEngine? engine,
+    SystemMediaSession? session,
     this.useDeviceVolume = false,
     this.operationTimeout = const Duration(seconds: 12),
-  }) : _runtime = runtime ?? NativeAudioRuntime.instance,
-       _session = session ?? NativeMediaSessionRuntime.instance {
-    _runtime.attach(_onEvent);
+  }) : _engine = engine ?? AudioEngine.instance,
+       _session = session ?? SystemMediaSession.instance {
+    _engine.attach(_onEvent);
     _session.attach(_onMediaAction);
   }
 
-  final NativeAudioRuntime _runtime;
-  final NativeMediaSessionRuntime _session;
+  final AudioEngine _engine;
+  final SystemMediaSession _session;
 
   /// Phones use the system media volume; app volume only mutes there.
   final bool useDeviceVolume;
@@ -145,47 +88,46 @@ class NativeAudioBackend implements TrackPlayerBackend {
   AsyncMutex _transport = AsyncMutex();
   final AsyncMutex _media = AsyncMutex();
   int _mediaGeneration = 0;
-  String? _mediaSnapshot;
-  String? _mediaPendingSnapshot;
+  MediaSessionState? _mediaPublished;
+  MediaSessionState? _mediaPending;
   bool _mediaSessionActive = false;
   bool _mediaReattachPending = false;
 
-  void _onEvent(String name, Map<String, Object?> data) {
+  void _onEvent(AudioEngineEvent event) {
     if (_closing) return;
-    final generation = (data["generation"] as num?)?.toInt();
-    if (name == "track_change") {
-      _trackChanged(data, generation ?? 0);
+    if (event is AudioTrackChanged) {
+      _trackChanged(event);
       return;
     }
-    if (generation != _generation) return;
-    switch (name) {
-      case "loaded":
-        _loadedEvent(generation!);
-      case "position_change":
-        callbacks.onPosition?.call((data["position"] as num?)?.toInt() ?? 0);
-      case "duration_change":
-        callbacks.onDuration?.call((data["duration"] as num?)?.toInt() ?? 0);
-      case "state_change":
-        _stateChanged("${data["state"]}", generation!);
-      case "error":
+    if (event.generation != _generation) return;
+    switch (event) {
+      case AudioLoaded():
+        _loadedEvent();
+      case AudioPositionChanged(:final position):
+        callbacks.onPosition?.call(position.inMilliseconds);
+      case AudioDurationChanged(:final duration):
+        callbacks.onDuration?.call(duration.inMilliseconds);
+      case AudioStateChanged(:final state):
+        _stateChanged(state, event.generation);
+      case AudioFailed(:final message):
         _cancelWatchdog();
-        callbacks.onError?.call("${data["message"] ?? "Native audio playback failed"}");
+        callbacks.onError?.call(message);
+      case AudioTrackChanged():
+        break;
     }
   }
 
-  void _onMediaAction(String action, Duration? seekPosition) {
+  void _onMediaAction(MediaCommand command, Duration? seekPosition) {
     if (_closing) return;
-    callbacks.onMediaAction?.call(action, seekPosition?.inMilliseconds);
+    callbacks.onMediaAction?.call(command, seekPosition?.inMilliseconds);
   }
 
-  /// Adopts playback the native runtime retained, if any.
-  Future<Map<String, Object?>?> reattachNativeState() async {
+  /// Adopts playback the engine retained across a widget-tree rebuild.
+  AudioEngineSnapshot? reattachNativeState() {
     if (_closing) return null;
-    final state = Map<String, Object?>.from(
-      await _runtime.invokeMethod("get_playback_state", null) as Map,
-    );
-    if (state["source"] == null || "${state["source"]}".isEmpty) return null;
-    _generation = (state["generation"] as num?)?.toInt() ?? 0;
+    final state = _engine.snapshot();
+    if (!state.hasSource) return null;
+    _generation = state.generation;
     _loaded = true;
     _hasActiveSource = true;
     _mediaReattachPending = true;
@@ -193,45 +135,45 @@ class NativeAudioBackend implements TrackPlayerBackend {
   }
 
   /// Publishes a coherent snapshot to system controls, coalescing repeats.
-  void syncMediaSession(MediaSessionSnapshot snapshot) {
-    final payload = snapshot.toPayload();
-    final key = payload.toString();
-    if ((key == _mediaSnapshot && _mediaPendingSnapshot == null) ||
-        key == _mediaPendingSnapshot ||
+  void syncMediaSession(MediaSessionState state) {
+    if ((state == _mediaPublished && _mediaPending == null) ||
+        state == _mediaPending ||
         _closing ||
         kIsWeb) {
       return;
     }
     // Keep the last published snapshot separate from the queued one so a
     // channel failure stays retryable.
-    _mediaPendingSnapshot = key;
+    _mediaPending = state;
     final generation = ++_mediaGeneration;
-    payload["reattach"] = _mediaReattachPending;
-    unawaited(_media.run(() => _runMediaSync(generation, payload, key)));
+    final reattach = _mediaReattachPending;
+    unawaited(_media.run(() => _runMediaSync(generation, state, reattach)));
   }
 
   Future<void> _runMediaSync(
     int generation,
-    Map<String, Object?> payload,
-    String key,
+    MediaSessionState state,
+    bool reattach,
   ) async {
     if (_closing || generation != _mediaGeneration) return;
     try {
-      if ("${payload["title"]}".isNotEmpty) {
+      if (state.isActive) {
         _mediaSessionActive = true;
-        await _session.invokeMethod("sync", payload).timeout(operationTimeout);
+        await _session
+            .sync(state, reattach: reattach)
+            .timeout(operationTimeout);
       } else if (_mediaSessionActive) {
         await _session.deactivateForStop().timeout(operationTimeout);
         _mediaSessionActive = false;
       }
       if (generation == _mediaGeneration) {
-        _mediaSnapshot = key;
-        if (payload["reattach"] == true) _mediaReattachPending = false;
-        if (_mediaPendingSnapshot == key) _mediaPendingSnapshot = null;
+        _mediaPublished = state;
+        if (reattach) _mediaReattachPending = false;
+        if (_mediaPending == state) _mediaPending = null;
       }
     } catch (error) {
-      if (generation == _mediaGeneration && _mediaPendingSnapshot == key) {
-        _mediaPendingSnapshot = null;
+      if (generation == _mediaGeneration && _mediaPending == state) {
+        _mediaPending = null;
       }
       // System controls never stop the actual audio path.
       debugPrint("Media-session synchronization failed: $error");
@@ -242,8 +184,8 @@ class NativeAudioBackend implements TrackPlayerBackend {
   void invalidateMediaSession() {
     if (_closing) return;
     _mediaGeneration++;
-    _mediaSnapshot = null;
-    _mediaPendingSnapshot = null;
+    _mediaPublished = null;
+    _mediaPending = null;
     _mediaReattachPending = true;
   }
 
@@ -259,38 +201,44 @@ class NativeAudioBackend implements TrackPlayerBackend {
 
   @override
   void setQueue(
-    List<Map<String, String>> items,
+    List<AudioQueueItem> items,
     int currentIndex, {
-    required String repeatMode,
+    required RepeatMode repeat,
     bool autoplay = false,
     int positionMs = 0,
   }) {
     if (_closing) return;
     _beginSource();
     final generation = _generation;
-    _schedule(() => _runtime.invokeMethod("set_queue", {
-      "items": items,
-      "current_index": currentIndex,
-      "generation": generation,
-      "repeat_mode": repeatMode,
-      "autoplay": autoplay,
-      "position_ms": positionMs < 0 ? 0 : positionMs,
-    }), generation);
-    _watchLoad(generation, "The native playback queue did not respond.");
+    _schedule(
+      () => _engine.setQueue(
+        items,
+        currentIndex: currentIndex,
+        generation: generation,
+        repeatMode: audioRepeatMode(repeat),
+        autoplay: autoplay,
+        position: _milliseconds(positionMs),
+      ),
+      generation,
+    );
+    _watchLoad(generation);
   }
 
   @override
   void updateQueue(
-    List<Map<String, String>> items,
+    List<AudioQueueItem> items,
     int currentIndex, {
-    required String repeatMode,
+    required RepeatMode repeat,
   }) {
     if (_closing || _serviceFailed) return;
-    _schedule(() => _runtime.invokeMethod("update_queue", {
-      "items": items,
-      "current_index": currentIndex,
-      "repeat_mode": repeatMode,
-    }), _generation);
+    _schedule(
+      () => _engine.updateQueue(
+        items,
+        currentIndex: currentIndex,
+        repeatMode: audioRepeatMode(repeat),
+      ),
+      _generation,
+    );
   }
 
   @override
@@ -299,16 +247,16 @@ class NativeAudioBackend implements TrackPlayerBackend {
     // A new explicit selection is the retry boundary after a failure.
     _beginSource();
     final generation = _generation;
-    _schedule(() => _runtime.invokeMethod("load_source", {
-      "source": source,
-      "generation": generation,
-      "autoplay": autoplay,
-      "position_ms": positionMs < 0 ? 0 : positionMs,
-    }), generation);
-    _watchLoad(
+    _schedule(
+      () => _engine.loadSource(
+        source,
+        generation: generation,
+        autoplay: autoplay,
+        position: _milliseconds(positionMs),
+      ),
       generation,
-      "The audio player did not respond. The playback service may have disconnected.",
     );
+    _watchLoad(generation);
   }
 
   @override
@@ -318,19 +266,19 @@ class NativeAudioBackend implements TrackPlayerBackend {
       _pendingPlayPosition = position;
       return;
     }
-    _scheduleTransport("play", {"position": position});
+    _scheduleTransport(() => _engine.play(position: _milliseconds(position)));
   }
 
   @override
   void pause() {
     if (!_loaded) _pendingPlayPosition = null;
-    _scheduleTransport("pause", null);
+    _scheduleTransport(_engine.pause);
   }
 
   @override
   void resume() {
     if (!_loaded) _pendingPlayPosition = _pendingSeekPosition ?? 0;
-    _scheduleTransport("resume", null);
+    _scheduleTransport(_engine.resume);
   }
 
   @override
@@ -341,13 +289,13 @@ class NativeAudioBackend implements TrackPlayerBackend {
       if (_pendingPlayPosition != null) _pendingPlayPosition = position;
       return;
     }
-    _scheduleTransport("seek", {"position": position});
+    _scheduleTransport(() => _engine.seek(_milliseconds(position)));
   }
 
   @override
   void setVolume(double value) {
     final gain = value.clamp(0.0, 1.0);
-    _runtime.setVolume(useDeviceVolume ? (gain > 0 ? 1.0 : 0.0) : gain);
+    _engine.setVolume(useDeviceVolume ? (gain > 0 ? 1.0 : 0.0) : gain);
   }
 
   @override
@@ -360,7 +308,7 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _cancelWatchdog();
     _resetQueues();
     if (_serviceFailed) return;
-    _bestEffort(() => _runtime.invokeMethod("cancel_load", null));
+    _engine.cancelLoad();
   }
 
   @override
@@ -373,7 +321,7 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _cancelWatchdog();
     _resetQueues();
     if (_closing || _serviceFailed) return;
-    _bestEffort(() => _runtime.invokeMethod("clear_source", null));
+    _bestEffort(_engine.clearSource);
   }
 
   /// Reconciles position and play state after the app resumes.
@@ -381,17 +329,17 @@ class NativeAudioBackend implements TrackPlayerBackend {
     if (_closing || !_loaded) return;
     final generation = _generation;
     try {
-      final state = await _transport.run(
-        () => _runtime.invokeMethod("get_playback_state", null),
-      ).timeout(operationTimeout);
-      if (_closing || generation != _generation || state is! Map) return;
-      if (state["position_ms"] case final num position) {
-        callbacks.onPosition?.call(position.toInt());
+      final state = await _transport
+          .run(_engine.snapshot)
+          .timeout(operationTimeout);
+      if (_closing || generation != _generation) return;
+      if (state.position case final position?) {
+        callbacks.onPosition?.call(position.inMilliseconds);
       }
-      if (state["duration_ms"] case final num duration) {
-        callbacks.onDuration?.call(duration.toInt());
+      if (state.duration case final duration?) {
+        callbacks.onDuration?.call(duration.inMilliseconds);
       }
-      if (state["playing"] case final bool playing) callbacks.onPlaying?.call(playing);
+      callbacks.onPlaying?.call(state.playing);
     } catch (error) {
       debugPrint("Native audio state refresh failed: $error");
     }
@@ -402,15 +350,15 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _serviceFailed = true;
     _nextGeneration();
     _mediaGeneration++;
-    _mediaPendingSnapshot = null;
+    _mediaPending = null;
     _cancelWatchdog();
     _pendingPlayPosition = null;
     _pendingSeekPosition = null;
-    _runtime.detach(_onEvent);
+    _engine.detach(_onEvent);
     _session.detach(_onMediaAction);
   }
 
-  void _loadedEvent(int generation) {
+  void _loadedEvent() {
     _loaded = true;
     _hasActiveSource = true;
     _cancelWatchdog();
@@ -420,46 +368,47 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _pendingPlayPosition = null;
     _pendingSeekPosition = null;
     if (play != null) {
-      _scheduleTransport("play", {"position": play});
+      _scheduleTransport(() => _engine.play(position: _milliseconds(play)));
     } else if (seek != null) {
-      _scheduleTransport("seek", {"position": seek});
+      _scheduleTransport(() => _engine.seek(_milliseconds(seek)));
     }
   }
 
-  void _stateChanged(String state, int generation) {
-    if (state == "completed") {
-      if (_completedGeneration == generation) return;
-      _completedGeneration = generation;
-      callbacks.onCompleted?.call();
-      return;
+  void _stateChanged(AudioPlaybackState state, int generation) {
+    switch (state) {
+      case AudioPlaybackState.completed:
+        if (_completedGeneration == generation) return;
+        _completedGeneration = generation;
+        callbacks.onCompleted?.call();
+      case AudioPlaybackState.stopped:
+        _loaded = false;
+        _hasActiveSource = false;
+        callbacks.onStopped?.call();
+      case AudioPlaybackState.playing:
+        // A replay without reload may complete again once playback restarts.
+        _completedGeneration = -1;
+        callbacks.onPlaying?.call(true);
+      case AudioPlaybackState.paused:
+        callbacks.onPlaying?.call(false);
+      case AudioPlaybackState.loading:
+        // Only the system media session shows buffering.
+        break;
     }
-    if (state == "stopped") {
-      _loaded = false;
-      _hasActiveSource = false;
-      callbacks.onStopped?.call();
-      return;
-    }
-    // A replay without reload may complete again once playback restarts.
-    if (state == "playing") _completedGeneration = -1;
-    callbacks.onPlaying?.call(state == "playing");
   }
 
-  void _trackChanged(Map<String, Object?> data, int generation) {
-    if (generation <= _generation) return;
+  void _trackChanged(AudioTrackChanged event) {
+    if (event.generation <= _generation) return;
     _cancelWatchdog();
     _resetQueues();
-    _generation = generation;
+    _generation = event.generation;
     _loaded = false;
     _pendingPlayPosition = null;
     _pendingSeekPosition = null;
-    callbacks.onTrackChanged?.call(
-      "${data["track_id"]}",
-      (data["index"] as num?)?.toInt() ?? 0,
-    );
-    _watchLoad(generation, "The next track could not be prepared.");
+    callbacks.onTrackChanged?.call(event.trackId, event.index);
+    _watchLoad(event.generation);
   }
 
-  void _watchLoad(int generation, String message) {
+  void _watchLoad(int generation) {
     _loadWatchdog = Timer(operationTimeout, () {
       if (generation == _generation && !_loaded && !_closing) {
         callbacks.onPlaying?.call(false);
@@ -488,44 +437,40 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _transport = AsyncMutex();
   }
 
-  void _schedule(Future<Object?> Function() operation, int generation) {
+  void _schedule(Future<void> Function() operation, int generation) {
     if (_closing || generation != _generation) return;
     final queue = _operations;
-    unawaited(queue.run(() async {
-      if (_closing || generation != _generation) return;
-      try {
-        await operation().timeout(operationTimeout);
-      } catch (error) {
-        debugPrint("Audio operation failed: $error");
-        _failService(
-          generation,
-          "The audio player did not respond. The track may be unsupported or "
-          "the playback service may have disconnected.",
-        );
-      }
-    }));
+    unawaited(
+      queue.run(() async {
+        if (_closing || generation != _generation) return;
+        try {
+          await operation().timeout(operationTimeout);
+        } catch (error) {
+          debugPrint("Audio operation failed: $error");
+          _failService(generation, _unresponsive);
+        }
+      }),
+    );
   }
 
-  void _scheduleTransport(String method, Map<String, Object?>? arguments) {
+  void _scheduleTransport(Future<void> Function() operation) {
     final generation = _generation;
     if (_closing) return;
     final queue = _transport;
-    unawaited(queue.run(() async {
-      if (_closing || generation != _generation) return;
-      try {
-        await _runtime.invokeMethod(method, arguments).timeout(operationTimeout);
-      } catch (error) {
-        debugPrint("Audio transport operation failed: $error");
-        _failService(
-          generation,
-          "The audio player did not respond. The track may be unsupported or "
-          "the playback service may have disconnected.",
-        );
-      }
-    }));
+    unawaited(
+      queue.run(() async {
+        if (_closing || generation != _generation) return;
+        try {
+          await operation().timeout(operationTimeout);
+        } catch (error) {
+          debugPrint("Audio transport operation failed: $error");
+          _failService(generation, _unresponsive);
+        }
+      }),
+    );
   }
 
-  void _bestEffort(Future<Object?> Function() operation) {
+  void _bestEffort(Future<void> Function() operation) {
     unawaited(() async {
       try {
         await operation().timeout(operationTimeout);
@@ -545,3 +490,10 @@ class NativeAudioBackend implements TrackPlayerBackend {
     callbacks.onError?.call(message);
   }
 }
+
+const _unresponsive =
+    "The audio player did not respond. The track may be unsupported or "
+    "the playback service may have disconnected.";
+
+Duration _milliseconds(int value) =>
+    Duration(milliseconds: value < 0 ? 0 : value);

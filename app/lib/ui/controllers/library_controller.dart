@@ -3,7 +3,9 @@ import "dart:async";
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
 
-import "../../app/app_state.dart";
+import "../app_state.dart";
+import "../shared/format.dart";
+import "../../core/errors.dart" show failureMessage;
 import "../../core/library/models.dart";
 
 const libraryPageSize = 50;
@@ -38,14 +40,18 @@ class LibraryController extends ChangeNotifier {
         limit: libraryPageSize + 1,
       );
     }
-    return (fetched.take(libraryPageSize).toList(), fetched.length > libraryPageSize);
+    return (
+      fetched.take(libraryPageSize).toList(),
+      fetched.length > libraryPageSize,
+    );
   }
 
   List<Playlist> matchingPlaylists() {
     final term = queryText.toLowerCase();
     return [
       for (final playlist in app.services.manager.listPlaylists())
-        if (term.isEmpty || playlist.name.toLowerCase().contains(term)) playlist,
+        if (term.isEmpty || playlist.name.toLowerCase().contains(term))
+          playlist,
     ];
   }
 
@@ -79,8 +85,9 @@ class LibraryController extends ChangeNotifier {
   void playVisible() =>
       app.playback.playTracks([for (final track in visibleTracks()) track.id]);
 
-  void shuffleVisible() =>
-      app.playback.playTracksShuffled([for (final track in visibleTracks()) track.id]);
+  void shuffleVisible() => app.playback.playTracksShuffled([
+    for (final track in visibleTracks()) track.id,
+  ]);
 
   /// Imports local files one by one and reports failures together.
   Future<void> importLocalFiles(List<String> paths) async {
@@ -92,20 +99,19 @@ class LibraryController extends ChangeNotifier {
         importedIds.add(await app.services.library.importLocalFile(path));
         imported++;
       } catch (error) {
-        final message = switch (error) {
-          FormatException(:final message) => message,
-          _ => "$error",
-        };
-        failures.add("${p.basename(path)}: $message");
+        failures.add("${p.basename(path)}: ${failureMessage(error)}");
       }
     }
     app.exportImportedTracks(importedIds);
     app.touchLibrary();
-    final plural = imported != 1 ? "s" : "";
     if (failures.isNotEmpty) {
-      app.showError("Imported $imported file$plural. ${failures.take(3).join(" • ")}");
+      app.showError(
+        "Imported ${plural(imported, "file")}. ${failures.take(3).join(" • ")}",
+      );
     } else {
-      app.showMessage("Added $imported local file$plural to the library.");
+      app.showMessage(
+        "Added ${plural(imported, "local file")} to the library.",
+      );
     }
   }
 
@@ -116,13 +122,11 @@ class LibraryController extends ChangeNotifier {
     if (app.playback.currentTrackId == trackId) app.syncSystemMedia();
   }
 
-  /// Detaches the file from the player, then deletes the record and file.
+  /// Detaches the file from the player, then deletes the record and, when
+  /// Melody downloaded it, the file.
   Future<void> deleteTrack(String trackId) async {
-    final queue = app.playback.queue.items;
-    for (var index = queue.length - 1; index >= 0; index--) {
-      if (queue[index] == trackId) app.playback.removeQueueItem(index);
-    }
-    await app.services.library.deleteTrackAndFile(trackId);
+    app.playback.removeTrack(trackId);
+    await app.services.library.deleteTrack(trackId);
     app.touchLibrary();
   }
 

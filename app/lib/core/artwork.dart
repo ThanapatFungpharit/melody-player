@@ -1,9 +1,13 @@
-/// Reads cover artwork back from completed audio containers.
+/// Reads cover artwork and lyrics back from audio containers.
 ///
-/// The downloader uses this read-back as proof that yt-dlp burned the
+/// The downloader uses the artwork read-back as proof that yt-dlp burned the
 /// thumbnail into the output before staged files are committed. Supported:
 /// ID3v2.2–2.4 (MP3), MP4/M4A `covr`, FLAC PICTURE blocks, and
 /// `METADATA_BLOCK_PICTURE` comments in Ogg Opus and Vorbis.
+///
+/// Lyrics come from ID3 `USLT`/`ULT` frames (and `TXXX` frames named
+/// `LYRICS`, `UNSYNCEDLYRICS`, or `USLT`), MP4 `©lyr`, and `LYRICS` or
+/// `UNSYNCEDLYRICS` Vorbis comments in FLAC and Ogg.
 library;
 
 import "dart:convert";
@@ -12,6 +16,8 @@ import "dart:isolate";
 import "dart:typed_data";
 
 import "package:path/path.dart" as p;
+
+import "id3.dart";
 
 const maxArtworkBytes = 8 * 1024 * 1024;
 const _frontCover = 3;
@@ -26,9 +32,9 @@ Uint8List readEmbeddedArtworkSync(String path) {
   try {
     pictures = switch (p.extension(path).toLowerCase()) {
       ".mp3" => _id3Pictures(path),
-      ".m4a" || ".mp4" || ".m4v" || ".mov" => _mp4Pictures(path),
+      ".m4a" || ".m4b" || ".mp4" || ".m4v" || ".mov" => _mp4Pictures(path),
       ".flac" => _flacPictures(path),
-      ".ogg" || ".opus" => _oggPictures(path),
+      ".ogg" || ".oga" || ".opus" => _oggPictures(path),
       _ => const [],
     };
   } on Object {
@@ -49,6 +55,29 @@ Uint8List readEmbeddedArtworkSync(String path) {
   return best;
 }
 
+/// The lyrics text embedded in [path], or an empty string. Synced lyrics are
+/// usually LRC text. Runs off the UI isolate.
+Future<String> readEmbeddedLyrics(String path) =>
+    Isolate.run(() => readEmbeddedLyricsSync(path));
+
+String readEmbeddedLyricsSync(String path) {
+  try {
+    final text = switch (p.extension(path).toLowerCase()) {
+      ".mp3" => _id3Lyrics(path),
+      ".m4a" || ".m4b" || ".mp4" || ".m4v" || ".mov" => _mp4Lyrics(path),
+      ".flac" => _vorbisLyrics(_flacComments(path)),
+      ".ogg" || ".oga" || ".opus" => _vorbisLyrics(_oggComments(path)),
+      _ => "",
+    };
+    return text.replaceAll("\u0000", "").trim();
+  } on Object {
+    // Missing or damaged tags simply mean no embedded lyrics.
+    return "";
+  }
+}
+
+const _vorbisLyricsKeys = ["lyrics", "unsyncedlyrics"];
+
 class _Bytes {
   _Bytes(this.data, [this.offset = 0]);
 
@@ -63,11 +92,6 @@ class _Bytes {
     }
   }
 
-  int u8() {
-    _need(1);
-    return data[offset++];
-  }
-
   int u16() {
     _need(2);
     final value = (data[offset] << 8) | data[offset + 1];
@@ -77,7 +101,8 @@ class _Bytes {
 
   int u24() {
     _need(3);
-    final value = (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
+    final value =
+        (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
     offset += 3;
     return value;
   }
@@ -91,17 +116,20 @@ class _Bytes {
 
   int u32le() {
     _need(4);
-    final value = ByteData.sublistView(data, offset, offset + 4).getUint32(0, Endian.little);
+    final value = ByteData.sublistView(
+      data,
+      offset,
+      offset + 4,
+    ).getUint32(0, Endian.little);
     offset += 4;
     return value;
   }
 
   int syncsafe() {
-    final raw = u32();
-    return ((raw & 0x7f000000) >> 3) |
-        ((raw & 0x007f0000) >> 2) |
-        ((raw & 0x00007f00) >> 1) |
-        (raw & 0x0000007f);
+    _need(4);
+    final value = readSyncsafe(data, offset);
+    offset += 4;
+    return value;
   }
 
   Uint8List take(int count) {
@@ -122,16 +150,31 @@ Uint8List _readPrefix(RandomAccessFile file, int length) {
 
 // -- ID3v2 ------------------------------------------------------------------
 
-Uint8List _removeUnsynchronisation(Uint8List data) {
-  final output = BytesBuilder(copy: false);
-  for (var i = 0; i < data.length; i++) {
-    output.addByte(data[i]);
-    if (data[i] == 0xff && i + 1 < data.length && data[i + 1] == 0x00) i++;
+List<(int, Uint8List)> _id3Pictures(String path) => [
+  for (final (id, frame) in _id3Frames(path, const {"APIC", "PIC"}))
+    ?(id == "PIC" ? _parsePic(frame) : _parseApic(frame)),
+];
+
+String _id3Lyrics(String path) {
+  final frames = _id3Frames(path, const {"USLT", "ULT", "TXXX", "TXX"});
+  for (final (id, frame) in frames) {
+    if (id == "USLT" || id == "ULT") {
+      final text = _parseUslt(frame);
+      if (text.trim().isNotEmpty) return text;
+    }
   }
-  return output.takeBytes();
+  for (final (_, frame) in frames.where((item) => item.$1.startsWith("TX"))) {
+    final (description, value) = parseTxxx(frame);
+    if (id3LyricsDescriptions.contains(description.toLowerCase()) &&
+        value.trim().isNotEmpty) {
+      return value;
+    }
+  }
+  return "";
 }
 
-List<(int, Uint8List)> _id3Pictures(String path) {
+/// Decoded frames whose ID is in [wanted], in tag order.
+List<(String, Uint8List)> _id3Frames(String path, Set<String> wanted) {
   final file = File(path).openSync();
   final Uint8List tag;
   final int major;
@@ -150,14 +193,16 @@ List<(int, Uint8List)> _id3Pictures(String path) {
     file.closeSync();
   }
   if (major < 2 || major > 4) return const [];
-  final body = (major < 4 && flags & 0x80 != 0) ? _removeUnsynchronisation(tag) : tag;
+  final body = (major < 4 && flags & 0x80 != 0)
+      ? removeUnsynchronisation(tag)
+      : tag;
   final reader = _Bytes(body);
   if (flags & 0x40 != 0 && major >= 3) {
     // Extended header: v2.3 size excludes itself; v2.4 size includes itself.
     final size = major == 4 ? reader.syncsafe() : reader.u32();
     reader.offset = major == 4 ? size : 4 + size;
   }
-  final pictures = <(int, Uint8List)>[];
+  final frames = <(String, Uint8List)>[];
   while (reader.remaining >= (major == 2 ? 6 : 10)) {
     final String id;
     final int size;
@@ -171,13 +216,19 @@ List<(int, Uint8List)> _id3Pictures(String path) {
       frameFlags = reader.u16();
     }
     if (id.codeUnits.every((unit) => unit == 0) || size <= 0) break;
-    var frame = reader.take(size);
-    if (id != "APIC" && id != "PIC") continue;
-    frame = _decodeFrame(frame, major, frameFlags);
-    final picture = id == "PIC" ? _parsePic(frame) : _parseApic(frame);
-    if (picture != null) pictures.add(picture);
+    final frame = reader.take(size);
+    if (!wanted.contains(id)) continue;
+    frames.add((id, _decodeFrame(frame, major, frameFlags)));
   }
-  return pictures;
+  return frames;
+}
+
+/// USLT (or v2.2 ULT): encoding, language, terminated description, text.
+String _parseUslt(Uint8List frame) {
+  if (frame.length < 5) return "";
+  final encoding = frame[0];
+  final start = skipId3Text(frame, 4, encoding);
+  return decodeId3Text(Uint8List.sublistView(frame, start), encoding);
 }
 
 Uint8List _decodeFrame(Uint8List frame, int major, int flags) {
@@ -195,24 +246,10 @@ Uint8List _decodeFrame(Uint8List frame, int major, int flags) {
     if (flags & 0x0040 != 0) start += 1; // group identifier
     if (flags & 0x0001 != 0) start += 4; // data length indicator
     data = Uint8List.sublistView(data, start);
-    if (flags & 0x0002 != 0) data = _removeUnsynchronisation(data);
+    if (flags & 0x0002 != 0) data = removeUnsynchronisation(data);
     if (flags & 0x0008 != 0) data = Uint8List.fromList(zlib.decode(data));
   }
   return data;
-}
-
-/// Skips an encoded, terminated description and returns the next offset.
-int _skipText(Uint8List data, int offset, int encoding) {
-  if (encoding == 1 || encoding == 2) {
-    for (var i = offset; i + 1 < data.length; i += 2) {
-      if (data[i] == 0 && data[i + 1] == 0) return i + 2;
-    }
-  } else {
-    for (var i = offset; i < data.length; i++) {
-      if (data[i] == 0) return i + 1;
-    }
-  }
-  throw const FormatException("Unterminated picture description");
 }
 
 (int, Uint8List)? _parseApic(Uint8List frame) {
@@ -225,7 +262,7 @@ int _skipText(Uint8List data, int offset, int encoding) {
   offset++; // MIME terminator
   if (offset >= frame.length) return null;
   final type = frame[offset++];
-  offset = _skipText(frame, offset, encoding);
+  offset = skipId3Text(frame, offset, encoding);
   return (type, Uint8List.sublistView(frame, offset));
 }
 
@@ -233,13 +270,35 @@ int _skipText(Uint8List data, int offset, int encoding) {
   if (frame.length < 6) return null;
   final encoding = frame[0];
   final type = frame[4]; // after encoding and a three-letter image format
-  final offset = _skipText(frame, 5, encoding);
+  final offset = skipId3Text(frame, 5, encoding);
   return (type, Uint8List.sublistView(frame, offset));
 }
 
 // -- MP4 --------------------------------------------------------------------
 
 List<(int, Uint8List)> _mp4Pictures(String path) {
+  final covr = switch (_mp4Ilst(path)) {
+    final ilst? => _childAtom(ilst, "covr"),
+    null => null,
+  };
+  if (covr == null) return const [];
+  return [
+    for (final data in _childAtoms(covr, "data"))
+      if (data.length >= 8) (_frontCover, Uint8List.sublistView(data, 8)),
+  ];
+}
+
+String _mp4Lyrics(String path) {
+  final ilst = _mp4Ilst(path);
+  // "©lyr": the copyright sign is one Latin-1 byte in atom names.
+  final lyrics = ilst == null ? null : _childAtom(ilst, "\u00a9lyr");
+  final data = lyrics == null ? null : _childAtom(lyrics, "data");
+  if (data == null || data.length < 8) return "";
+  return utf8.decode(Uint8List.sublistView(data, 8), allowMalformed: true);
+}
+
+/// The iTunes metadata list (`moov/udta/meta/ilst`), or null.
+Uint8List? _mp4Ilst(String path) {
   final file = File(path).openSync();
   Uint8List? moov;
   try {
@@ -259,7 +318,9 @@ List<(int, Uint8List)> _mp4Pictures(String path) {
       }
       if (size < headerSize) throw const FormatException("Invalid MP4 atom");
       if (type == "moov") {
-        if (size > 64 * 1024 * 1024) throw const FormatException("moov too large");
+        if (size > 64 * 1024 * 1024) {
+          throw const FormatException("moov too large");
+        }
         file.setPositionSync(position + headerSize);
         moov = _readPrefix(file, size - headerSize);
         break;
@@ -269,16 +330,10 @@ List<(int, Uint8List)> _mp4Pictures(String path) {
   } finally {
     file.closeSync();
   }
-  if (moov == null) return const [];
+  if (moov == null) return null;
   final udta = _childAtom(moov, "udta");
   final meta = udta == null ? null : _childAtom(udta, "meta");
-  final ilst = meta == null ? null : _metaChild(meta, "ilst");
-  final covr = ilst == null ? null : _childAtom(ilst, "covr");
-  if (covr == null) return const [];
-  return [
-    for (final data in _childAtoms(covr, "data"))
-      if (data.length >= 8) (_frontCover, Uint8List.sublistView(data, 8)),
-  ];
+  return meta == null ? null : _metaChild(meta, "ilst");
 }
 
 Iterable<Uint8List> _childAtoms(Uint8List container, String wanted) sync* {
@@ -298,7 +353,11 @@ Iterable<Uint8List> _childAtoms(Uint8List container, String wanted) sync* {
       throw const FormatException("Invalid MP4 atom");
     }
     if (type == wanted) {
-      yield Uint8List.sublistView(container, offset + headerSize, offset + size);
+      yield Uint8List.sublistView(
+        container,
+        offset + headerSize,
+        offset + size,
+      );
     }
     offset += size;
   }
@@ -333,31 +392,72 @@ Uint8List? _metaChild(Uint8List meta, String wanted) {
   return (type, reader.take(reader.u32()));
 }
 
-List<(int, Uint8List)> _flacPictures(String path) {
+List<(int, Uint8List)> _flacPictures(String path) => [
+  for (final block in _flacBlocks(path, 6)) _flacPicture(block),
+];
+
+/// The FLAC VORBIS_COMMENT block's comments.
+List<(String, Uint8List)> _flacComments(String path) => [
+  for (final block in _flacBlocks(path, 4)) ..._vorbisComments(_Bytes(block)),
+];
+
+/// Metadata blocks of [wantedType], in file order.
+List<Uint8List> _flacBlocks(String path, int wantedType) {
   final file = File(path).openSync();
   try {
     final magic = _readPrefix(file, 4);
     if (magic.length < 4 || latin1.decode(magic) != "fLaC") return const [];
-    final pictures = <(int, Uint8List)>[];
+    final blocks = <Uint8List>[];
     while (true) {
       final header = _readPrefix(file, 4);
       if (header.length < 4) throw const FormatException("Truncated FLAC");
       final last = header[0] & 0x80 != 0;
       final type = header[0] & 0x7f;
       final length = _Bytes(header, 1).u24();
-      if (type == 6) {
+      if (type == wantedType) {
         final block = _readPrefix(file, length);
-        if (block.length < length) throw const FormatException("Truncated FLAC");
-        pictures.add(_flacPicture(block));
+        if (block.length < length) {
+          throw const FormatException("Truncated FLAC");
+        }
+        blocks.add(block);
       } else {
         file.setPositionSync(file.positionSync() + length);
       }
       if (last) break;
     }
-    return pictures;
+    return blocks;
   } finally {
     file.closeSync();
   }
+}
+
+/// A Vorbis comment list: vendor string, then `KEY=value` entries. Keys are
+/// returned lower-cased.
+List<(String, Uint8List)> _vorbisComments(_Bytes reader) {
+  reader.take(reader.u32le()); // vendor
+  final count = reader.u32le();
+  final comments = <(String, Uint8List)>[];
+  for (var i = 0; i < count; i++) {
+    final entry = reader.take(reader.u32le());
+    final separator = entry.indexOf(0x3d); // "="
+    if (separator <= 0) continue;
+    comments.add((
+      latin1.decode(entry.sublist(0, separator)).toLowerCase(),
+      Uint8List.sublistView(entry, separator + 1),
+    ));
+  }
+  return comments;
+}
+
+String _vorbisLyrics(List<(String, Uint8List)> comments) {
+  for (final key in _vorbisLyricsKeys) {
+    for (final (name, value) in comments) {
+      if (name != key) continue;
+      final text = utf8.decode(value, allowMalformed: true);
+      if (text.trim().isNotEmpty) return text;
+    }
+  }
+  return "";
 }
 
 // -- Ogg Opus / Vorbis --------------------------------------------------------
@@ -404,6 +504,21 @@ List<Uint8List> _oggHeaderPackets(RandomAccessFile file) {
 }
 
 List<(int, Uint8List)> _oggPictures(String path) {
+  final pictures = <(int, Uint8List)>[];
+  for (final (name, value) in _oggComments(path)) {
+    if (name != "metadata_block_picture") continue;
+    try {
+      final picture = _flacPicture(base64.decode(latin1.decode(value).trim()));
+      if (picture.$2.isNotEmpty) pictures.add(picture);
+    } on FormatException {
+      continue;
+    }
+  }
+  return pictures;
+}
+
+/// The Opus or Vorbis comment header's comments.
+List<(String, Uint8List)> _oggComments(String path) {
   final file = File(path).openSync();
   final List<Uint8List> packets;
   try {
@@ -413,7 +528,8 @@ List<(int, Uint8List)> _oggPictures(String path) {
   }
   final comment = packets[1];
   final reader = _Bytes(comment);
-  if (comment.length >= 8 && latin1.decode(comment.sublist(0, 8)) == "OpusTags") {
+  if (comment.length >= 8 &&
+      latin1.decode(comment.sublist(0, 8)) == "OpusTags") {
     reader.offset = 8;
   } else if (comment.length >= 7 &&
       comment[0] == 3 &&
@@ -422,22 +538,5 @@ List<(int, Uint8List)> _oggPictures(String path) {
   } else {
     return const [];
   }
-  reader.take(reader.u32le()); // vendor
-  final count = reader.u32le();
-  final pictures = <(int, Uint8List)>[];
-  const key = "metadata_block_picture=";
-  for (var i = 0; i < count; i++) {
-    final entry = reader.take(reader.u32le());
-    if (entry.length <= key.length) continue;
-    final name = latin1.decode(entry.sublist(0, key.length)).toLowerCase();
-    if (name != key) continue;
-    try {
-      final decoded = base64.decode(latin1.decode(entry.sublist(key.length)).trim());
-      final picture = _flacPicture(decoded);
-      if (picture.$2.isNotEmpty) pictures.add(picture);
-    } on FormatException {
-      continue;
-    }
-  }
-  return pictures;
+  return _vorbisComments(reader);
 }

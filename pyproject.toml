@@ -1,18 +1,47 @@
 [project]
 name = "melody-tools"
 version = "1.0.0"
-description = "Build and release tooling for the Melody Flutter app"
+description = "Build, development, and test tooling for the Melody Flutter app"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "yt-dlp>=2026.8.19",
+    "ytmusicapi>=1.12.3",
+]
+
+[project.scripts]
+# tools/build: release artifacts
+melody-build = "tools.build.app:main"
+melody-fetch-media = "tools.build.media:main"
+melody-version = "tools.build.version:main"
+melody-android-key = "tools.build.android_key:main"
+# tools/dev: running Melody from source
+melody-env = "tools.dev.env:main"
+melody-run = "tools.dev.run:main"
+melody-worker = "tools.dev.worker:main"
+# tools/checks: validation
+melody-check = "tools.checks.check:main"
+melody-integration = "tools.checks.integration:main"
 
 [dependency-groups]
 dev = [
+    "melody-worker",
+    "pillow>=12.3.0",
     "pytest>=8",
     "ruff>=0.16.3",
+    "ty>=0.0.84",
 ]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The tools live in ./tools rather than ./src/melody_tools.
+module-name = "tools"
+module-root = ""
+
+[tool.uv.sources]
+melody-worker = { path = "worker", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tools/tests"]
