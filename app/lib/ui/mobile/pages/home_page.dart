@@ -86,11 +86,7 @@ class _MobileHomeState extends State<MobileHome> {
                     app: app,
                     title: playlist.name,
                     subtitle: plural(playlist.trackIds.length, "track"),
-                    artwork: playlist.trackIds.isEmpty
-                        ? ""
-                        : app.services.library
-                              .details(playlist.trackIds.first)
-                              .thumbnail,
+                    artwork: playlistArtwork(app, playlist),
                     playlist: true,
                     onTap: () => app.playlists.openPlaylist(playlist.id),
                   ),

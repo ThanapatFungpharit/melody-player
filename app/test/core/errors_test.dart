@@ -67,7 +67,18 @@ void main() {
         kind("HTTP Error 429: Too Many Requests"),
         DownloadErrorKind.rateLimit,
       );
+      expect(kind("Server answered 429"), DownloadErrorKind.rateLimit);
       expect(DownloadErrorKind.rateLimit.value, "rate_limit");
+    });
+
+    test("a 429 inside a quoted video ID is not a rate limit", () {
+      for (final id in ["ab429cdefgh", "ab-429-defg", "a_429_bcdef"]) {
+        expect(
+          kind("ERROR: [youtube] $id: Video unavailable"),
+          DownloadErrorKind.unavailable,
+          reason: id,
+        );
+      }
       expect(DownloadErrorKind.network.value, "network");
     });
 

@@ -81,11 +81,6 @@ class PlaylistsPage extends StatelessWidget {
   );
 }
 
-String _playlistArtwork(MelodyApp app, Playlist playlist) =>
-    playlist.trackIds.isEmpty
-    ? ""
-    : app.services.library.details(playlist.trackIds.first).thumbnail;
-
 class PlaylistCard extends StatelessWidget {
   const PlaylistCard(this.app, this.playlist, {super.key, this.width = 196});
 
@@ -101,7 +96,7 @@ class PlaylistCard extends StatelessWidget {
       width: width,
       title: playlist.name,
       subtitle: plural(count, "track"),
-      artwork: _playlistArtwork(app, playlist),
+      artwork: playlistArtwork(app, playlist),
       playlist: true,
       onTap: () => app.playlists.openPlaylist(playlist.id),
       onPlay: count > 0 ? () => app.playlists.play(playlist) : null,
@@ -173,7 +168,7 @@ class _PlaylistDetail extends StatelessWidget {
                       ),
                       child: Artwork(
                         app,
-                        _playlistArtwork(app, playlist),
+                        playlistArtwork(app, playlist),
                         size: 176,
                         playlist: true,
                         seed: playlist.name,

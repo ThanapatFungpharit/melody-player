@@ -6,6 +6,7 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../core/library/models.dart";
 import "dialogs.dart";
+import "format.dart";
 
 /// One entry in a track, result, or collection action menu. Desktop shows
 /// these in popup menus; mobile shows them in a bottom sheet.
@@ -233,3 +234,9 @@ List<MenuAction> playlistActions(
     () => showDeletePlaylistDialog(context, app, playlist),
   ),
 ];
+
+/// Retries every failed download and reports how many started.
+Future<void> retryFailed(MelodyApp app) => app.run(() async {
+  final started = await app.services.downloads.retryFailed();
+  if (started > 0) app.showMessage("Retrying ${plural(started, "download")}.");
+});

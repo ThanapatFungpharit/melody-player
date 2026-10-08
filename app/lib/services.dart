@@ -2,18 +2,21 @@ import "dart:async";
 import "dart:io";
 
 import "package:flutter/foundation.dart";
+import "package:path/path.dart" as p;
 
 import "application/catalog.dart";
 import "application/downloads.dart";
 import "application/library_service.dart";
 import "application/lyrics.dart";
 import "application/lyrics_embedding.dart";
-import "application/models.dart" show AppSettings;
 import "application/package_runtime.dart";
+import "application/storage_upgrade.dart";
 import "application/store.dart";
 import "application/thumbnails.dart";
 import "core/library/manager.dart";
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
+import "package:melody_audio/melody_audio.dart"
+    show useNotificationArtworkDirectory;
 import "platform/paths.dart";
 import "worker/worker_client.dart";
 
@@ -60,27 +63,43 @@ class AppServices {
 
   static Future<AppServices> load({
     void Function(ApplicationStore store)? onStoreReady,
+    void Function(String stage)? onStage,
   }) async {
+    onStage?.call("Finding your music");
     final paths = await AppPaths.resolve();
+    final legacy = LegacyLayout(paths);
+    // Before anything opens a folder that moved.
+    await relocateLegacyFolders(legacy);
+    useNotificationArtworkDirectory(paths.notificationArtworkCache);
+    final storesExisted =
+        File(paths.stateDatabase).existsSync() &&
+        File(paths.libraryDatabase).existsSync();
     final store = ApplicationStore.open(
       paths.stateDatabase,
       defaultDownloadDirectory: paths.defaultMusicDirectory,
-      legacyPath: paths.legacyState,
+      legacyPath: legacy.stateJson,
     );
     onStoreReady?.call(store);
-    final settings = store.settings;
+    onStage?.call("Opening your library");
     final manager = MusicManager.open(
       paths.libraryDatabase,
-      settings.downloadDirectory,
-      additionalMusicFolders: [?paths.publicMusicDirectory],
-      legacyMetadataPath: paths.legacyLibrary,
+      store.settings.downloadDirectory,
+      additionalMusicFolders: [?paths.publicMusicRoot],
+      legacyMetadataPath: legacy.libraryMmdb,
       syncInBackground: true,
+      moveJournal: paths.musicMoveJournal,
     );
+    await upgradeLegacyState(
+      legacy,
+      store,
+      manager,
+      storesExisted: storesExisted,
+    );
+    onStage?.call("Starting the music engine");
     const packages = [ytDlpRuntimeInfo, ytMusicRuntimeInfo];
     final worker = await WorkerClient.start(
       runtimes: WorkerRuntimes({
-        ytDlpPackage: paths.ytDlpRuntime,
-        ytMusicPackage: paths.ytMusicRuntime,
+        for (final info in packages) info.package: paths.runtime(info.package),
       }, update: PackageRuntime.consumeUpdateRequests(store, packages)),
     );
     unawaited(
@@ -96,11 +115,12 @@ class AppServices {
         }
       }),
     );
-    final thumbnails = await ThumbnailCache.open(paths.thumbnails);
+    onStage?.call("Gathering artwork");
+    final thumbnails = await ThumbnailCache.open(paths.artworkCache);
     Map<String, Object?> sharedOptions() => sharedYtDlpOptions(
-      store.settings,
       ffmpegLocation: paths.ffmpegLocation,
       cacheDirectory: paths.ytDlpCache,
+      cookieFile: paths.cookieFile,
     );
     final catalog = MusicCatalog(worker, sharedOptions);
     final lyrics = LyricsLibrary(paths.lyrics, catalog.lyrics);
@@ -109,6 +129,7 @@ class AppServices {
         : LyricsEmbedder(
             manager,
             lyrics,
+            store,
             (source, target, tags) => worker.tag(
               source: source,
               target: target,
@@ -122,19 +143,26 @@ class AppServices {
       thumbnails: thumbnails,
       lyrics: lyrics,
     );
-    // Before downloads open, so no finishing download is caching artwork.
-    await library.removeUnusedArtwork();
-    unawaited(_removeLeftovers(paths, settings));
+    // Before downloads open, so no finishing download is caching artwork or
+    // registering a file.
+    await library.releasePendingFiles();
+    await library.removeUnusedCaches();
+    unawaited(_removeLeftovers(paths, manager));
+    onStage?.call("Resuming downloads");
     final downloads = await DownloadCoordinator.open(
       manager,
       store,
-      settings,
+      store.settings,
       worker,
       thumbnails: thumbnails,
       lyrics: lyrics,
       // Download options apply from the next launch (Settings says so).
       sharedOptions: sharedOptions(),
+      stagingDirectory: paths.downloadStaging,
+      receiptDirectory: paths.downloadReceipts,
     );
+    onStage?.call("Restoring your queue");
+    final availableTrackIds = await _availableResumeTracks(manager, store);
     return AppServices(
       paths: paths,
       store: store,
@@ -148,24 +176,28 @@ class AppServices {
       ytMusic: PackageRuntime(ytMusicRuntimeInfo, store, worker),
       lyrics: lyrics,
       lyricsEmbedder: lyricsEmbedder,
-      availableTrackIds: await _availableResumeTracks(manager, store),
+      availableTrackIds: availableTrackIds,
     );
   }
 
   /// Startup housekeeping that needs no ordering: temporary files a crash
-  /// left mid-write, and yt-dlp's cache. Download staging and receipts are
-  /// the download coordinator's; library copies are their owners'.
+  /// left mid-write (in Melody's data and beside library tracks), and
+  /// yt-dlp's cache. Download staging and receipts are the download
+  /// coordinator's.
   static Future<void> _removeLeftovers(
     AppPaths paths,
-    AppSettings settings,
+    MusicManager manager,
   ) async {
     try {
-      for (final directory in {
-        paths.dataDirectory,
-        paths.thumbnails,
-        paths.lyrics,
-        settings.downloadDirectory,
-      }) {
+      final trackFolders = <String>{manager.musicFolder};
+      for (final track in manager.listTracks()) {
+        try {
+          trackFolders.add(p.dirname(manager.trackPath(track.id)));
+        } on ArgumentError {
+          // Outside the music folders: not Melody's to clean.
+        }
+      }
+      for (final directory in {...paths.atomicWriteFolders, ...trackFolders}) {
         await removeStaleTemporaries(directory);
       }
       await pruneYtDlpCache(paths.ytDlpCache);

@@ -119,4 +119,46 @@ void main() {
     expect(records.first.id, "10");
     expect(records.last.id, "259");
   });
+
+  test("unusable stored numbers fall back to safe values", () {
+    final details = TrackDetails.fromJson({
+      "duration": double.infinity,
+      "play_count": -3,
+      "last_played": "NaN",
+    });
+    expect(details.duration, 0);
+    expect(details.playCount, 0);
+    expect(details.lastPlayed, 0);
+    final record = DownloadRecord.fromJson({
+      "id": "1",
+      "progress": 7.5,
+      "total_bytes": double.nan,
+      "downloaded_bytes": "12.0",
+    });
+    expect(record.progress, 1.0);
+    expect(record.totalBytes, 0);
+    expect(record.downloadedBytes, 12);
+  });
+
+  test("a value written back to an earlier state is saved", () async {
+    store
+      ..set("search_history", ["a"])
+      ..set("search_history", ["b"])
+      ..set("search_history", ["a"]);
+    expect((await reopen()).get("search_history"), ["a"]);
+    // Writing what is stored changes nothing.
+    store.set("search_history", ["a"]);
+    expect((await reopen()).get("search_history"), ["a"]);
+  });
+
+  test("clearing library data again removes details added since", () async {
+    store
+      ..saveTrackDetails("first", TrackDetails(favorite: true))
+      ..clearLibraryData()
+      ..saveTrackDetails("second", TrackDetails(favorite: true))
+      ..clearLibraryData();
+    final reopened = await reopen();
+    expect(reopened.hasTrackDetails("first"), isFalse);
+    expect(reopened.hasTrackDetails("second"), isFalse);
+  });
 }

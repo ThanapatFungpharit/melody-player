@@ -129,9 +129,15 @@ class PlaybackController {
           : before.clamp(0, queue.items.length - 1);
     }
     if (currentAvailable) {
+      // The saved length shows a restored track's progress before the
+      // engine loads it, even when the library does not know the length.
+      final duration = persisted["duration_ms"];
+      if (duration is num && duration.isFinite) {
+        durationMs = duration.toInt().clamp(0, 1 << 52);
+      }
       final position = persisted["position_ms"];
       if (position is num && position.isFinite) {
-        positionMs = position.toInt().clamp(0, 1 << 52);
+        positionMs = _clampPosition(position.toInt().clamp(0, 1 << 52));
       }
     }
     volume = settings.volume;
@@ -197,10 +203,7 @@ class PlaybackController {
           ? state.title
           : p.basenameWithoutExtension(source);
       externalUploader = state.artist;
-      final artwork = state.artworkUri;
-      externalThumbnail = artwork.toLowerCase().startsWith("file:")
-          ? Uri.parse(artwork).toFilePath()
-          : artwork;
+      externalThumbnail = _artworkPath(state.artworkUri);
     }
     _sourceLoaded = true;
     _playerLoading = false;
@@ -476,38 +479,58 @@ class PlaybackController {
     _notify();
   }
 
+  /// A `file:` artwork URI as a path; a malformed one is dropped rather
+  /// than failing the reattach.
+  static String _artworkPath(String artwork) {
+    if (!artwork.toLowerCase().startsWith("file:")) return artwork;
+    try {
+      return Uri.parse(artwork).toFilePath();
+    } on Object {
+      return "";
+    }
+  }
+
   int _clampPosition(int position) => position.clamp(
     0,
     durationMs > 0 ? durationMs : (position < 0 ? 0 : position),
   );
 
   void addNext(String trackId) {
-    queue.addNext(trackId);
-    _queueChanged();
+    if (addNextMany([trackId]) == 0) {
+      _error("This track is no longer in your library.");
+    }
   }
 
   void addLast(String trackId) {
-    queue.addLast(trackId);
-    _queueChanged();
+    if (addLastMany([trackId]) == 0) {
+      _error("This track is no longer in your library.");
+    }
   }
 
-  /// Inserts several tracks next with one update cycle.
+  /// Inserts several tracks next with one update cycle. Returns how many
+  /// were queued: tracks that left the library (a stale row) are skipped.
   int addNextMany(Iterable<String> trackIds) {
-    final items = trackIds.toList();
+    final items = _inLibrary(trackIds);
     queue.addNextAll(items);
     if (items.isNotEmpty) _queueChanged();
     return items.length;
   }
 
-  /// Appends several tracks with one update cycle.
+  /// Appends several tracks with one update cycle. Returns how many were
+  /// queued: tracks that left the library (a stale row) are skipped.
   int addLastMany(Iterable<String> trackIds) {
-    final items = trackIds.toList();
+    final items = _inLibrary(trackIds);
     for (final id in items) {
       queue.addLast(id);
     }
     if (items.isNotEmpty) _queueChanged();
     return items.length;
   }
+
+  /// An unknown id would make every later queue sync fail, leaving the
+  /// engine on a stale queue, so only library tracks are queued.
+  List<String> _inLibrary(Iterable<String> trackIds) =>
+      trackIds.where(manager.hasTrack).toList();
 
   void _queueChanged() {
     _syncQueue();
@@ -578,6 +601,21 @@ class PlaybackController {
     }
     _persist();
     _notify(PlaybackChange.queue);
+  }
+
+  /// Closes a loaded library file so it can be moved, keeping the queue and
+  /// position; the next play loads the track from its new path.
+  void releaseLibrarySource() {
+    if (externalTitle.isNotEmpty ||
+        (currentTrackId == null && !_sourceLoaded)) {
+      return;
+    }
+    final (position, duration) = (positionMs, durationMs);
+    _release();
+    positionMs = position;
+    durationMs = duration;
+    _persist();
+    _notify(PlaybackChange.track);
   }
 
   bool shuffleUpcoming() {
@@ -670,7 +708,10 @@ class PlaybackController {
       } else {
         library.recordPlay(
           trackId,
-          playback: queue.toJson(positionMs: positionMs),
+          playback: queue.toJson(
+            positionMs: positionMs,
+            durationMs: durationMs,
+          ),
         );
       }
     }
@@ -690,12 +731,15 @@ class PlaybackController {
   /// Mirrors a transition selected by the native queue engine.
   void onTrackChanged(String trackId, int index) {
     if (_closed) return;
-    if (index < 0 || index >= queue.items.length) return;
-    var selected = index;
-    if (queue.items[index] != trackId) {
-      selected = queue.items.indexOf(trackId);
-      if (selected < 0) return;
-    }
+    // The row may have moved, or the queue shrunk, since the engine chose
+    // it; fall back to the track's first row.
+    final selected =
+        index >= 0 &&
+            index < queue.items.length &&
+            queue.items[index] == trackId
+        ? index
+        : queue.items.indexOf(trackId);
+    if (selected < 0) return;
     queue.select(selected);
     externalTitle = "";
     externalUploader = "";
@@ -912,7 +956,7 @@ class PlaybackController {
   }
 
   void _persist() {
-    final state = queue.toJson(positionMs: positionMs);
+    final state = queue.toJson(positionMs: positionMs, durationMs: durationMs);
     final persistence = this.persistence;
     if (persistence != null) {
       persistence.save(playback: state);

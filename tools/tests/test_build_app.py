@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from tools.build.app import ANDROID_EXTRACT_PACKAGES, python_environment
+from tools.build.app import ANDROID_EXTRACT_PACKAGES, collect, python_environment
 from tools.common import WORKER
 
 EXTRACT_VARIABLE = "SERIOUS_PYTHON_ANDROID_EXTRACT_PACKAGES"
@@ -73,6 +75,32 @@ class PythonEnvironmentTests(unittest.TestCase):
         for target in ("windows", "linux", "macos"):
             with self.subTest(target=target):
                 self.assertNotIn(EXTRACT_VARIABLE, python_environment(target, staging))
+
+
+class CollectTests(unittest.TestCase):
+    def test_desktop_output_follows_the_architecture(self) -> None:
+        layouts = {
+            "windows": ("runner", "Release"),
+            "linux": ("release", "bundle"),
+        }
+        for target, tail in layouts.items():
+            for architecture, folder in (("x86_64", "x64"), ("arm64", "arm64")):
+                with (
+                    self.subTest(target=target, architecture=architecture),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    built = root / "app" / "build" / target / folder / Path(*tail)
+                    built.mkdir(parents=True)
+                    (built / "melody").write_text(architecture, encoding="utf-8")
+                    with (
+                        mock.patch("tools.build.app.ROOT", root),
+                        mock.patch("tools.build.app.APP", root / "app"),
+                    ):
+                        output = collect(target, "1.0.0", architecture)
+                    self.assertEqual(
+                        (output / "melody").read_text(encoding="utf-8"), architecture
+                    )
 
 
 if __name__ == "__main__":

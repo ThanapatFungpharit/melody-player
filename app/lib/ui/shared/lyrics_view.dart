@@ -2,6 +2,7 @@ import "dart:async";
 import "dart:math";
 
 import "package:flutter/material.dart";
+import "package:flutter/rendering.dart" show ScrollDirection;
 
 import "../app_state.dart";
 import "../../application/lyrics.dart";
@@ -10,7 +11,8 @@ import "playback_widgets.dart";
 import "widgets.dart";
 
 /// Lyrics for the current track. Saved lyrics show without a connection;
-/// timed lyrics follow playback, and tapping a line plays from it.
+/// timed lyrics follow playback, and tapping a line plays from it. Scrolling
+/// by hand stops following until the listener asks to go back.
 class LyricsView extends StatefulWidget {
   const LyricsView(this.app, {super.key});
 
@@ -31,6 +33,9 @@ class _LyricsViewState extends State<LyricsView> {
   String _message = "";
   int _active = -1;
   int _request = 0;
+
+  /// Whether the view keeps the active line in sight.
+  bool _following = true;
   late final PositionTicker _position;
 
   MelodyApp get app => widget.app;
@@ -79,6 +84,7 @@ class _LyricsViewState extends State<LyricsView> {
     _request++;
     _lyrics = null;
     _active = -1;
+    _following = true;
     _loading = _track != null;
     _message = _track == null ? "Play a track to see its lyrics." : "";
   }
@@ -91,7 +97,12 @@ class _LyricsViewState extends State<LyricsView> {
     var message = "";
     try {
       lyrics = await app.services.lyrics.forTrack(track, refresh: refresh);
-      if (lyrics == null) message = "No lyrics are available for this track.";
+      if (lyrics == null) {
+        message = app.services.lyrics.supports(track.source)
+            ? "No lyrics are available for this track."
+            : "This track has no lyrics. To add some, put a .lrc file with "
+                  "the same name beside its audio file, then check again.";
+      }
     } on LyricsUnavailable catch (error) {
       message = error.message;
     } on ProviderError {
@@ -127,7 +138,26 @@ class _LyricsViewState extends State<LyricsView> {
     return next < lyrics.lines.length ? lyrics.lines[next].startMs : null;
   }
 
+  /// Stops following when the listener drags or wheels the lyrics; the
+  /// view's own scrolling to the active line does not count.
+  bool _userScrolled(UserScrollNotification notification) {
+    final lyrics = _lyrics;
+    if (_following &&
+        lyrics != null &&
+        lyrics.synced &&
+        notification.direction != ScrollDirection.idle) {
+      setState(() => _following = false);
+    }
+    return false;
+  }
+
+  void _follow() {
+    setState(() => _following = true);
+    _scrollToActive();
+  }
+
   void _scrollToActive() {
+    if (!_following) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final context = _activeLine.currentContext;
       if (context == null || !context.mounted) return;
@@ -159,7 +189,7 @@ class _LyricsViewState extends State<LyricsView> {
       body = LayoutBuilder(
         builder: (context, constraints) {
           final width = max(0.0, constraints.maxWidth - _margin * 2);
-          return SingleChildScrollView(
+          final scroll = SingleChildScrollView(
             padding: const EdgeInsets.symmetric(
               vertical: 24,
               horizontal: _margin,
@@ -176,6 +206,27 @@ class _LyricsViewState extends State<LyricsView> {
                   ],
                 ),
               ),
+            ),
+          );
+          return NotificationListener<UserScrollNotification>(
+            onNotification: _userScrolled,
+            child: Stack(
+              children: [
+                Positioned.fill(child: scroll),
+                if (!_following)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 8,
+                    child: Center(
+                      child: FilledButton.tonalIcon(
+                        onPressed: _follow,
+                        icon: const Icon(Icons.my_location_rounded, size: 18),
+                        label: const Text("Back to current line"),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           );
         },
@@ -210,8 +261,10 @@ class _LyricsViewState extends State<LyricsView> {
     final scheme = Theme.of(context).colorScheme;
     final synced = lyrics.synced;
     final active = synced && index == _active;
+    // A blank timed line marks an instrumental break.
+    final blank = line.text.trim().isEmpty;
     final text = Text(
-      line.text.isEmpty ? " " : line.text,
+      blank ? (synced ? "♪" : " ") : line.text,
       style: TextStyle(
         fontSize: synced ? 22 : 16,
         height: 1.3,
@@ -231,7 +284,10 @@ class _LyricsViewState extends State<LyricsView> {
     return InkWell(
       key: active ? _activeLine : null,
       borderRadius: BorderRadius.circular(8),
-      onTap: () => app.playback.playFrom(line.startMs),
+      onTap: () {
+        app.playback.playFrom(line.startMs);
+        _follow();
+      },
       child: AnimatedScale(
         scale: active ? _activeScale : 1,
         alignment: Alignment.centerLeft,

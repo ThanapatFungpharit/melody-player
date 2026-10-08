@@ -40,9 +40,8 @@ enum DownloadStatus {
 
 const _thumbnailExtensions = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"};
 
-/// Staging directories are `<outputDirectory>/.melody-download-<random>`;
-/// receipts share the prefix but are files ending in `.json`.
-const _stagingPrefix = ".melody-download-";
+/// Staging directories are `<stagingDirectory>/job-<random>`.
+const _stagingPrefix = "job-";
 
 /// Held with an exclusive lock while a download uses its staging directory,
 /// so another Melody process can tell a live directory from an abandoned one.
@@ -89,12 +88,82 @@ class _Staging {
     } on FileSystemException catch (error) {
       debugPrint("Could not release download staging: $error");
     }
-    try {
-      if (await directory.exists()) await directory.delete(recursive: true);
-    } on FileSystemException catch (error) {
-      debugPrint("Could not remove download staging: $error");
+    // FFmpeg, ending with the job, may hold a file open a moment longer
+    // (Windows refuses to delete it until then).
+    for (final wait in const [Duration.zero, Duration(seconds: 2)]) {
+      await Future<void>.delayed(wait);
+      try {
+        if (await directory.exists()) await directory.delete(recursive: true);
+        return;
+      } on FileSystemException catch (error) {
+        if (wait > Duration.zero) {
+          debugPrint("Could not remove download staging: $error");
+        }
+      }
     }
   }
+}
+
+/// Deletes the subfolders of [parent] named `<prefix>...` that a download
+/// abandoned when its process ended (closed mid-download, crashed, or
+/// killed): partial streams, intermediate audio, and thumbnails no receipt
+/// owns. Folders another running process still holds are kept, as are the
+/// ones in [except]. Returns how many were removed.
+Future<int> removeAbandonedStagingIn(
+  String parent, {
+  String prefix = _stagingPrefix,
+  Set<String> except = const {},
+  DateTime? now,
+}) async {
+  final cutoff = (now ?? DateTime.now()).subtract(_unlockedStagingAge);
+  var removed = 0;
+  try {
+    if (!await Directory(parent).exists()) return 0;
+    await for (final entity in Directory(parent).list(followLinks: false)) {
+      if (entity is! Directory ||
+          !p.basename(entity.path).startsWith(prefix) ||
+          except.contains(entity.path)) {
+        continue;
+      }
+      try {
+        if (!await _isAbandoned(entity, cutoff)) continue;
+      } on FileSystemException {
+        continue; // Removed meanwhile, or unreadable: left alone.
+      }
+      await _Staging(entity, null).remove();
+      if (!await entity.exists()) removed++;
+    }
+  } on FileSystemException catch (error) {
+    debugPrint("Could not look for abandoned download staging: $error");
+  }
+  return removed;
+}
+
+/// A live owner holds the staging lock. Without one, a directory nothing
+/// has written to since [cutoff] is abandoned.
+Future<bool> _isAbandoned(Directory staging, DateTime cutoff) async {
+  final lockFile = File(p.join(staging.path, _stagingLock));
+  if (await lockFile.exists()) {
+    RandomAccessFile? lock;
+    try {
+      lock = await lockFile.open(mode: FileMode.append);
+      await lock.lock(FileLock.exclusive);
+      return true;
+    } on FileSystemException {
+      // Held by a running download, or locks are unsupported here.
+    } finally {
+      await lock?.close();
+    }
+  }
+  var newest = (await staging.stat()).modified;
+  await for (final entity in staging.list(
+    recursive: true,
+    followLinks: false,
+  )) {
+    final modified = (await entity.stat()).modified;
+    if (modified.isAfter(newest)) newest = modified;
+  }
+  return newest.isBefore(cutoff);
 }
 
 /// A point-in-time view of a download.
@@ -200,8 +269,8 @@ class _Job {
 /// Runs yt-dlp jobs through the worker with bounded concurrency.
 ///
 /// The downloader owns only staging files. Completed files are moved into
-/// [outputDirectory] behind a checksum receipt; callers decide whether to
-/// register them and acknowledge the receipt.
+/// [outputDirectory] behind a checksum receipt kept in [receiptDirectory];
+/// callers decide whether to register them and acknowledge the receipt.
 class Downloader {
   Downloader(
     this._worker,
@@ -211,19 +280,32 @@ class Downloader {
     Set<String> audioExtensions = const {".mp3"},
     this.options = const {},
     this.lyricsTimeout = const Duration(seconds: 15),
+    required this.stagingDirectory,
+    required this.receiptDirectory,
   }) : _maxWorkers = max(1, maxWorkers),
        _capacity = max(1, maxWorkers) + (maxPending ?? max(1, maxWorkers)),
        _audioExtensions = {
          for (final item in audioExtensions) item.toLowerCase(),
        } {
     Directory(_outputDirectory).createSync(recursive: true);
+    Directory(stagingDirectory).createSync(recursive: true);
+    Directory(receiptDirectory).createSync(recursive: true);
   }
 
   final WorkerClient _worker;
   String _outputDirectory;
 
-  /// Where completed files and their receipts are placed.
+  /// Where completed audio files are placed: the music folder.
   String get outputDirectory => _outputDirectory;
+
+  /// Private folder for each job's partial streams, intermediate audio, and
+  /// thumbnails, one locked subfolder per job; nothing else is in it. It is
+  /// never the music folder, which on Android accepts only audio.
+  final String stagingDirectory;
+
+  /// Private folder holding the receipts of completed downloads until the
+  /// caller acknowledges them; nothing else is in it.
+  final String receiptDirectory;
 
   /// Sends later downloads to [directory]. Refused while any job is queued
   /// or running, since a job stages and finishes in one directory.
@@ -343,7 +425,7 @@ class Downloader {
   }
 
   Future<(List<String>, Uint8List?)> _downloadOne(_Job job) async {
-    final owned = await _Staging.create(outputDirectory);
+    final owned = await _Staging.create(stagingDirectory);
     final staging = owned.directory;
     _activeStaging.add(staging.path);
     try {
@@ -388,63 +470,15 @@ class Downloader {
     }
   }
 
-  /// Deletes staging directories in [outputDirectory] that a download
-  /// abandoned when its process ended (closed mid-download, crashed, or
-  /// killed): partial streams, intermediate audio, and thumbnails that no
-  /// receipt owns. A directory another running process still holds is kept.
-  /// Returns how many were removed.
-  Future<int> removeAbandonedStaging({DateTime? now}) async {
-    final cutoff = (now ?? DateTime.now()).subtract(_unlockedStagingAge);
-    var removed = 0;
-    try {
-      await for (final entity in Directory(
-        outputDirectory,
-      ).list(followLinks: false)) {
-        if (entity is! Directory ||
-            !p.basename(entity.path).startsWith(_stagingPrefix) ||
-            _activeStaging.contains(entity.path)) {
-          continue;
-        }
-        try {
-          if (!await _isAbandoned(entity, cutoff)) continue;
-        } on FileSystemException {
-          continue; // Removed meanwhile, or unreadable: left alone.
-        }
-        await _Staging(entity, null).remove();
-        if (!await entity.exists()) removed++;
-      }
-    } on FileSystemException catch (error) {
-      debugPrint("Could not look for abandoned download staging: $error");
-    }
-    return removed;
-  }
-
-  /// A live owner holds the staging lock. Without one, a directory nothing
-  /// has written to since [cutoff] is abandoned.
-  static Future<bool> _isAbandoned(Directory staging, DateTime cutoff) async {
-    final lockFile = File(p.join(staging.path, _stagingLock));
-    if (await lockFile.exists()) {
-      RandomAccessFile? lock;
-      try {
-        lock = await lockFile.open(mode: FileMode.append);
-        await lock.lock(FileLock.exclusive);
-        return true;
-      } on FileSystemException {
-        // Held by a running download, or locks are unsupported here.
-      } finally {
-        await lock?.close();
-      }
-    }
-    var newest = (await staging.stat()).modified;
-    await for (final entity in staging.list(
-      recursive: true,
-      followLinks: false,
-    )) {
-      final modified = (await entity.stat()).modified;
-      if (modified.isAfter(newest)) newest = modified;
-    }
-    return newest.isBefore(cutoff);
-  }
+  /// Deletes staging directories that a download abandoned when its
+  /// process ended ([removeAbandonedStagingIn]), except this downloader's
+  /// own running jobs. Returns how many were removed.
+  Future<int> removeAbandonedStaging({DateTime? now}) =>
+      removeAbandonedStagingIn(
+        stagingDirectory,
+        except: _activeStaging,
+        now: now,
+      );
 
   Future<String?> _lyrics(_Job job) async {
     final source = job.lyrics;
@@ -555,15 +589,18 @@ class Downloader {
   Future<List<String>> _moveDownloadedFiles(_Job job, Directory staging) async {
     final files = <String>[];
     final entries = <Map<String, String>>[];
+    // Listed up front: moving entries out of a directory while it is being
+    // enumerated can skip or repeat entries on some filesystems. Sorted so
+    // the receipt and the destination names do not depend on listing order.
+    final staged = [
+      await for (final entity in staging.list())
+        if (entity is File &&
+            _audioExtensions.contains(p.extension(entity.path).toLowerCase()))
+          entity,
+    ]..sort((a, b) => a.path.compareTo(b.path));
     try {
-      await for (final entity in staging.list()) {
+      for (final entity in staged) {
         _raiseIfCancelled(job);
-        if (entity is! File ||
-            !_audioExtensions.contains(
-              p.extension(entity.path).toLowerCase(),
-            )) {
-          continue;
-        }
         if (await entity.length() <= 0) {
           throw DownloadError(
             "The download produced an empty audio file: ${p.basename(entity.path)}",
@@ -576,12 +613,14 @@ class Downloader {
             "sha256": await sha256File(entity.path),
           });
           await writeReceipt(
-            outputDirectory,
+            receiptDirectory,
             job.progress.task,
             job.progress.url,
             entries,
+            filesDirectory: outputDirectory,
           );
-          await entity.rename(destination);
+          // Copies when the music folder is on another volume.
+          await moveFile(entity.path, destination);
         } finally {
           // Once moved, the file itself prevents collisions.
           _reservedNames.remove(destination);
@@ -628,7 +667,7 @@ class Downloader {
     }
     if (status != DownloadStatus.completed) {
       unawaited(
-        _removeFiles([receiptPath(outputDirectory, job.progress.task)]),
+        _removeFiles([receiptPath(receiptDirectory, job.progress.task)]),
       );
     }
     final message = error == null ? "" : "$error";
@@ -664,15 +703,10 @@ class Downloader {
     if (job.cancelled) throw _Cancelled();
   }
 
+  /// Best effort: a locked output must not hide the real outcome.
   static Future<void> _removeFiles(List<String> files) async {
     for (final path in files) {
-      try {
-        final file = File(path);
-        if (await file.exists()) await file.delete();
-      } on FileSystemException catch (error) {
-        // Best effort: a locked output must not hide the real outcome.
-        debugPrint("Could not remove incomplete download output $path: $error");
-      }
+      await deleteQuietly(path);
     }
   }
 

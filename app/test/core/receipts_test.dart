@@ -23,6 +23,9 @@ void main() {
     return {"filename": name, "sha256": await sha256File(path)};
   }
 
+  Future<void> write(String taskId, List<Map<String, String>> files) =>
+      writeReceipt(root.path, taskId, _url, files, filesDirectory: root.path);
+
   Future<String> rawReceipt(String taskId, Object? data) async {
     final path = receiptPath(root.path, taskId);
     await File(path).writeAsString(jsonEncode(data));
@@ -33,17 +36,14 @@ void main() {
     isA<FormatException>().having((e) => e.message, "message", message),
   );
 
-  test("receipt paths are hidden and keyed by task", () {
-    expect(
-      receiptPath(root.path, "t1"),
-      p.join(root.path, ".melody-download-t1.json"),
-    );
+  test("receipt paths are keyed by task", () {
+    expect(receiptPath(root.path, "t1"), p.join(root.path, "t1.json"));
   });
 
   test("round-trips verified files", () async {
     final song = await owned("song.mp3", "audio");
     final cover = await owned("song.jpg", "image");
-    await writeReceipt(root.path, "t1", _url, [song, cover]);
+    await write("t1", [song, cover]);
     final receipt = await readReceipt(receiptPath(root.path, "t1"));
     expect(receipt.taskId, "t1");
     expect(receipt.url, _url);
@@ -54,11 +54,21 @@ void main() {
     expect(receipt.unverified, 0);
   });
 
+  test("receipts vouch for files in another folder", () async {
+    final song = await owned("song.mp3", "audio");
+    final elsewhere = p.join(root.path, "staging");
+    await writeReceipt(elsewhere, "t1", _url, [
+      song,
+    ], filesDirectory: root.path);
+    final receipt = await readReceipt(receiptPath(elsewhere, "t1"));
+    expect(receipt.files, [p.join(p.absolute(root.path), "song.mp3")]);
+  });
+
   test("counts missing and changed files as unverified", () async {
     final kept = await owned("kept.mp3", "audio");
     final changed = await owned("changed.mp3", "before");
     await File(p.join(root.path, "changed.mp3")).writeAsString("after");
-    await writeReceipt(root.path, "t1", _url, [
+    await write("t1", [
       kept,
       changed,
       {"filename": "missing.mp3", "sha256": "0" * 64},
@@ -74,6 +84,7 @@ void main() {
       "schema": 1,
       "task_id": "t2",
       "url": _url,
+      "directory": root.absolute.path,
       "files": [song],
     });
     await expectLater(
@@ -90,10 +101,11 @@ void main() {
           "schema": 2,
           "task_id": "t1",
           "url": _url,
+          "directory": root.absolute.path,
           "files": [song],
         }),
       ),
-      rejects("Invalid download receipt identity"),
+      rejects("Invalid download receipt"),
     );
     await expectLater(
       () async => readReceipt(await rawReceipt("t2", ["not", "a", "map"])),
@@ -104,17 +116,34 @@ void main() {
         await rawReceipt("t3", {
           "schema": 1,
           "task_id": "t3",
+          "directory": root.absolute.path,
           "files": [song],
         }),
       ),
       rejects("Invalid download receipt"),
     );
+    // The files' folder must be recorded, and absolute.
+    for (final folder in [null, "relative"]) {
+      await expectLater(
+        () async => readReceipt(
+          await rawReceipt("t6", {
+            "schema": 1,
+            "task_id": "t6",
+            "url": _url,
+            "directory": ?folder,
+            "files": [song],
+          }),
+        ),
+        rejects("Invalid download receipt folder"),
+      );
+    }
     await expectLater(
       () async => readReceipt(
         await rawReceipt("t4", {
           "schema": 1,
           "task_id": "t4",
           "url": _url,
+          "directory": root.absolute.path,
           "files": [],
         }),
       ),
@@ -128,7 +157,7 @@ void main() {
 
   test("rejects files outside the receipt's folder", () async {
     for (final name in ["../song.mp3", "sub/song.mp3", r"sub\song.mp3", ""]) {
-      await writeReceipt(root.path, "t1", _url, [
+      await write("t1", [
         {"filename": name, "sha256": "0" * 64},
       ]);
       await expectLater(

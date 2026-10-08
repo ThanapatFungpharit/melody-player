@@ -11,6 +11,7 @@ import "dart:isolate";
 import "dart:typed_data";
 
 import "id3.dart";
+import "storage.dart" show temporarySibling;
 
 /// Room left after the frames so later tag edits need not rewrite the audio.
 const _padding = 1024;
@@ -25,7 +26,7 @@ Future<bool> writeId3Lyrics(String path, String lyrics) =>
 bool writeId3LyricsSync(String path, String lyrics) {
   // Only the tag is held in memory; the audio after it streams through a
   // fixed buffer, so a long recording is never loaded whole.
-  final temporary = File("$path.lyrics.tmp");
+  final temporary = File(temporarySibling(path));
   final input = File(path).openSync();
   try {
     final length = input.lengthSync();

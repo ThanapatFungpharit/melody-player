@@ -96,15 +96,23 @@ class _MobileQueueState extends State<MobileQueue> {
                   app.playback.cycleRepeat,
                   active: true,
                 ),
-                chip(
-                  Icons.shuffle_rounded,
-                  "Shuffle upcoming",
-                  queue.upcomingCount < 2 ? null : app.playback.shuffleUpcoming,
+                Tooltip(
+                  message: "Shuffle upcoming tracks",
+                  child: chip(
+                    Icons.shuffle_rounded,
+                    "Shuffle",
+                    queue.upcomingCount < 2
+                        ? null
+                        : app.playback.shuffleUpcoming,
+                  ),
                 ),
-                chip(
-                  Icons.clear_all_rounded,
-                  "Clear upcoming",
-                  queue.items.length <= 1 ? null : app.playback.clearQueue,
+                Tooltip(
+                  message: "Clear upcoming tracks",
+                  child: chip(
+                    Icons.clear_all_rounded,
+                    "Clear",
+                    queue.items.length <= 1 ? null : app.playback.clearQueue,
+                  ),
                 ),
               ],
             ),

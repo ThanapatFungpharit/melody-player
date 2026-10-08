@@ -92,17 +92,15 @@ class LibraryController extends ChangeNotifier {
   /// Imports local files one by one and reports failures together.
   Future<void> importLocalFiles(List<String> paths) async {
     var imported = 0;
-    final importedIds = <String>[];
     final failures = <String>[];
     for (final path in paths) {
       try {
-        importedIds.add(await app.services.library.importLocalFile(path));
+        await app.services.library.importLocalFile(path);
         imported++;
       } catch (error) {
         failures.add("${p.basename(path)}: ${failureMessage(error)}");
       }
     }
-    app.exportImportedTracks(importedIds);
     app.touchLibrary();
     if (failures.isNotEmpty) {
       app.showError(

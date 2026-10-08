@@ -386,11 +386,7 @@ class _SidebarPlaylists extends StatelessWidget {
                         children: [
                           Artwork(
                             app,
-                            count > 0
-                                ? app.services.library
-                                      .details(playlist.trackIds.first)
-                                      .thumbnail
-                                : "",
+                            playlistArtwork(app, playlist),
                             size: 34,
                             playlist: true,
                             seed: playlist.name,

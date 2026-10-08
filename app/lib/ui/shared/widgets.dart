@@ -6,6 +6,7 @@ import "package:path/path.dart" as p;
 import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/queue.dart";
+import "../../core/library/models.dart";
 import "theme.dart";
 
 /// Track or playlist artwork: the offline cache first, then the network,
@@ -91,6 +92,12 @@ class Artwork extends StatelessWidget {
     );
   }
 }
+
+/// A playlist's cover: its first track's artwork, or none when it is empty.
+String playlistArtwork(MelodyApp app, Playlist playlist) =>
+    playlist.trackIds.isEmpty
+    ? ""
+    : app.services.library.details(playlist.trackIds.first).thumbnail;
 
 /// A stable hue for [seed]; String.hashCode is not stable across runs.
 double seedHue(String seed) {
@@ -350,7 +357,6 @@ class PageNavigation extends StatelessWidget {
   return (start, (start + pageSize).clamp(0, total));
 }
 
-/// Rebuilds when any of [listenables] fires.
 /// Cross-fades between destinations with a slight rise. Give each
 /// destination its own key; the switcher fills the space it is given.
 class PageSwitcher extends StatelessWidget {
@@ -376,6 +382,7 @@ class PageSwitcher extends StatelessWidget {
   );
 }
 
+/// Rebuilds when any of [listenables] fires.
 class Watch extends StatelessWidget {
   const Watch(this.listenables, {super.key, required this.builder});
 

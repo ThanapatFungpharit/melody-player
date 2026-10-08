@@ -13,17 +13,18 @@ import "../worker/worker_client.dart";
 import "lyrics.dart";
 import "models.dart";
 
-/// Options every yt-dlp call shares: bundled FFmpeg, the uploaded cookies,
-/// and a cache folder inside Melody's data ([pruneYtDlpCache] bounds it).
-Map<String, Object?> sharedYtDlpOptions(
-  AppSettings settings, {
+/// Options every yt-dlp call shares: bundled FFmpeg, the uploaded cookies
+/// when [cookieFile] exists, and a cache folder inside Melody's data
+/// ([pruneYtDlpCache] bounds it).
+Map<String, Object?> sharedYtDlpOptions({
   String? ffmpegLocation,
   String? cacheDirectory,
+  String? cookieFile,
 }) => {
   "ffmpeg_location": ?ffmpegLocation,
   "cachedir": ?cacheDirectory,
-  if (settings.cookieFile.isNotEmpty && File(settings.cookieFile).existsSync())
-    "cookiefile": settings.cookieFile,
+  if (cookieFile != null && File(cookieFile).existsSync())
+    "cookiefile": cookieFile,
 };
 
 /// yt-dlp caches code and signature data per YouTube player release and
@@ -293,15 +294,16 @@ List<SearchResult> tracksFromYtMusic(Object? items) {
 
 /// `duration_seconds`, or a `duration`/`length` such as "1:02:03".
 double _seconds(Map<String, Object?> item) {
-  if (item["duration_seconds"] case final num seconds) {
+  if (item["duration_seconds"] case final num seconds
+      when seconds.isFinite && seconds >= 0) {
     return seconds.toDouble();
   }
   final text = _text(item["duration"] ?? item["length"]);
   if (text.isEmpty) return 0;
   var total = 0;
   for (final part in text.split(":")) {
-    final value = int.tryParse(part);
-    if (value == null) return 0;
+    final value = int.tryParse(part.trim());
+    if (value == null || value < 0) return 0;
     total = total * 60 + value;
   }
   return total.toDouble();

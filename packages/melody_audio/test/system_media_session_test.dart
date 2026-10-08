@@ -103,6 +103,32 @@ void main() {
     expect(MediaCommand.parse("somethingElse"), isNull);
   });
 
+  test("notification shortcuts keep their slots", () {
+    const preference = [
+      MediaShortcut.shuffle,
+      MediaShortcut.favorite,
+      MediaShortcut.repeat,
+    ];
+    List<MediaShortcut> shown(Set<MediaShortcut> available) =>
+        notificationShortcuts(preference, available.contains);
+
+    expect(shown(MediaShortcut.values.toSet()), [
+      MediaShortcut.shuffle,
+      MediaShortcut.favorite,
+    ]);
+    // Repeat stands in for shuffle instead of favorite sliding left.
+    expect(shown({MediaShortcut.favorite, MediaShortcut.repeat}), [
+      MediaShortcut.repeat,
+      MediaShortcut.favorite,
+    ]);
+    expect(shown({MediaShortcut.shuffle, MediaShortcut.repeat}), [
+      MediaShortcut.shuffle,
+      MediaShortcut.repeat,
+    ]);
+    expect(shown({MediaShortcut.favorite}), [MediaShortcut.favorite]);
+    expect(shown({}), isEmpty);
+  });
+
   group("built-in shuffle and repeat controls", () {
     setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.windows);
     tearDown(() => debugDefaultTargetPlatformOverride = null);

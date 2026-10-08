@@ -8,18 +8,28 @@ import "package:path/path.dart" as p;
 
 import "../storage.dart";
 
+/// The receipt for [taskId] in [directory], a folder that holds only
+/// receipts.
 String receiptPath(String directory, String taskId) =>
-    p.join(directory, ".melody-download-$taskId.json");
+    p.join(directory, "$taskId.json");
 
+/// Writes the receipt for files that are in [filesDirectory].
 Future<void> writeReceipt(
   String directory,
   String taskId,
   String url,
-  List<Map<String, String>> files,
-) => atomicWrite(
+  List<Map<String, String>> files, {
+  required String filesDirectory,
+}) => atomicWrite(
   receiptPath(directory, taskId),
   utf8.encode(
-    jsonEncode({"schema": 1, "task_id": taskId, "url": url, "files": files}),
+    jsonEncode({
+      "schema": 1,
+      "task_id": taskId,
+      "url": url,
+      "directory": p.absolute(filesDirectory),
+      "files": files,
+    }),
   ),
 );
 
@@ -38,10 +48,9 @@ class Receipt {
   final int unverified;
 }
 
-/// Reads a receipt and verifies each file it lists. Throws
-/// [FormatException] when the receipt itself is malformed or names a file
-/// outside its folder.
-Future<Receipt> readReceipt(String path) async {
+/// Reads a receipt's JSON without checking its files. Throws
+/// [FormatException] when it is not a receipt.
+Future<Map<String, Object?>> readReceiptData(String path) async {
   final link = await FileSystemEntity.isLink(path);
   if (link || await File(path).length() > 128 * 1024) {
     throw const FormatException("Invalid download receipt");
@@ -49,17 +58,31 @@ Future<Receipt> readReceipt(String path) async {
   // Decoded here so invalid UTF-8 is a FormatException like invalid JSON,
   // not an I/O failure that would keep the receipt for retry forever.
   final data = jsonDecode(utf8.decode(await File(path).readAsBytes()));
-  if (data is! Map) throw const FormatException("Invalid download receipt");
-  final taskId = data["task_id"];
-  if (taskId is! String ||
+  if (data is! Map<String, Object?> ||
       data["schema"] != 1 ||
-      !p.equals(path, receiptPath(p.dirname(path), taskId))) {
+      data["task_id"] is! String) {
+    throw const FormatException("Invalid download receipt");
+  }
+  return data;
+}
+
+/// Reads a receipt and verifies each file it lists. Throws
+/// [FormatException] when the receipt itself is malformed or names a file
+/// outside its folder.
+Future<Receipt> readReceipt(String path) async {
+  final data = await readReceiptData(path);
+  final taskId = data["task_id"] as String;
+  if (!p.equals(path, receiptPath(p.dirname(path), taskId))) {
     throw const FormatException("Invalid download receipt identity");
   }
   final url = data["url"];
   final entries = data["files"];
+  final folder = data["directory"];
   if (url is! String || entries is! List) {
     throw const FormatException("Invalid download receipt");
+  }
+  if (folder is! String || !p.isAbsolute(folder)) {
+    throw const FormatException("Invalid download receipt folder");
   }
   if (entries.isEmpty) throw const FormatException("Empty download receipt");
   final files = <String>[];
@@ -75,7 +98,7 @@ Future<Receipt> readReceipt(String path) async {
         name.contains(r"\")) {
       throw const FormatException("Download receipt escaped its owned folder");
     }
-    final candidate = p.join(p.dirname(path), name);
+    final candidate = p.join(folder, name);
     if (await FileSystemEntity.isLink(candidate) ||
         !await File(candidate).exists() ||
         await sha256File(candidate) != digest) {

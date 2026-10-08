@@ -22,6 +22,7 @@ import "package:melody/ui/desktop/shell.dart";
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
 import "package:melody/ui/shared/theme.dart";
+import "package:melody/ui/startup.dart";
 import "package:melody/worker/worker_client.dart";
 import "package:path/path.dart" as p;
 
@@ -103,6 +104,7 @@ Future<MelodyApp> _app(
   Directory root, {
   required bool mobile,
   String? defaultMusic,
+  FakeWorkerTransport? transport,
 }) async {
   final music = p.join(root.path, "Music");
   final paths = AppPaths(
@@ -166,14 +168,16 @@ Future<MelodyApp> _app(
       error: "The network request failed. Check your connection and retry.",
     ),
   ]);
-  final worker = WorkerClient(FakeWorkerTransport());
-  final thumbnails = ThumbnailCache(paths.thumbnails);
+  final worker = WorkerClient(transport ?? FakeWorkerTransport());
+  final thumbnails = ThumbnailCache(paths.artworkCache);
   final downloads = await DownloadCoordinator.open(
     manager,
     store,
     store.settings,
     worker,
     thumbnails: thumbnails,
+    stagingDirectory: paths.downloadStaging,
+    receiptDirectory: paths.downloadReceipts,
   );
   final catalog = MusicCatalog(worker, () => const {});
   final services = AppServices(
@@ -219,6 +223,8 @@ void main() {
   });
 
   Future<void> shoot(WidgetTester tester, String name) async {
+    // The first frame starts page transitions; the second finishes them.
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     if (_screenshots) {
       await expectLater(
@@ -233,11 +239,14 @@ void main() {
     required bool mobile,
     required Size size,
     String theme = "light",
+    FakeWorkerTransport? transport,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-    final app = (await tester.runAsync(() => _app(root, mobile: mobile)))!;
+    final app = (await tester.runAsync(
+      () => _app(root, mobile: mobile, transport: transport),
+    ))!;
     addTearDown(app.close);
     await tester.pumpWidget(
       MaterialApp(
@@ -275,6 +284,70 @@ void main() {
     expect(app.services.store.settings.downloadDirectory, defaultMusic);
     // Applied without a restart, so new downloads land where it records.
     expect(app.services.manager.musicFolder, defaultMusic);
+  });
+
+  test(
+    "a playlist import finishes when a download leaves the history unseen",
+    () async {
+      final transport = FakeWorkerTransport()
+        ..downloadedName = "Road song.mp3"
+        ..ytMusicResults["get_playlist"] = {
+          "title": "Road trip",
+          "tracks": [
+            {
+              "videoId": "roadsong001",
+              "title": "Road song",
+              "artists": [
+                {"name": "Band"},
+              ],
+            },
+          ],
+        };
+      final app = await _app(root, mobile: false, transport: transport);
+      addTearDown(app.close);
+      final downloads = app.services.downloads;
+      final publish = downloads.onRecord!;
+      downloads.onRecord = (record) {
+        // Clear finished, pressed before the importer looked at the record.
+        if (record.status.isFinished) downloads.clearFinished();
+        publish(record);
+      };
+
+      await app.playlists
+          .importFromUrl("https://music.youtube.com/playlist?list=PLroad")
+          .timeout(const Duration(seconds: 20));
+
+      expect(app.playlists.importing, isFalse);
+      final playlist = app.services.manager.listPlaylists().singleWhere(
+        (item) => item.name == "Road trip",
+      );
+      final track = app.services.manager.findTrackBySource(
+        "https://music.youtube.com/watch?v=roadsong001",
+      );
+      expect(track, isNotNull);
+      expect(playlist.trackIds, [track!.id]);
+    },
+  );
+
+  test("leaving Settings unsaved drops an appearance preview", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final saved = (app.settings.theme, app.settings.accentColor);
+    expect(saved.$2, isNot("rose"));
+
+    app.openPanel(AppPanel.settings);
+    app.settingsDraft.previewAppearance(theme: "dark", accent: "rose");
+    expect(app.appearance.value, ("dark", "rose"));
+    app.closePanel();
+    expect(app.appearance.value, saved);
+
+    app.openPanel(AppPanel.settings);
+    app.settingsDraft.reset();
+    app.settingsDraft.previewAppearance(accent: "rose");
+    await app.settingsDraft.save();
+    app.openPanel(AppPanel.downloads);
+    expect(app.appearance.value, (saved.$1, "rose"));
+    expect(app.services.store.settings.accentColor, "rose");
   });
 
   test("a new music folder applies immediately, stored absolute", () async {
@@ -328,6 +401,52 @@ void main() {
       app.openPanel(panel);
       await shoot(tester, "desktop_${panel.name}");
     }
+  });
+
+  testWidgets("scrolling lyrics by hand stops following playback", (
+    tester,
+  ) async {
+    final transport = FakeWorkerTransport()
+      ..ytMusicResults["get_lyrics"] = {
+        "lyrics": [
+          for (var line = 0; line < 60; line++)
+            {
+              "text": line == 1 ? "" : "Line $line",
+              "start_time": line * 2000,
+              "end_time": line * 2000 + 2000,
+            },
+        ],
+        "source": "Source: Test",
+      };
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+      transport: transport,
+    );
+    app.openPanel(AppPanel.lyrics);
+    await tester.pump();
+    // Saved lyrics are read from disk, which needs real async time.
+    for (var attempt = 0; attempt < 50; attempt++) {
+      if (find.text("Line 0").evaluate().isNotEmpty) break;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    // A blank timed line is an instrumental break.
+    expect(find.text("♪"), findsOneWidget);
+    expect(find.text("Back to current line"), findsNothing);
+
+    // Playback is at 64 s, so line 32 is the one in view.
+    await tester.drag(find.text("Line 32"), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.text("Back to current line"), findsOneWidget);
+
+    await tester.tap(find.text("Back to current line"));
+    await tester.pumpAndSettle();
+    expect(find.text("Back to current line"), findsNothing);
   });
 
   for (final mobile in [false, true]) {
@@ -517,5 +636,54 @@ void main() {
     await tester.tap(find.text("Appearance"));
     await tester.pumpAndSettle();
     await shoot(tester, "mobile_settings_appearance");
+  });
+
+  testWidgets("startup screens render on both layouts", (tester) async {
+    final stage = ValueNotifier("Opening your library");
+    addTearDown(stage.dispose);
+    for (final (name, size, theme) in [
+      ("desktop", const Size(1540, 960), "light"),
+      ("mobile", const Size(390, 844), "dark"),
+    ]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      Widget frame(Widget home) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: buildTheme("violet", Brightness.light),
+        darkTheme: buildTheme("violet", Brightness.dark),
+        themeMode: themeModeFor(theme),
+        home: home,
+      );
+      await tester.pumpWidget(frame(LoadingView(stage: stage)));
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(find.text("Opening your library"), findsOneWidget);
+      await shoot(tester, "${name}_loading");
+
+      var revealed = false;
+      var finished = false;
+      await tester.pumpWidget(
+        frame(
+          LoadingView(
+            stage: stage,
+            finishing: true,
+            onReveal: () => revealed = true,
+            onFinished: () => finished = true,
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(revealed, isFalse);
+      await shoot(tester, "${name}_loading_exit");
+      await tester.pump(const Duration(milliseconds: 600));
+      expect((revealed, finished), (true, true));
+      await tester.pumpWidget(
+        frame(const StartupError(error: "FileSystemException: Access denied")),
+      );
+      expect(find.textContaining("Access denied"), findsOneWidget);
+      await shoot(tester, "${name}_startup_error");
+    }
+    // Stop the repeating animations before the test ends.
+    await tester.pumpWidget(const SizedBox());
   });
 }

@@ -1,8 +1,10 @@
+import "dart:io";
+
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/catalog.dart";
-import "package:melody/application/models.dart";
 import "package:melody/core/errors.dart";
 import "package:melody/worker/worker_client.dart";
+import "package:path/path.dart" as p;
 
 import "../support/fake_worker.dart";
 
@@ -127,10 +129,38 @@ void main() {
   });
 
   test("yt-dlp keeps its cache in the folder Melody prunes", () {
-    final settings = AppSettings(downloadDirectory: "music");
     expect(
-      sharedYtDlpOptions(settings, cacheDirectory: "data/yt-dlp-cache"),
-      containsPair("cachedir", "data/yt-dlp-cache"),
+      sharedYtDlpOptions(cacheDirectory: "data/cache/yt-dlp"),
+      containsPair("cachedir", "data/cache/yt-dlp"),
     );
+  });
+
+  test("cookies are passed only once a cookie file exists", () async {
+    final root = await Directory.systemTemp.createTemp("melody-cookies");
+    addTearDown(() => root.delete(recursive: true));
+    final cookies = p.join(root.path, "cookies.txt");
+    expect(
+      sharedYtDlpOptions(cookieFile: cookies),
+      isNot(contains("cookiefile")),
+    );
+    await File(cookies).writeAsString("# Netscape HTTP Cookie File\n");
+    expect(
+      sharedYtDlpOptions(cookieFile: cookies),
+      containsPair("cookiefile", cookies),
+    );
+  });
+
+  test("unusable durations read as unknown", () {
+    double duration(Map<String, Object?> fields) => tracksFromYtMusic([
+      {"videoId": "abcdefghijk", "title": "Song", ...fields},
+    ]).single.duration;
+
+    expect(duration({"duration_seconds": double.nan}), 0);
+    expect(duration({"duration_seconds": -5}), 0);
+    expect(duration({"duration": "1:-30"}), 0);
+    expect(duration({"length": "live"}), 0);
+    expect(duration({"duration": "1:02:03"}), 3723);
+    // An unusable number falls back to the text form.
+    expect(duration({"duration_seconds": -1, "duration": "3:05"}), 185);
   });
 }

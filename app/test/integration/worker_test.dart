@@ -39,8 +39,8 @@ void main() {
         python: python,
         workerSource: p.normalize(p.absolute("..", "worker", "src")),
         runtimes: WorkerRuntimes({
-          ytDlpPackage: p.join(root.path, "yt-dlp-runtime"),
-          ytMusicPackage: p.join(root.path, "ytmusicapi-runtime"),
+          ytDlpPackage: p.join(root.path, "runtime", "yt-dlp"),
+          ytMusicPackage: p.join(root.path, "runtime", "ytmusicapi"),
         }),
       ),
     );
@@ -106,7 +106,7 @@ void main() {
         defaultDownloadDirectory: music,
       );
       final manager = MusicManager.open(p.join(root.path, "library.db"), music);
-      final thumbnails = ThumbnailCache(p.join(root.path, "thumbnails"));
+      final thumbnails = ThumbnailCache(p.join(root.path, "cache", "artwork"));
       final catalog = MusicCatalog(worker, () => {});
       final result = (await catalog.search(
         "Erik Satie Gymnopedie 1",
@@ -119,10 +119,11 @@ void main() {
         worker,
         thumbnails: thumbnails,
         sharedOptions: sharedYtDlpOptions(
-          store.settings,
           ffmpegLocation: ffmpeg,
-          cacheDirectory: p.join(root.path, "yt-dlp-cache"),
+          cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
         ),
+        stagingDirectory: p.join(root.path, "downloads", "staging"),
+        receiptDirectory: p.join(root.path, "downloads", "receipts"),
       );
       final finished = Completer<DownloadRecord>();
       coordinator.onRecord = (record) {
@@ -179,10 +180,11 @@ void main() {
           worker,
           lyrics: LyricsLibrary(p.join(folder, "lyrics"), catalog.lyrics),
           sharedOptions: sharedYtDlpOptions(
-            store.settings,
             ffmpegLocation: ffmpeg,
-            cacheDirectory: p.join(root.path, "yt-dlp-cache"),
+            cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
           ),
+          stagingDirectory: p.join(root.path, "downloads", "staging"),
+          receiptDirectory: p.join(root.path, "downloads", "receipts"),
         );
         final finished = Completer<DownloadRecord>();
         coordinator.onRecord = (record) {

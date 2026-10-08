@@ -34,6 +34,56 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  group("music folder moves", () {
+    late String journal;
+    late String elsewhere;
+
+    MusicManager openIn(String folder) => MusicManager.open(
+      p.join(root.path, "library.db"),
+      folder,
+      moveJournal: journal,
+    );
+
+    setUp(() async {
+      journal = p.join(root.path, "music-move.json");
+      elsewhere = p.join(root.path, "elsewhere");
+      await manager.close();
+      manager = openIn(music);
+    });
+
+    test("a move the settings never recorded is undone at launch", () async {
+      final a = await add("a.mp3");
+      final b = await add("b.mp3");
+      await manager.moveMusicFolder(elsewhere);
+      expect(File(journal).existsSync(), isTrue);
+      // The process ends before the new folder is saved, and even before
+      // the last file arrived.
+      File(p.join(elsewhere, "b.mp3")).renameSync(p.join(music, "b.mp3"));
+      await manager.close();
+
+      manager = openIn(music);
+
+      for (final id in [a, b]) {
+        expect(File(manager.trackPath(id)).existsSync(), isTrue);
+      }
+      expect(Directory(elsewhere).listSync(), isEmpty);
+      expect(File(journal).existsSync(), isFalse);
+    });
+
+    test("a completed move only drops its journal", () async {
+      final a = await add("a.mp3");
+      await manager.moveMusicFolder(elsewhere);
+      await manager.close();
+
+      manager = openIn(elsewhere);
+
+      expect(p.dirname(manager.trackPath(a)), p.absolute(elsewhere));
+      expect(File(manager.trackPath(a)).existsSync(), isTrue);
+      expect(Directory(music).listSync(), isEmpty);
+      expect(File(journal).existsSync(), isFalse);
+    });
+  });
+
   group("playlists", () {
     test("an explicit order is kept across launches", () async {
       final a = await add("a.mp3");

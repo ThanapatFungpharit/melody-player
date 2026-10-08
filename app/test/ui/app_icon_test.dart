@@ -44,9 +44,36 @@ void main() {
     final aliases = RegExp(
       r'android:name="\.icon\.(\w+)"[^>]*android:icon="@mipmap/ic_launcher_(\w+)"[^>]*android:enabled="(\w+)"',
     ).allMatches(manifest);
+    final entries = {for (final m in aliases) m[1]: m[2]};
+    for (final accent in themePalettes.keys) {
+      expect(entries[accent], accent, reason: "accent $accent has no entry");
+    }
+    // Android keeps a disabled alias's state across updates but drops an
+    // alias the update removes: removing or renaming the enabled one leaves
+    // Melody with no launcher entry. Only ever add to this list; a retired
+    // accent keeps its entry (LauncherIcon disables it).
+    const shipped = [
+      "violet",
+      "ocean",
+      "rose",
+      "emerald",
+      "amber",
+      "slate",
+      "blue",
+      "teal",
+      "coral",
+      "magenta",
+      "lime",
+    ];
     expect(
-      {for (final m in aliases) m[1]: m[2]},
-      {for (final accent in themePalettes.keys) accent: accent},
+      entries.keys,
+      containsAll(shipped),
+      reason: "a shipped launcher entry was removed or renamed",
+    );
+    expect(
+      [...entries.keys.where((a) => !shipped.contains(a))],
+      isEmpty,
+      reason: "add new launcher entries to the shipped list",
     );
     expect(
       [

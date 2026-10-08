@@ -1,3 +1,4 @@
+import "../../application/download_report.dart";
 import "../../application/models.dart";
 
 String formatDuration(double seconds) {
@@ -43,6 +44,29 @@ String downloadDetail(DownloadRecord record) {
   }
   if (record.batchId.isNotEmpty && record.url.isNotEmpty) return record.url;
   return record.filename.isNotEmpty ? record.filename : record.source;
+}
+
+/// The text announcing [report]; a single song is named.
+String downloadReportMessage(DownloadReport report) {
+  final completed = report.completed.length;
+  final failed = report.failed.length;
+  if (failed == 0) {
+    return completed == 1
+        ? "Downloaded “${report.completed.single.title}”."
+        : "Downloaded ${plural(completed, "song")}.";
+  }
+  if (completed == 0 && failed == 1) {
+    final record = report.failed.single;
+    return record.error.isEmpty
+        ? "Couldn’t download “${record.title}”."
+        : "Couldn’t download “${record.title}”: ${record.error}";
+  }
+  final failures = failed == 1
+      ? "“${report.failed.single.title}” failed"
+      : "${plural(failed, "download")} failed";
+  return completed == 0
+      ? "$failures."
+      : "Downloaded ${plural(completed, "song")}; $failures.";
 }
 
 String timeGreeting([DateTime? now]) {

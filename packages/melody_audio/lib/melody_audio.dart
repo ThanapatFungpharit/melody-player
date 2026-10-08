@@ -19,6 +19,7 @@ export "src/audio_engine.dart"
         AudioStateChanged,
         AudioTrackChanged,
         MediaCommand;
+export "src/notification_artwork.dart" show useNotificationArtworkDirectory;
 export "src/system_media_session.dart"
     show
         MediaActionListener,

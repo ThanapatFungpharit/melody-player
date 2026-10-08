@@ -32,7 +32,12 @@ class MelodyRoot extends StatefulWidget {
 class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   MelodyApp? _app;
   Object? _failure;
+  // The app mounts beneath the loading view, which then plays its exit
+  // ([_finishing]), lets the app grow in ([_revealed]), and goes ([_loaded]).
+  bool _finishing = false;
   bool _revealed = false;
+  bool _loaded = false;
+  final ValueNotifier<String> _stage = ValueNotifier("Warming up");
   (String, String) _appearance = ("system", "violet");
   final GlobalKey<ScaffoldMessengerState> _messenger = GlobalKey();
   StreamSubscription<AppMessage>? _messages;
@@ -73,7 +78,9 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
             );
           }
         },
+        onStage: (stage) => _stage.value = stage,
       );
+      _stage.value = "Almost ready";
       if (!services.store.settings.skipLoadingDelay) {
         final remaining = _minimumLoading - DateTime.now().difference(started);
         if (remaining > Duration.zero) await Future<void>.delayed(remaining);
@@ -94,9 +101,11 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
         _appearance = app.appearance.value;
       });
       app.reattachNativeState();
-      // Let the first frame mount transparent before fading the app in.
+      // Let the shell's first, heaviest frame pass hidden, so it doesn't
+      // stutter the exit animation.
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      if (mounted) setState(() => _revealed = true);
+      _stage.value = "Ready";
+      if (mounted) setState(() => _finishing = true);
     } catch (error, stack) {
       debugPrint("Melody failed to start: $error\n$stack");
       if (mounted) setState(() => _failure = error);
@@ -119,6 +128,14 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
           ),
           backgroundColor: message.error ? scheme.errorContainer : null,
           showCloseIcon: true,
+          action: switch (message.action) {
+            (final label, final onPressed) => SnackBarAction(
+              label: label,
+              onPressed: onPressed,
+              textColor: message.error ? scheme.error : null,
+            ),
+            null => null,
+          },
         ),
       );
   }
@@ -126,7 +143,12 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) _app?.resumed();
-    if (state == AppLifecycleState.detached) _app?.close();
+    // Android reports detached whenever its activity is destroyed, but
+    // MainActivity keeps this engine (and the playing decoder) cached and
+    // attaches the next activity to it, which resumes this same app.
+    if (state == AppLifecycleState.detached && !Platform.isAndroid) {
+      _app?.close();
+    }
   }
 
   @override
@@ -135,6 +157,7 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
     _lifecycle.dispose();
     unawaited(_messages?.cancel());
     _app?.close();
+    _stage.dispose();
     super.dispose();
   }
 
@@ -156,15 +179,28 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
         duration: const Duration(milliseconds: 220),
         switchInCurve: Curves.easeInOut,
         child: _failure != null
-            ? const StartupError()
-            : app == null
-            ? const LoadingView()
-            : AnimatedOpacity(
-                key: const ValueKey("shell"),
-                opacity: _revealed ? 1 : 0,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-                child: _mobile ? MobileShell(app) : DesktopShell(app),
+            ? StartupError(error: _failure)
+            : Stack(
+                key: const ValueKey("startup"),
+                fit: StackFit.expand,
+                children: [
+                  if (app != null)
+                    AnimatedScale(
+                      key: const ValueKey("shell"),
+                      scale: _revealed ? 1 : 0.96,
+                      duration: const Duration(milliseconds: 650),
+                      curve: Curves.easeOutCubic,
+                      child: _mobile ? MobileShell(app) : DesktopShell(app),
+                    ),
+                  if (!_loaded)
+                    LoadingView(
+                      key: const ValueKey("loading"),
+                      stage: _stage,
+                      finishing: _finishing,
+                      onReveal: () => setState(() => _revealed = true),
+                      onFinished: () => setState(() => _loaded = true),
+                    ),
+                ],
               ),
       ),
     );

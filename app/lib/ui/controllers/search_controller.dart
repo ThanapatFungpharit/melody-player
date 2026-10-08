@@ -8,6 +8,7 @@ import "../../application/models.dart";
 import "../../core/errors.dart" show failureMessage;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
+import "../shared/format.dart" show plural;
 
 /// Search state and the provider-search workflow.
 class MusicSearchController extends ChangeNotifier {
@@ -122,9 +123,7 @@ class MusicSearchController extends ChangeNotifier {
       final local = <String, Track?>{
         for (final (index, item) in tracks.indexed) item.url: available[index],
       };
-      if (remember) {
-        app.services.store.addRecent("search_history", query, limit: 20);
-      }
+      if (remember) _rememberQuery(query);
       if (request != _request) return;
       results = fetched.take(pageSize).toList();
       localTracks = local;
@@ -146,6 +145,16 @@ class MusicSearchController extends ChangeNotifier {
         busy = false;
         notifyListeners();
       }
+    }
+  }
+
+  /// History is a convenience: failing to save it must not discard the
+  /// results that were found.
+  void _rememberQuery(String query) {
+    try {
+      app.services.store.addRecent("search_history", query, limit: 20);
+    } on Object catch (error) {
+      debugPrint("Search history was not saved: $error");
     }
   }
 
@@ -175,15 +184,25 @@ class MusicSearchController extends ChangeNotifier {
   }
 
   static String batchDownloadMessage(DownloadBatch batch) {
-    final scheduled = batch.tasks.length;
-    if (scheduled == batch.size) {
-      return "Started a batch of ${batch.size} songs. Each song will continue independently.";
-    }
-    if (scheduled > 0) {
-      return "Queued $scheduled of ${batch.size} songs. Existing files and active "
-          "downloads were reused.";
-    }
-    return "All requested songs are already in the library or downloading.";
+    final details = [
+      if (batch.existing > 0) "${batch.existing} already in your library",
+      if (batch.joined > 0) "${batch.joined} already downloading",
+      if (batch.failed > 0) "${batch.failed} couldn’t start",
+    ];
+    final headline = batch.started > 0
+        ? "Downloading ${plural(batch.started, "song")}."
+        : batch.failed == batch.size
+        ? "No songs could be downloaded."
+        : "Nothing new to download.";
+    return details.isEmpty ? headline : "$headline ${_sentence(details)}.";
+  }
+
+  /// "a", "a and b", or "a, b and c", capitalized.
+  static String _sentence(List<String> parts) {
+    final text = parts.length == 1
+        ? parts.single
+        : "${parts.sublist(0, parts.length - 1).join(", ")} and ${parts.last}";
+    return "${text[0].toUpperCase()}${text.substring(1)}";
   }
 
   /// Downloads [result], or applies [after] to the existing track.
@@ -286,7 +305,7 @@ class MusicSearchController extends ChangeNotifier {
       if (!autoplay) playback.toggle();
     } catch (failure) {
       if (playback.isCurrentRequest(generation)) {
-        playback.onBackendError("$failure");
+        playback.onBackendError(failureMessage(failure));
       }
     }
   }

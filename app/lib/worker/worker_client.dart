@@ -266,7 +266,11 @@ class WorkerClient {
       "target": target,
       "options": options,
     });
-    return (result as Map?)?.cast<String, Object?>();
+    return switch (result) {
+      null => null,
+      final Map info => info.cast<String, Object?>(),
+      _ => throw WorkerFailure("The worker sent an unexpected reply."),
+    };
   }
 
   /// Downloads [url] into [directory]. Returns false when it was cancelled.
@@ -288,7 +292,7 @@ class WorkerClient {
         "options": options,
         if (metadata.isNotEmpty) "metadata": metadata,
       });
-      return (result as Map?)?["cancelled"] != true;
+      return !(result is Map && result["cancelled"] == true);
     } finally {
       _progress.remove(task);
     }

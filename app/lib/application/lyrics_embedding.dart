@@ -3,19 +3,18 @@
 library;
 
 import "dart:async";
-import "dart:convert";
 import "dart:io";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
-import "package:uuid/uuid.dart";
 
 import "../core/artwork.dart" show readEmbeddedLyrics;
 import "../core/errors.dart" show WorkerFailure;
 import "../core/id3_lyrics.dart";
 import "../core/library/manager.dart";
-import "../core/storage.dart" show atomicWrite;
+import "../core/storage.dart" show deleteQuietly, temporarySibling;
 import "lyrics.dart";
+import "store.dart";
 
 /// Copies [source] to [target] with every stream and tag kept and [tags]
 /// set (FFmpeg, through the worker).
@@ -43,10 +42,11 @@ enum _Outcome { embedded, unchanged, unsupported, busy }
 /// until its content changes; its lyrics still show from [LyricsLibrary]'s
 /// saved copy.
 class LyricsEmbedder {
-  LyricsEmbedder(this._manager, this._lyrics, this._copyWithTags);
+  LyricsEmbedder(this._manager, this._lyrics, this._store, this._copyWithTags);
 
   final MusicManager _manager;
   final LyricsLibrary _lyrics;
+  final ApplicationStore _store;
   final TagCopier _copyWithTags;
 
   /// Whether a track's file is in use by playback, so it is left until
@@ -56,15 +56,16 @@ class LyricsEmbedder {
   final Set<String> _pending = {};
   final Set<String> _deferred = {};
   final Map<String, int> _attempts = {};
-  Map<String, String>? _unsupported;
   Completer<void>? _draining;
   bool _closed = false;
 
   /// Rewrites of one file per session; a file that stays locked waits for
   /// the next launch.
   static const _maxAttempts = 3;
-  static const _temporaryPrefix = ".melody-lyrics-";
-  static const _unsupportedFile = "not_embedded.json";
+
+  /// State key: the content hash of each track's file that cannot take
+  /// lyrics, by track ID.
+  static const _unsupportedKey = "lyrics_not_embedded";
 
   static bool _never(String trackId) => false;
 
@@ -75,22 +76,23 @@ class LyricsEmbedder {
     if (_pending.isNotEmpty && _draining == null) unawaited(_drain());
   }
 
-  /// Removes copies left by an interrupted rewrite, then queues every
-  /// track in the library.
-  Future<void> embedLibrary() async {
-    final tracks = _manager.listTracks();
-    final folders = <String>{};
-    for (final track in tracks) {
+  /// Forgets removed tracks' records and queues every track in the
+  /// library. (Copies an interrupted rewrite left are removed with the
+  /// other temporary files at launch.)
+  void embedLibrary() {
+    final unsupported = _unsupported();
+    final stale = unsupported.keys.where((id) => !_manager.hasTrack(id));
+    if (stale.isNotEmpty) {
       try {
-        folders.add(p.dirname(_manager.trackPath(track.id)));
-      } on Object {
-        continue;
+        _store.set(
+          _unsupportedKey,
+          unsupported..removeWhere((id, _) => !_manager.hasTrack(id)),
+        );
+      } on Object catch (error) {
+        debugPrint("Could not update files without lyrics: $error");
       }
     }
-    for (final folder in folders) {
-      await _removeLeftovers(folder);
-    }
-    embed([for (final track in tracks) track.id]);
+    embed([for (final track in _manager.listTracks()) track.id]);
   }
 
   /// Retries tracks that were playing when their turn came.
@@ -129,8 +131,7 @@ class LyricsEmbedder {
     if (!_manager.hasTrack(trackId)) return;
     final track = _manager.getTrack(trackId);
     if (!_lyrics.supports(track.source)) return;
-    final unsupported = await _loadUnsupported();
-    if (unsupported[trackId] == track.contentHash) return;
+    if (_unsupported()[trackId] == track.contentHash) return;
     final path = _manager.trackPath(trackId);
     if (!await File(path).exists()) return;
     if ((await readEmbeddedLyrics(path)).isNotEmpty) {
@@ -151,8 +152,7 @@ class LyricsEmbedder {
       case _Outcome.embedded:
         await LyricsLibrary.removeMelodySidecar(path);
       case _Outcome.unsupported:
-        unsupported[trackId] = track.contentHash;
-        await _saveUnsupported();
+        _saveUnsupported(trackId, track.contentHash);
       case _Outcome.busy when attempts < _maxAttempts:
         _deferred.add(trackId);
       case _Outcome.busy || _Outcome.unchanged:
@@ -168,14 +168,10 @@ class LyricsEmbedder {
         await _manager.checkTrackIntegrity(trackId) != null) {
       return _Outcome.unchanged;
     }
-    final extension = p.extension(path);
-    final copy = p.join(
-      p.dirname(path),
-      "$_temporaryPrefix${const Uuid().v4()}$extension",
-    );
+    final copy = temporarySibling(path);
     try {
       try {
-        if (extension.toLowerCase() == ".mp3") {
+        if (p.extension(path).toLowerCase() == ".mp3") {
           await File(path).copy(copy);
           if (!await writeId3Lyrics(copy, text)) return _Outcome.unsupported;
         } else {
@@ -202,7 +198,7 @@ class LyricsEmbedder {
       await _manager.replaceTrackFile(trackId, path);
       return _Outcome.embedded;
     } finally {
-      await _delete(copy);
+      await deleteQuietly(copy);
     }
   }
 
@@ -210,59 +206,23 @@ class LyricsEmbedder {
   static bool _ffmpegRefused(WorkerFailure error) =>
       error.types.any((type) => type.contains("PostProcess"));
 
-  Future<Map<String, String>> _loadUnsupported() async {
-    final loaded = _unsupported;
-    if (loaded != null) return loaded;
-    final file = File(p.join(_lyrics.directory, _unsupportedFile));
-    var entries = <String, String>{};
+  Map<String, String> _unsupported() => {
+    if (_store.get(_unsupportedKey) case final Map entries)
+      for (final MapEntry(:key, :value) in entries.entries)
+        if (key is String && value is String) key: value,
+  };
+
+  /// Records that [trackId]'s file with [contentHash] cannot take lyrics,
+  /// dropping tracks the library no longer has.
+  void _saveUnsupported(String trackId, String contentHash) {
+    final entries = _unsupported()
+      ..[trackId] = contentHash
+      ..removeWhere((id, _) => !_manager.hasTrack(id));
     try {
-      final data = jsonDecode(await file.readAsString());
-      if (data is Map) {
-        entries = {
-          for (final MapEntry(:key, :value) in data.entries)
-            if (key is String && value is String) key: value,
-        };
-      }
-    } on PathNotFoundException {
-      // Nothing recorded yet.
+      _store.set(_unsupportedKey, entries);
     } on Object catch (error) {
-      debugPrint("Could not read ${file.path}: $error");
-    }
-    return _unsupported = entries;
-  }
-
-  Future<void> _saveUnsupported() async {
-    final entries = _unsupported;
-    if (entries == null) return;
-    entries.removeWhere((trackId, _) => !_manager.hasTrack(trackId));
-    final path = p.join(_lyrics.directory, _unsupportedFile);
-    try {
-      await atomicWrite(path, utf8.encode(jsonEncode(entries)));
-    } on FileSystemException catch (error) {
       // The file is simply tried again next launch.
-      debugPrint("Could not save $path: $error");
-    }
-  }
-
-  static Future<void> _removeLeftovers(String folder) async {
-    try {
-      await for (final entity in Directory(folder).list()) {
-        if (entity is File &&
-            p.basename(entity.path).startsWith(_temporaryPrefix)) {
-          await _delete(entity.path);
-        }
-      }
-    } on FileSystemException catch (error) {
-      debugPrint("Could not look for leftover lyrics copies: $error");
-    }
-  }
-
-  static Future<void> _delete(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not remove $path: $error");
+      debugPrint("Could not record a file without lyrics: $error");
     }
   }
 }

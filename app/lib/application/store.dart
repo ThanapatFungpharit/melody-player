@@ -47,6 +47,12 @@ class ApplicationStore {
   final String _defaultDownloadDirectory;
   late Map<String, Object?> _data;
 
+  /// The JSON last written for each top-level row (except the per-track
+  /// details), so a commit encodes each value once instead of re-encoding
+  /// the stored copy to compare it. `_data` is only ever replaced, never
+  /// changed in place, which keeps these current.
+  final Map<String, String> _written = {};
+
   /// Pending play batches may arrive after a track is removed. Keep their IDs
   /// for this process lifetime so those writes cannot recreate it.
   final Set<String> _deletedTrackIds = {};
@@ -77,7 +83,7 @@ class ApplicationStore {
     final data = legacyPath != null ? _loadLegacy(legacyPath) : _defaults();
     _db.transaction((db) {
       db.execute(_schema);
-      _writeRows(db, data, const {});
+      _writeRows(db, data, const {}, const {});
     });
     if (legacyPath != null) retireLegacyFile(legacyPath);
     return data;
@@ -122,7 +128,7 @@ class ApplicationStore {
   }
 
   static int _version(Map<String, Object?> data) => switch (data["version"]) {
-    num value => value.toInt(),
+    num value when value.isFinite => value.toInt(),
     _ => 1,
   };
 
@@ -161,7 +167,6 @@ class ApplicationStore {
           ..remove("use_browser_cookies")
           ..remove("cookie_browser")
           ..remove("cookie_profile");
-        settings.putIfAbsent("cookie_file", () => "");
       }
       data["version"] = 3;
     }
@@ -411,13 +416,15 @@ class ApplicationStore {
     Map<String, Object?> changes, {
     Map<String, Object?> trackDetails = const {},
   }) {
-    final updates = <String, Object?>{
-      for (final entry in changes.entries)
-        if (!(trackDetails.isNotEmpty && entry.key == "track_details"))
-          if (!_data.containsKey(entry.key) ||
-              !_sameJson(_data[entry.key], entry.value))
-            entry.key: entry.value,
-    };
+    final updates = <String, Object?>{};
+    final encoded = <String, String>{};
+    for (final MapEntry(:key, :value) in changes.entries) {
+      if (trackDetails.isNotEmpty && key == "track_details") continue;
+      final json = _encode(value);
+      if (_data.containsKey(key) && json == _storedJson(key)) continue;
+      updates[key] = value;
+      encoded[key] = json;
+    }
     final current = _details;
     final changedDetails = <String, Object?>{
       for (final entry in trackDetails.entries)
@@ -442,13 +449,22 @@ class ApplicationStore {
       }
       candidate["track_details"] = details;
     }
-    _db.transaction((db) => _writeRows(db, updates, changedDetails));
+    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
     _data = candidate;
+    encoded.remove("track_details");
+    _written.addAll(encoded);
   }
 
+  String _storedJson(String key) => key == "track_details"
+      ? _encode(_data[key])
+      : _written[key] ??= _encode(_data[key]);
+
+  /// [encoded] holds the JSON of [updates] already encoded; others are
+  /// encoded here.
   static void _writeRows(
     Database db,
     Map<String, Object?> updates,
+    Map<String, String> encoded,
     Map<String, Object?> trackDetails,
   ) {
     for (final entry in updates.entries) {
@@ -459,7 +475,10 @@ class ApplicationStore {
           db.execute(_upsertDetails, [detail.key, _encode(detail.value)]);
         }
       } else {
-        db.execute(_upsertState, [entry.key, _encode(entry.value)]);
+        db.execute(_upsertState, [
+          entry.key,
+          encoded[entry.key] ?? _encode(entry.value),
+        ]);
       }
     }
     for (final entry in trackDetails.entries) {

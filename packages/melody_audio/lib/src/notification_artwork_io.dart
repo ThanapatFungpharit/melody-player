@@ -46,8 +46,15 @@ Future<bool> preparedArtworkExists(String uri) async {
   return File.fromUri(parsed!).exists();
 }
 
-Directory get _artworkDirectory =>
-    Directory("${Directory.systemTemp.path}/melody-notification-artwork");
+String? _directory;
+
+/// Keeps prepared artwork in [path] (the app's cache) instead of the
+/// system's temporary folder. Call it before the first artwork is prepared.
+void useNotificationArtworkDirectory(String path) => _directory = path;
+
+Directory get _artworkDirectory => Directory(
+  _directory ?? "${Directory.systemTemp.path}/melody-notification-artwork",
+);
 
 /// Artwork prepared under [key] by an earlier run, if it is still on disk.
 Future<String?> existingNotificationArtwork(String key) async {
@@ -66,7 +73,15 @@ Future<String?> saveNotificationArtwork(Uint8List png, String key) async {
   final directory = _artworkDirectory;
   await directory.create(recursive: true);
   final file = File("${directory.path}/$key.png");
-  await file.writeAsBytes(png, flush: true);
+  // Written beside it and renamed, so an interrupted write never leaves a
+  // truncated image that a later run would reuse.
+  final temporary = File("${directory.path}/$key.png.tmp");
+  try {
+    await temporary.writeAsBytes(png, flush: true);
+    await temporary.rename(file.path);
+  } finally {
+    if (await temporary.exists()) await temporary.delete();
+  }
   await _pruneArtwork(directory, keep: file);
   return file.uri.toString();
 }
@@ -75,12 +90,19 @@ Future<void> _pruneArtwork(Directory directory, {required File keep}) async {
   try {
     final files = await directory
         .list()
-        .where((entry) => entry is File && entry.path.endsWith(".png"))
+        .where((entry) => entry is File)
         .cast<File>()
         .toList();
     final dated = <(File, DateTime)>[];
+    final abandoned = DateTime.now().subtract(const Duration(minutes: 10));
     for (final file in files) {
-      dated.add((file, (await file.stat()).modified));
+      final modified = (await file.stat()).modified;
+      if (file.path.endsWith(".png")) {
+        dated.add((file, modified));
+      } else if (modified.isBefore(abandoned)) {
+        // A write that ended with its process; nothing else belongs here.
+        await file.delete();
+      }
     }
     dated.sort((a, b) => b.$2.compareTo(a.$2));
     for (var index = 64; index < dated.length; index++) {

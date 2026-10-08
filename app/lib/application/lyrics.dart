@@ -12,7 +12,7 @@ import "package:path/path.dart" as p;
 import "../core/artwork.dart" show readEmbeddedLyrics;
 import "../core/errors.dart";
 import "../core/media.dart";
-import "../core/storage.dart" show atomicWrite, unixSeconds;
+import "../core/storage.dart" show atomicWrite, deleteQuietly, unixSeconds;
 
 /// One line of lyrics. Timed lines carry their start and end in milliseconds.
 @immutable
@@ -30,14 +30,31 @@ final _lrcTimestamps = RegExp(r"^((?:\[\d+:\d{1,2}(?:[.:]\d{1,3})?\])+)(.*)$");
 final _lrcTimestamp = RegExp(r"\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]");
 final _lrcTag = RegExp(r"^\[([A-Za-z]+):(.*)\]$");
 
+/// Enhanced LRC word timings (`<01:02.34>`) inside a line's words.
+final _lrcWordTimestamp = RegExp(r"\s*<\d+:\d{1,2}(?:[.:]\d{1,3})?>\s*");
+
+/// Any line break: `\r\n`, `\n`, or a lone `\r`.
+final _lineBreak = RegExp(r"\r\n?|\n");
+
+/// [text] without a leading byte order mark, split into lines.
+List<String> _lines(String text) =>
+    (text.startsWith("﻿") ? text.substring(1) : text).split(_lineBreak);
+
+/// A timestamp from a YouTube Music reply or a saved file; -1 when missing
+/// or not a usable number.
+int _milliseconds(Object? value) => switch (value) {
+  final num number when number.isFinite && number >= 0 => number.toInt(),
+  final String text => int.tryParse(text.trim()) ?? -1,
+  _ => -1,
+};
+
 @immutable
 class Lyrics {
   const Lyrics(this.lines, {this.source = ""});
 
   /// Plain text, one line per line break.
   factory Lyrics.plain(String text, {String source = ""}) => Lyrics([
-    for (final line in text.replaceAll("\r\n", "\n").split("\n"))
-      LyricLine(line.trimRight()),
+    for (final line in _lines(text)) LyricLine(line.trimRight()),
   ], source: source);
 
   /// LRC (`[01:02.34]words`, with optional `[offset:ms]` and other tags) or
@@ -46,15 +63,21 @@ class Lyrics {
     final timed = <(int, String)>[];
     final plain = <String>[];
     var offset = 0;
-    for (final raw in text.replaceAll("\r\n", "\n").split("\n")) {
+    for (final raw in _lines(text)) {
       final line = raw.trimRight();
       final stamps = _lrcTimestamps.firstMatch(line);
       if (stamps != null) {
-        final words = stamps.group(2)!.trim();
+        final words = stamps
+            .group(2)!
+            .replaceAll(_lrcWordTimestamp, " ")
+            .trim();
         for (final stamp in _lrcTimestamp.allMatches(stamps.group(1)!)) {
           final fraction = (stamp.group(3) ?? "0").padRight(3, "0");
+          // A runaway minute count must not overflow or throw.
+          final minutes = int.tryParse(stamp.group(1)!) ?? -1;
+          if (minutes < 0 || minutes > 99999) continue;
           timed.add((
-            int.parse(stamp.group(1)!) * 60000 +
+            minutes * 60000 +
                 int.parse(stamp.group(2)!) * 1000 +
                 int.parse(fraction),
             words,
@@ -65,7 +88,10 @@ class Lyrics {
       final tag = _lrcTag.firstMatch(line.trim());
       if (tag != null) {
         if (tag.group(1)!.toLowerCase() == "offset") {
-          offset = int.tryParse(tag.group(2)!.trim()) ?? 0;
+          offset = (int.tryParse(tag.group(2)!.trim()) ?? 0).clamp(
+            -86400000,
+            86400000,
+          );
         }
         continue;
       }
@@ -108,15 +134,28 @@ class Lyrics {
     final body = data["lyrics"];
     final Lyrics lyrics;
     if (body is List) {
-      lyrics = Lyrics([
+      final lines = [
         for (final value in body)
           if (value is Map)
             LyricLine(
               "${value["text"] ?? ""}",
-              startMs: (value["start_time"] as num?)?.toInt() ?? -1,
-              endMs: (value["end_time"] as num?)?.toInt() ?? -1,
+              startMs: _milliseconds(value["start_time"]),
+              endMs: _milliseconds(value["end_time"]),
             ),
-      ], source: source);
+      ];
+      // lineAt searches by start time, so timed lines must be in order.
+      // List.sort is not stable; equal starts keep their reply order.
+      if (lines.every((line) => line.timed)) {
+        final ordered = lines.indexed.toList()
+          ..sort((a, b) {
+            final byTime = a.$2.startMs.compareTo(b.$2.startMs);
+            return byTime != 0 ? byTime : a.$1.compareTo(b.$1);
+          });
+        lines
+          ..clear()
+          ..addAll([for (final (_, line) in ordered) line]);
+      }
+      lyrics = Lyrics(lines, source: source);
     } else if (body is String) {
       lyrics = Lyrics.plain(body, source: source);
     } else {
@@ -131,8 +170,8 @@ class Lyrics {
         if (line is Map)
           LyricLine(
             "${line["text"] ?? ""}",
-            startMs: (line["start"] as num?)?.toInt() ?? -1,
-            endMs: (line["end"] as num?)?.toInt() ?? -1,
+            startMs: _milliseconds(line["start"]),
+            endMs: _milliseconds(line["end"]),
           ),
   ], source: "${data["source"] ?? ""}");
 
@@ -266,15 +305,9 @@ class LyricsLibrary {
     }
   }
 
-  /// Removes the `.lrc` beside a deleted audio file. Failures are ignored.
-  static Future<void> deleteSidecar(String audioPath) async {
-    try {
-      final file = File(sidecarPath(audioPath));
-      if (await file.exists()) await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not remove a lyrics file: $error");
-    }
-  }
+  /// Removes the `.lrc` beside a deleted audio file. Failures only log.
+  static Future<void> deleteSidecar(String audioPath) =>
+      deleteQuietly(sidecarPath(audioPath));
 
   /// Removes what is saved for [source] unless one of [keepFor] is the same
   /// YouTube Music track. Failures only log.
@@ -285,13 +318,39 @@ class LyricsLibrary {
     final identity = _identity(source);
     if (identity == null) return;
     if (keepFor.any((other) => _identity(other)?.key == identity.key)) return;
-    final file = File(_path(identity));
-    try {
-      if (await file.exists()) await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not remove saved lyrics: $error");
-    }
+    await deleteQuietly(_path(identity));
   }
+
+  /// Deletes the saved lyrics of every song not among [sources] (the
+  /// library's tracks): those saved for a preview, a download that failed,
+  /// or a track since removed. Call it before downloads start. Other files
+  /// in the folder are left alone. Returns how many were removed.
+  Future<int> retainOnly(Iterable<String> sources) async {
+    final keep = {
+      for (final source in sources)
+        if (_identity(source) case final identity?) p.basename(_path(identity)),
+    };
+    var removed = 0;
+    try {
+      if (!await Directory(directory).exists()) return 0;
+      await for (final entity in Directory(
+        directory,
+      ).list(followLinks: false)) {
+        final name = p.basename(entity.path);
+        if (entity is File &&
+            _savedName.hasMatch(name) &&
+            !keep.contains(name) &&
+            await deleteQuietly(entity.path)) {
+          removed++;
+        }
+      }
+    } on FileSystemException catch (error) {
+      debugPrint("Could not prune saved lyrics: $error");
+    }
+    return removed;
+  }
+
+  static final _savedName = RegExp(r"^[a-z]+_[A-Za-z0-9_-]+\.json$");
 
   /// Whether lyrics can be saved for [source]: YouTube Music tracks.
   bool supports(String source) => _identity(source) != null;
@@ -327,20 +386,39 @@ class LyricsLibrary {
     final sidecar = File(sidecarPath(audioPath));
     try {
       if (await sidecar.exists()) {
-        final text = await sidecar.readAsString();
-        final lyrics = Lyrics.parse(text);
+        final lyrics = Lyrics.parse(_decodeText(await sidecar.readAsBytes()));
         if (lyrics.hasText) return lyrics;
       }
     } on FileSystemException catch (error) {
       debugPrint("Could not read ${sidecar.path}: $error");
-    } on FormatException catch (error) {
-      debugPrint("${sidecar.path} is not text: $error");
     }
     if (!await File(audioPath).exists()) return null;
     final embedded = await readEmbeddedLyrics(audioPath);
     if (embedded.isEmpty) return null;
     final lyrics = Lyrics.parse(embedded);
     return lyrics.hasText ? lyrics : null;
+  }
+
+  /// `.lrc` text: UTF-8 (with or without a byte order mark), UTF-16 with a
+  /// byte order mark, or else Latin-1, which older tools write and which
+  /// decodes any bytes.
+  static String _decodeText(List<int> bytes) {
+    if (bytes.length >= 2) {
+      final bigEndian = bytes[0] == 0xFE && bytes[1] == 0xFF;
+      if (bigEndian || (bytes[0] == 0xFF && bytes[1] == 0xFE)) {
+        return String.fromCharCodes([
+          for (var i = 2; i + 1 < bytes.length; i += 2)
+            bigEndian
+                ? bytes[i] << 8 | bytes[i + 1]
+                : bytes[i + 1] << 8 | bytes[i],
+        ]);
+      }
+    }
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      return latin1.decode(bytes);
+    }
   }
 
   /// What is saved for [source], without using the network.
@@ -421,7 +499,8 @@ class LyricsLibrary {
           await _write(identity, lyrics);
           return lyrics;
         } finally {
-          unawaited(_loading.remove(identity.key));
+          // Later requests fetch again (or read what was just saved).
+          _loading.remove(identity.key);
         }
       }();
 

@@ -188,9 +188,7 @@ SettingsSection downloadSettings(
   final settings = app.settingsDraft;
   final draft = settings.draft;
   final android = Platform.isAndroid;
-  final folder = android
-      ? (app.services.paths.publicMusicDirectory ?? draft.downloadDirectory)
-      : draft.downloadDirectory;
+  final folder = draft.downloadDirectory;
   return SettingsSection(
     icon: Icons.download_for_offline_rounded,
     title: "Download defaults",
@@ -209,6 +207,28 @@ SettingsSection downloadSettings(
           decoration: InputDecoration(
             labelText: "Music & download folder",
             prefixIcon: const Icon(Icons.folder_rounded),
+            helperText: android
+                ? "Choose any folder inside Music. Changes apply when you save."
+                : mobile
+                ? "Choose a folder. Changes apply when you save."
+                : "Type a path or choose a folder. Changes apply when you save.",
+            helperMaxLines: 3,
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: "Choose folder",
+                  onPressed: () => pickMusicFolder(app),
+                  icon: const Icon(Icons.drive_folder_upload_rounded),
+                ),
+                IconButton(
+                  tooltip: android ? "Open in Files" : "Open in file manager",
+                  onPressed: () => _openMusicFolder(app),
+                  icon: const Icon(Icons.open_in_new_rounded),
+                ),
+                const SizedBox(width: 4),
+              ],
+            ),
           ),
           onChanged: (value) => draft.downloadDirectory = value,
         ),
@@ -252,6 +272,29 @@ SettingsSection downloadSettings(
                 helper: draft.downloadFormat.lossless
                     ? "Lossless formats keep the source quality"
                     : null,
+              ),
+            ),
+            SizedBox(
+              width: 220,
+              child: _dropdown(
+                "Keep download history",
+                "${draft.downloadHistoryDays}",
+                [
+                  for (final days in downloadHistoryChoices)
+                    (
+                      "$days",
+                      switch (days) {
+                        0 => "Forever",
+                        1 => "1 day",
+                        7 => "1 week",
+                        _ => "$days days",
+                      },
+                    ),
+                ],
+                (value) => settings.update(
+                  (draft) => draft.downloadHistoryDays = int.parse(value),
+                ),
+                helper: "Finished downloads are then cleared",
               ),
             ),
           ],
@@ -298,6 +341,20 @@ SettingsSection downloadSettings(
       ],
     ),
   );
+}
+
+/// Opens the folder shown in the settings. A folder typed or chosen but not
+/// saved yet is opened only if it already exists; saving creates it.
+void _openMusicFolder(MelodyApp app) {
+  final draft = app.settingsDraft.draft.downloadDirectory.trim();
+  final saved = app.settings.downloadDirectory;
+  if (draft.isEmpty || draft == saved) {
+    openFolder(app, saved);
+  } else if (Directory(draft).existsSync()) {
+    openFolder(app, draft);
+  } else {
+    app.showMessage("Save settings to create $draft.");
+  }
 }
 
 SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
@@ -645,6 +702,7 @@ SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
+        if (PlatformFeatures.appDataFolder) _dataFolder(context, app),
         Wrap(
           spacing: 12,
           runSpacing: 12,
@@ -730,6 +788,52 @@ SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
               ),
             ],
           ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Where Melody keeps its databases, caches, lyrics, and cookies, with ways
+/// to open or copy it.
+Widget _dataFolder(BuildContext context, MelodyApp app) {
+  final folder = app.services.paths.dataDirectory;
+  return _infoBox(
+    context,
+    Icons.folder_special_rounded,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 6,
+      children: [
+        const Text(
+          "App data folder",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        SelectableText(
+          folder,
+          style: const TextStyle(fontSize: 12, fontFamily: "monospace"),
+        ),
+        _note(
+          context,
+          "Library and settings databases, saved lyrics, cookies, and "
+          "caches. Close Melody before changing files here; the cache "
+          "folder is safe to delete.",
+        ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: () => openFolder(app, folder),
+              icon: const Icon(Icons.open_in_new_rounded),
+              label: const Text("Open folder"),
+            ),
+            TextButton.icon(
+              onPressed: () => copyFolderPath(app, folder),
+              icon: const Icon(Icons.copy_rounded),
+              label: const Text("Copy path"),
+            ),
+          ],
         ),
       ],
     ),

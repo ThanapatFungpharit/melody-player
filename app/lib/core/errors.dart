@@ -87,6 +87,10 @@ const _windowsDiskErrors = {5, 19, 39, 112};
 
 bool _hasAny(String text, List<String> words) => words.any(text.contains);
 
+// The status code on its own, not digits inside a video ID (letters, digits,
+// "-", and "_") that the message quotes.
+final _tooManyRequests = RegExp(r"(?<![\w-])429(?![\w-])");
+
 bool _isDiskError(FileSystemException error) {
   final code = error.osError?.errorCode;
   if (code == null) return false;
@@ -117,7 +121,8 @@ DownloadFailure classifyDownloadError(Object error) {
     );
   }
   if (codes.contains("429") ||
-      _hasAny(message, ["429", "too many requests", "rate limit"])) {
+      _tooManyRequests.hasMatch(message) ||
+      _hasAny(message, ["too many requests", "rate limit"])) {
     return const DownloadFailure(
       DownloadErrorKind.rateLimit,
       "The provider is limiting requests. Wait before retrying.",

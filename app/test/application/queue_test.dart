@@ -101,6 +101,15 @@ void main() {
     expect(queue.items, ["x", "y", "z"]);
   });
 
+  test("shuffling one track queued repeatedly reports no change", () {
+    final queue = PlaybackQueue()..replace(["a"]);
+    queue
+      ..addLast("b")
+      ..addLast("b");
+    expect(queue.shuffleUpcoming(), isFalse);
+    expect(queue.items, ["a", "b", "b"]);
+  });
+
   test("play next stays next after a shuffle", () {
     final queue = PlaybackQueue(random: Random(2))
       ..replace(["a", "b", "c", "d"]);

@@ -26,6 +26,9 @@ class MobileDownloads extends StatelessWidget {
         for (final r in records)
           if (r.status.isUnsuccessful) r,
       ];
+      final failed = issues
+          .where((r) => r.status == DownloadStatus.failed)
+          .length;
       final completed = [
         for (final r in records)
           if (r.status == DownloadStatus.completed) r,
@@ -63,7 +66,22 @@ class MobileDownloads extends StatelessWidget {
           ("Completed", completed),
         ])
           if (items.isNotEmpty) ...[
-            Text(label, style: Theme.of(context).textTheme.titleLarge),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                if (identical(items, issues) && failed > 0)
+                  TextButton.icon(
+                    onPressed: () => retryFailed(app),
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text("Retry all"),
+                  ),
+              ],
+            ),
             for (final record in items) _DownloadCard(app, record),
           ],
         if (records.isEmpty)

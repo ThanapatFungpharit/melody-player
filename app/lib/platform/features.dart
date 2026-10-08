@@ -11,4 +11,7 @@ abstract final class PlatformFeatures {
   /// Custom buttons in the media notification. Windows and Apple controls
   /// have only built-in buttons.
   static bool get notificationShortcuts => Platform.isAndroid;
+
+  /// Showing and opening the app data folder. Android keeps it private.
+  static bool get appDataFolder => !Platform.isAndroid;
 }

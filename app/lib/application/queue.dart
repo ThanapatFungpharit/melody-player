@@ -107,6 +107,8 @@ class PlaybackQueue {
     final start = max(0, currentIndex + 1);
     if (upcomingCount < 2) return false;
     final original = items.sublist(start);
+    // One track queued several times has no other order to offer.
+    if (original.toSet().length < 2) return false;
     final upcoming = List.of(original)..shuffle(_random);
     final unchanged = Iterable.generate(
       upcoming.length,
@@ -158,10 +160,11 @@ class PlaybackQueue {
     return repeat;
   }
 
-  Map<String, Object?> toJson({int positionMs = 0}) => {
+  Map<String, Object?> toJson({int positionMs = 0, int durationMs = 0}) => {
     "queue": List.of(items),
     "current_index": currentIndex,
     "position_ms": max(0, positionMs),
+    "duration_ms": max(0, durationMs),
     "repeat": repeat.value,
   };
 

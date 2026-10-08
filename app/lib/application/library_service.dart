@@ -10,6 +10,7 @@ import "../core/library/models.dart";
 import "../core/storage.dart";
 import "lyrics.dart";
 import "models.dart";
+import "owned_files.dart";
 import "store.dart";
 import "thumbnails.dart";
 
@@ -59,7 +60,8 @@ class CleanupOutcome {
 }
 
 class LibraryService {
-  LibraryService(this.manager, this.store, {this.thumbnails, this.lyrics});
+  LibraryService(this.manager, this.store, {this.thumbnails, this.lyrics})
+    : _files = OwnedFiles(store, manager);
 
   final MusicManager manager;
   final ApplicationStore store;
@@ -68,6 +70,7 @@ class LibraryService {
   /// with it once no other track uses them.
   final ThumbnailCache? thumbnails;
   final LyricsLibrary? lyrics;
+  final OwnedFiles _files;
 
   TrackDetails details(String trackId) => store.trackDetails(trackId);
 
@@ -82,16 +85,18 @@ class LibraryService {
     final removed = store.reconcileTrackReferences({
       for (final track in tracks) track.id,
     });
-    final trackPaths = {
-      for (final track in tracks) track.id: manager.trackPath(track.id),
-    };
+    // A stored path outside every music folder cannot be played: it counts
+    // as missing instead of failing the whole check.
+    final trackPaths = {for (final track in tracks) track.id: _pathOf(track)};
     // One background check for the whole library.
-    final present = await existingFiles(trackPaths.values);
+    final present = await existingFiles(trackPaths.values.nonNulls);
     final missing = [
       for (final MapEntry(key: id, value: path) in trackPaths.entries)
-        if (!present.contains(path)) id,
+        if (path == null || !present.contains(path)) id,
     ];
-    final paths = {for (final path in trackPaths.values) _comparable(path)};
+    final paths = {
+      for (final path in trackPaths.values.nonNulls) pathKey(path),
+    };
     final unregistered = <String>[];
     final folder = Directory(manager.musicFolder);
     if (await folder.exists()) {
@@ -101,7 +106,7 @@ class LibraryService {
         if (entity is File &&
             !name.startsWith(".") &&
             audioSuffixes.contains(p.extension(name).toLowerCase()) &&
-            !paths.contains(_comparable(p.join(manager.musicRoot, name)))) {
+            !paths.contains(pathKey(p.join(manager.musicRoot, name)))) {
           unregistered.add(entity.path);
         }
       }
@@ -171,7 +176,7 @@ class LibraryService {
   /// Accepts only a top-level audio file in the music folder that no track
   /// uses, as [reconcile] reports them; the library may have changed since.
   void _requireStray(String path) {
-    if (_comparable(p.dirname(path)) != _comparable(manager.musicFolder) ||
+    if (!samePath(p.dirname(path), manager.musicFolder) ||
         !audioSuffixes.contains(p.extension(path).toLowerCase())) {
       throw ArgumentError("Not an audio file in the music folder");
     }
@@ -206,15 +211,20 @@ class LibraryService {
 
   static String? _originalFile(Track track) {
     final uri = Uri.tryParse(track.source);
-    return uri != null && uri.scheme == "file" ? uri.toFilePath() : null;
-  }
-
-  static String _comparable(String path) {
-    final absolute = p.normalize(p.absolute(path));
-    return Platform.isWindows ? absolute.toLowerCase() : absolute;
+    if (uri == null || uri.scheme != "file") return null;
+    try {
+      return uri.toFilePath();
+    } on UnsupportedError {
+      // Such as a file URI naming another host: not a local original.
+      return null;
+    }
   }
 
   TrackDetails toggleFavorite(String trackId) {
+    // A stale row must not recreate details for a removed track.
+    if (!manager.hasTrack(trackId)) {
+      throw ArgumentError("This track is no longer in your library.");
+    }
     final current = details(trackId);
     current.favorite = !current.favorite;
     store.saveTrackDetails(trackId, current);
@@ -235,47 +245,56 @@ class LibraryService {
     return scheme == "http" || scheme == "https";
   }
 
-  /// Removes a library record, the file Melody downloaded for it, and the
-  /// cached artwork and saved lyrics no other track uses.
+  /// The owned files of [tracks]' entries, which go with the entries:
+  /// files Melody downloaded ([ownsFile]), or every file when [all].
+  /// Other files only lose a `.lrc` Melody wrote beside them.
+  List<String> _ownedPaths(Iterable<Track> tracks, {bool all = false}) => [
+    for (final track in tracks)
+      if (all || ownsFile(track)) ?_pathOf(track),
+  ];
+
+  /// The track's file, or null when its stored path is not in a music
+  /// folder (then it is not Melody's to delete).
+  String? _pathOf(Track track) {
+    try {
+      return manager.trackPath(track.id);
+    } on ArgumentError {
+      return null;
+    }
+  }
+
+  /// Removes a library record with the file Melody downloaded for it, the
+  /// `.lrc` beside that file, and the cached artwork and saved lyrics no
+  /// other track uses. The file goes even if the operating system refuses
+  /// now: it is deleted at a later launch ([OwnedFiles]).
   Future<void> deleteTrack(String trackId) => manager.mutation.run(() async {
     final track = manager.getTrack(trackId);
-    final path = manager.trackPath(trackId);
     final thumbnail = details(trackId).thumbnail;
-    if (!manager.isPathReferenced(path, excluding: trackId)) {
-      // Keep the record for retry if the OS refuses to remove the file.
-      await _releaseFile(track, path);
-    }
+    final owned = _ownedPaths([track]);
+    _files.mark(owned);
     manager.deleteTrack(trackId);
     store.removeTrackDetails(trackId);
+    await _files.release(owned);
+    await _removeMelodySidecars([track]);
     await _forgetCaches([(track.source, thumbnail)]);
   });
 
   /// Removes every track and playlist record, every file Melody downloaded
-  /// for them, and their cached artwork and saved lyrics. Imported copies
-  /// stay on disk unless [deleteImported]. Returns the track and playlist
-  /// counts that were removed.
+  /// for them (with the `.lrc` beside it), and their cached artwork and
+  /// saved lyrics. Imported copies stay on disk unless [deleteImported].
+  /// Returns the track and playlist counts that were removed.
   Future<(int, int)> clearLibrary({bool deleteImported = false}) =>
       manager.mutation.run(() async {
         final tracks = manager.listTracks();
         final thumbnailsById = detailsMany([
           for (final track in tracks) track.id,
         ]);
-        final paths = {
-          for (final track in tracks) track.id: manager.trackPath(track.id),
-        };
+        final owned = _ownedPaths(tracks, all: deleteImported);
+        _files.mark(owned);
         final counts = manager.clearLibrary();
         store.clearLibraryData();
-        for (final track in tracks) {
-          try {
-            await _releaseFile(
-              track,
-              paths[track.id]!,
-              owned: deleteImported || ownsFile(track),
-            );
-          } on FileSystemException catch (error) {
-            debugPrint("Could not remove ${paths[track.id]}: $error");
-          }
-        }
+        await _files.release(owned);
+        if (!deleteImported) await _removeMelodySidecars(tracks);
         await _forgetCaches([
           for (final track in tracks)
             (track.source, thumbnailsById[track.id]?.thumbnail ?? ""),
@@ -283,20 +302,18 @@ class LibraryService {
         return counts;
       });
 
-  /// Deletes an owned file and its lyrics; leaves other files alone except
-  /// for a `.lrc` Melody wrote beside them.
-  static Future<void> _releaseFile(
-    Track track,
-    String path, {
-    bool? owned,
-  }) async {
-    if (!(owned ?? ownsFile(track))) {
-      await LyricsLibrary.removeMelodySidecar(path);
-      return;
+  /// Finishes file deletions an earlier launch could not. Call it at
+  /// launch, before downloads open.
+  Future<void> releasePendingFiles() => _files.releasePending();
+
+  /// Removes `.lrc` files Melody wrote beside the kept files of [tracks].
+  Future<void> _removeMelodySidecars(Iterable<Track> tracks) async {
+    for (final track in tracks) {
+      if (ownsFile(track)) continue;
+      if (_pathOf(track) case final path?) {
+        await LyricsLibrary.removeMelodySidecar(path);
+      }
     }
-    final file = File(path);
-    if (await file.exists()) await file.delete();
-    await LyricsLibrary.deleteSidecar(path);
   }
 
   Future<void> _forgetCaches(List<(String, String)> removed) async {
@@ -321,18 +338,19 @@ class LibraryService {
     }
   }
 
-  /// Drops cached artwork that no library track uses. Call it before
-  /// downloads start: a finishing download caches its artwork right after
-  /// registering its track. Returns how many entries were removed.
-  Future<int> removeUnusedArtwork() async {
-    final cache = thumbnails;
-    if (cache == null) return 0;
-    final details = detailsMany([
-      for (final track in manager.listTracks()) track.id,
-    ]);
-    return cache.retainOnly([
-      for (final item in details.values) item.thumbnail,
-    ]);
+  /// Drops cached artwork and saved lyrics that no library track uses, such
+  /// as those of previews and of downloads that failed. Call it before
+  /// downloads start: a finishing download caches its artwork and lyrics
+  /// before its track is registered. Returns how many files were removed.
+  Future<int> removeUnusedCaches() async {
+    final tracks = manager.listTracks();
+    final details = detailsMany([for (final track in tracks) track.id]);
+    return await (thumbnails?.retainOnly([
+              for (final item in details.values) item.thumbnail,
+            ]) ??
+            Future.value(0)) +
+        await (lyrics?.retainOnly([for (final track in tracks) track.source]) ??
+            Future.value(0));
   }
 
   void renameTrack(String trackId, String title) =>
@@ -374,7 +392,7 @@ class LibraryService {
         title: p.basenameWithoutExtension(sourcePath),
       );
     } catch (_) {
-      await _deleteQuietly(destination);
+      await deleteQuietly(destination);
       await LyricsLibrary.deleteSidecar(destination);
       rethrow;
     }
@@ -385,7 +403,7 @@ class LibraryService {
       // a failed import never leaves a half-imported track visible.
       try {
         manager.deleteTrack(trackId);
-        await _deleteQuietly(destination);
+        await deleteQuietly(destination);
         await LyricsLibrary.deleteSidecar(destination);
       } on Object catch (error) {
         debugPrint("Could not roll back a local import: $error");
@@ -409,15 +427,6 @@ class LibraryService {
     }
   }
 
-  static Future<void> _deleteQuietly(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not remove $path: $error");
-    }
-  }
-
   List<Track> tracks({
     String query = "",
     String sort = "recent",
@@ -434,17 +443,17 @@ class LibraryService {
   List<int> exportPlaylistM3u8(String playlistId) =>
       _m3u8(manager.playlistTracks(playlistId));
 
+  /// Tracks whose stored path is outside the music folders are left out:
+  /// no player could open them.
   List<int> _m3u8(Iterable<Track> tracks) {
     final lines = ["#EXTM3U"];
     for (final track in tracks) {
+      final path = _pathOf(track);
+      if (path == null) continue;
       final title = track.displayTitle.split(RegExp(r"\s+")).join(" ");
       lines
         ..add("#EXTINF:-1,$title")
-        ..add(
-          Uri.file(
-            p.normalize(p.absolute(manager.trackPath(track.id))),
-          ).toString(),
-        );
+        ..add(Uri.file(p.normalize(p.absolute(path))).toString());
     }
     return utf8.encode("${lines.join("\n")}\n");
   }

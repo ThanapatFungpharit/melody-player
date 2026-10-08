@@ -36,7 +36,7 @@ interfaces for the same shared capabilities.
 | `app/lib/application/`, `app/lib/core/` | Dart application and domain logic: stores, library, queue, playback, catalog, downloads, artwork verification |
 | `app/lib/worker/` | The only Dart code that talks to Python: the serious_python FFI transport and a typed client |
 | `app/lib/audio/`, `app/lib/platform/` | Adapter onto the audio plugin; per-platform paths |
-| `packages/melody_audio/` | Flutter plugin: process-scoped `just_audio` engine, system media session, notification artwork, Android MediaStore (Kotlin) |
+| `packages/melody_audio/` | Flutter plugin: process-scoped `just_audio` engine, system media session, notification artwork, Android folders (Kotlin) |
 | `worker/` | The embedded Python worker: runs ytmusicapi and yt-dlp and selects/updates their runtime wheels |
 | `tools/` | uv-registered tooling: `build/` (FFmpeg, worker packaging, `flutter build`, versions, signing key), `dev/` (run from source, worker console), `checks/` (all test suites) |
 
@@ -115,9 +115,14 @@ installed Melody upgrades in place with its library, playlists, and settings:
 - macOS: `~/Library/Application Support/MelodyPlayer`
 - Android: the app's application-support directory (`…/data`)
 
-Downloaded audio defaults to `~/Music/Melody` on desktop. On Android, downloads
-are prepared in recoverable private staging and then published through
-MediaStore to the public `Music/Melody` folder without broad storage permission.
+Downloaded audio defaults to `~/Music/Melody` on desktop. On Android (11 or newer),
+downloads are saved straight to the public `Music/Melody` folder, or another
+folder inside `Music` chosen in Settings, without any storage permission. The
+music folder only ever receives finished audio: each download stages in the app
+data folder (partial streams, thumbnails, receipts), and that staging is
+removed when the download ends. On desktop, Settings shows the app data folder
+with buttons to open it or copy its path. Its `cache` folder is safe to delete
+while Melody is closed.
 
 YouTube Music access is anonymous by default. To use a signed-in session, export
 a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody

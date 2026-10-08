@@ -29,22 +29,35 @@ void main() {
   group("removeStaleTemporaries", () {
     test("removes only abandoned atomic temporaries", () async {
       const old = Duration(hours: 2);
-      file(".state.json.0123456789abcdef.tmp", age: old);
-      file(".melody-import-0123456789abcdef.tmp", age: old);
+      file(".melody-tmp-0123456789abcdef.tmp", age: old);
+      file(".melody-tmp-0123456789abcdef.mp3", age: old);
+      // Left by the Python releases.
+      file(".state.json.k2j4_x9a.tmp", age: old);
+      file(".melody-import-ab3_9zq0.tmp", age: old);
       // A write in progress keeps its file fresh.
-      file(".cookies.txt.fedcba9876543210.tmp");
+      file(".melody-tmp-fedcba9876543210.json");
       // Not Melody's naming: never touched, however old.
       file("notes.tmp", age: old);
       file(".hidden.tmp", age: old);
+      file(".melody-tmp-notes.mp3", age: old);
       file("Song.mp3", age: old);
 
-      expect(await removeStaleTemporaries(root.path), 2);
+      expect(await removeStaleTemporaries(root.path), 4);
       expect(names(), [
-        ".cookies.txt.fedcba9876543210.tmp",
         ".hidden.tmp",
+        ".melody-tmp-fedcba9876543210.json",
+        ".melody-tmp-notes.mp3",
         "Song.mp3",
         "notes.tmp",
       ]);
+    });
+
+    test("temporary files keep the destination's extension", () {
+      final mp3 = temporarySibling(p.join(root.path, "Song.MP3"));
+      expect(p.dirname(mp3), root.path);
+      expect(p.basename(mp3), matches(r"^\.melody-tmp-[0-9a-f]{16}\.mp3$"));
+      expect(temporarySibling(p.join(root.path, "cookies")), endsWith(".tmp"));
+      expect(isTemporaryFile(p.basename(mp3)), isTrue);
     });
 
     test("an interrupted atomic write is recognised", () async {
@@ -52,10 +65,10 @@ void main() {
       await atomicWrite(target, [1, 2, 3]);
       // atomicWrite cleans up after itself; a crash would leave this name.
       final leftover = file(
-        ".receipt.json.0011223344556677.tmp",
+        p.basename(temporarySibling(target)),
         age: const Duration(hours: 3),
       );
-      expect(isAtomicTemporary(p.basename(leftover.path)), isTrue);
+      expect(isTemporaryFile(p.basename(leftover.path)), isTrue);
       expect(await removeStaleTemporaries(root.path), 1);
       expect(names(), ["receipt.json"]);
     });

@@ -52,6 +52,20 @@ class NowPlayingInfo {
   }
 }
 
+/// The current track's length: the engine's once it reports one, the
+/// library's until then, so a restored track shows where it resumes.
+int knownDurationMs(MelodyApp app) {
+  final playback = app.playback;
+  if (playback.durationMs > 0) return playback.durationMs;
+  final id = playback.currentTrackId;
+  if (id == null ||
+      playback.externalTitle.isNotEmpty ||
+      !app.services.manager.hasTrack(id)) {
+    return 0;
+  }
+  return (app.services.library.details(id).duration * 1000).round();
+}
+
 /// Calls [onTick] with the estimated playback position on every playback
 /// update and, while the position advances, again once it reaches
 /// [nextChange] of the last one: the next position at which the caller
@@ -137,7 +151,7 @@ class _LivePositionState extends State<LivePosition> {
 
   int _nextChange(int positionMs) {
     final second = (positionMs ~/ 1000 + 1) * 1000;
-    final duration = widget.app.playback.durationMs;
+    final duration = knownDurationMs(widget.app);
     // The physical pixels the position can span: at most the whole width.
     final box = context.findRenderObject();
     final pixels = box is RenderBox && box.hasSize
@@ -178,7 +192,7 @@ class _SeekBarState extends State<SeekBar> {
       app,
       builder: (context, positionMs) {
         final playback = app.playback;
-        final duration = playback.durationMs;
+        final duration = knownDurationMs(app);
         final max = duration > 0 ? duration.toDouble() : 1.0;
         final value = duration > 0
             ? (_dragging ?? positionMs.toDouble()).clamp(0.0, max)

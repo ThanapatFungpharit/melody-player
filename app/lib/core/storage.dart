@@ -65,6 +65,7 @@ class SqliteStore {
       db.execute("PRAGMA busy_timeout=5000");
       final check = db.select("PRAGMA quick_check").first.values.first;
       if (check != "ok") throw FormatException("$check");
+      _reclaimFreePages(db);
     } catch (error) {
       db.close();
       throw FormatException("$path is not a valid database: $error");
@@ -73,6 +74,25 @@ class SqliteStore {
     // Only a WAL commit's durability is a separate log flush.
     if (fullSync && syncInBackground && wal) store._startBackgroundSync();
     return store;
+  }
+
+  /// Deleted rows leave free pages that SQLite reuses but never returns to
+  /// the filesystem. Once they are a large share of a sizable file (after
+  /// clearing the library, say), the file is rebuilt without them.
+  static void _reclaimFreePages(Database db) {
+    int pragma(String name) =>
+        (db.select("PRAGMA $name").first.values.first as num).toInt();
+    final free = pragma("freelist_count");
+    final total = pragma("page_count");
+    if (free * pragma("page_size") < 4 * 1024 * 1024 || free * 4 < total) {
+      return;
+    }
+    try {
+      db.execute("VACUUM");
+    } on SqliteException catch (error) {
+      // Only space is lost; the database is intact.
+      debugPrint("Could not compact the database: $error");
+    }
   }
 
   void _startBackgroundSync() {
@@ -344,12 +364,26 @@ void _walSyncMain((String, SendPort) setup) {
 
 final _random = Random.secure();
 
-String _temporaryName(String directory, String prefix, String suffix) {
+/// The prefix of every temporary file Melody writes beside a destination
+/// before renaming it into place ([temporarySibling]).
+const temporaryPrefix = ".melody-tmp-";
+
+/// A fresh, unused-looking path in [destination]'s folder for writing its
+/// contents before an atomic rename: `.melody-tmp-<16 hex><extension>`.
+///
+/// The name keeps the destination's extension, because Android refuses
+/// files whose type does not belong in a shared folder (such as a `.tmp` in
+/// `Music`); an unusual extension becomes `.tmp`.
+String temporarySibling(String destination) {
   final token = List.generate(
     8,
     (_) => _random.nextInt(256).toRadixString(16).padLeft(2, "0"),
   ).join();
-  return p.join(directory, "$prefix$token$suffix");
+  final extension = p.extension(destination).toLowerCase();
+  final suffix = RegExp(r"^\.[0-9a-z]{1,8}$").hasMatch(extension)
+      ? extension
+      : ".tmp";
+  return p.join(p.dirname(destination), "$temporaryPrefix$token$suffix");
 }
 
 /// How long a temporary file must sit untouched before it counts as
@@ -357,15 +391,19 @@ String _temporaryName(String directory, String prefix, String suffix) {
 /// process that died mid-write leaves one this old.
 const staleTemporaryAge = Duration(hours: 1);
 
-final _atomicTemporary = RegExp(
-  r"^\.(?:.+\.|melody-import-)[0-9a-f]{16}\.tmp$",
+final _temporaryName = RegExp(
+  // Current: [temporarySibling].
+  r"^\.melody-tmp-[0-9a-f]{16}\.[0-9a-z]{1,8}$"
+  // The Python releases (mkstemp): `.<name>.<random>.tmp` and
+  // `.melody-import-<random>.tmp`.
+  r"|^\.(?:melody-import-|.+\.)[0-9a-z_]{8}\.tmp$",
 );
 
-/// Whether [name] is a temporary file of [atomicWrite] or [atomicCopy].
-bool isAtomicTemporary(String name) => _atomicTemporary.hasMatch(name);
+/// Whether [name] is a temporary file Melody writes before a rename.
+bool isTemporaryFile(String name) => _temporaryName.hasMatch(name);
 
-/// Removes temporary files that [atomicWrite] and [atomicCopy] left in
-/// [directory] (not its subfolders) when the process ended mid-write.
+/// Removes temporary files ([isTemporaryFile]) that a process ending
+/// mid-write left in [directory] (not its subfolders).
 /// Nothing else is touched. Returns how many files were removed.
 Future<int> removeStaleTemporaries(String directory, {DateTime? now}) async {
   final cutoff = (now ?? DateTime.now()).subtract(staleTemporaryAge);
@@ -373,7 +411,7 @@ Future<int> removeStaleTemporaries(String directory, {DateTime? now}) async {
   try {
     if (!await Directory(directory).exists()) return 0;
     await for (final entity in Directory(directory).list(followLinks: false)) {
-      if (entity is! File || !isAtomicTemporary(p.basename(entity.path))) {
+      if (entity is! File || !isTemporaryFile(p.basename(entity.path))) {
         continue;
       }
       if (await _deleteIfOlder(entity, cutoff)) removed++;
@@ -439,7 +477,21 @@ Future<bool> _deleteIfOlder(File file, DateTime cutoff) async {
   return _delete(file);
 }
 
-/// Best effort: a file another process holds open stays for next time.
+/// Deletes the file at [path] if there is one. Throws when it stays, such
+/// as one another program holds open on Windows.
+Future<void> deleteFile(String path) async {
+  try {
+    await File(path).delete();
+  } on PathNotFoundException {
+    // Already gone.
+  }
+}
+
+/// Deletes the file at [path] if there is one. Best effort: a failure only
+/// logs, and a file another process holds open stays for next time.
+/// Returns whether a file was removed.
+Future<bool> deleteQuietly(String path) => _delete(File(path));
+
 Future<bool> _delete(File file) async {
   try {
     await file.delete();
@@ -456,9 +508,7 @@ Future<bool> _delete(File file) async {
 Future<void> atomicWrite(String path, List<int> contents) async {
   final directory = p.dirname(path);
   await Directory(directory).create(recursive: true);
-  final temporary = File(
-    _temporaryName(directory, ".${p.basename(path)}.", ".tmp"),
-  );
+  final temporary = File(temporarySibling(path));
   try {
     final handle = await temporary.open(mode: FileMode.writeOnly);
     try {
@@ -469,35 +519,41 @@ Future<void> atomicWrite(String path, List<int> contents) async {
     }
     await temporary.rename(path);
   } finally {
-    if (await temporary.exists()) {
-      try {
-        await temporary.delete();
-      } on FileSystemException catch (error) {
-        debugPrint("Could not remove temporary file ${temporary.path}: $error");
-      }
-    }
+    // Gone after a successful rename.
+    await _delete(temporary);
   }
 }
 
 /// Copies across filesystems without exposing a partial destination file.
 Future<void> atomicCopy(String source, String destination) async {
-  final temporary = _temporaryName(
-    p.dirname(destination),
-    ".melody-import-",
-    ".tmp",
-  );
+  final temporary = temporarySibling(destination);
   try {
     await Isolate.run(() => _copyAndSync(source, temporary));
     await File(temporary).rename(destination);
   } finally {
-    final leftover = File(temporary);
-    if (await leftover.exists()) {
-      try {
-        await leftover.delete();
-      } on FileSystemException catch (error) {
-        debugPrint("Could not remove temporary file $temporary: $error");
-      }
-    }
+    await deleteQuietly(temporary);
+  }
+}
+
+/// Moves [source] to [destination], copying when they are on different
+/// volumes. Either the destination exists and the source is gone, or the
+/// source is left where it was.
+Future<void> moveFile(String source, String destination) async {
+  await Directory(p.dirname(destination)).create(recursive: true);
+  try {
+    await File(source).rename(destination);
+    return;
+  } on PathNotFoundException {
+    rethrow;
+  } on FileSystemException {
+    // Usually another volume; a file held open fails again below.
+  }
+  await atomicCopy(source, destination);
+  try {
+    await File(source).delete();
+  } on FileSystemException {
+    await deleteQuietly(destination);
+    rethrow;
   }
 }
 
@@ -583,6 +639,22 @@ bool _isFile(String path, {required bool nonEmpty}) {
 /// Seconds since the Unix epoch, the timestamp unit of every stored record.
 double unixSeconds() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
+/// Whether the filesystems Melody runs on usually ignore case in names
+/// (NTFS, APFS), so `Song.mp3` and `song.mp3` are one file.
+final bool caseInsensitiveFileNames = Platform.isWindows || Platform.isMacOS;
+
+/// [path] in the form path comparisons use: normalized, and lowercase where
+/// [caseInsensitiveFileNames]. Never use it to open a file.
+String pathKey(String path) {
+  final normalized = p.normalize(path);
+  return caseInsensitiveFileNames ? normalized.toLowerCase() : normalized;
+}
+
+/// Whether [a] and [b] name the same location, relative names resolved
+/// against the working directory. Links are not followed.
+bool samePath(String a, String b) =>
+    pathKey(p.absolute(a)) == pathKey(p.absolute(b));
+
 /// A path in [directory] for a file called [name] that neither exists nor is
 /// in [reserved]: `Song.mp3`, then `Song (2).mp3`, `Song (3).mp3`, ...
 String availablePath(
@@ -592,12 +664,11 @@ String availablePath(
 }) {
   final stem = p.basenameWithoutExtension(name);
   final extension = p.extension(name);
+  final reservedKeys = {for (final path in reserved) pathKey(path)};
+  bool taken(String path) =>
+      File(path).existsSync() || reservedKeys.contains(pathKey(path));
   var candidate = p.join(directory, name);
-  for (
-    var counter = 2;
-    File(candidate).existsSync() || reserved.contains(candidate);
-    counter++
-  ) {
+  for (var counter = 2; taken(candidate); counter++) {
     candidate = p.join(directory, "$stem ($counter)$extension");
   }
   return candidate;

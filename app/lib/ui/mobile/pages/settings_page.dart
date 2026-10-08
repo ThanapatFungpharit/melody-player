@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../shared/dialogs.dart";
 import "../../shared/settings_sections.dart";
 import "../../shared/theme.dart";
 import "../controls.dart";
@@ -102,7 +103,7 @@ class _MobileSettingsState extends State<MobileSettings> {
                     style: FilledButton.styleFrom(
                       minimumSize: const Size.fromHeight(48),
                     ),
-                    onPressed: () => app.run(app.settingsDraft.save),
+                    onPressed: () => saveSettings(context, app),
                     icon: const Icon(Icons.check_rounded),
                     label: const Text("Save settings"),
                   ),

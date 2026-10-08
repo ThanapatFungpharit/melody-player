@@ -259,22 +259,49 @@ void main() {
   });
 
   test("bulk queue updates notify once each", () async {
+    final ids = await tracks([
+      "current.mp3",
+      "next-one.mp3",
+      "next-two.mp3",
+      "last-one.mp3",
+      "last-two.mp3",
+    ]);
     final playback = controller();
-    playback.queue.replace(["current"]);
+    playback.queue.replace([ids[0]]);
     final changes = <PlaybackChange>[];
     playback.changes.listen(changes.add);
     playback
-      ..addNextMany(["next-one", "next-two"])
-      ..addLastMany(["last-one", "last-two"]);
-    expect(playback.queue.items, [
-      "current",
-      "next-one",
-      "next-two",
-      "last-one",
-      "last-two",
-    ]);
+      ..addNextMany([ids[1], ids[2]])
+      ..addLastMany([ids[3], ids[4]]);
+    expect(playback.queue.items, ids);
     expect(changes, [PlaybackChange.queue, PlaybackChange.queue]);
   });
+
+  test(
+    "queueing a track that left the library keeps the engine in sync",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3"]);
+      final errors = <String>[];
+      final playback = controller(onError: errors.add)..playTrack(ids[0]);
+      const removed = "00000000-0000-4000-8000-000000000000";
+
+      playback
+        ..addNext(removed)
+        ..addLast(removed);
+      expect(playback.queue.items, [ids[0]]);
+      expect(backend.queueUpdates, isEmpty);
+      expect(errors, [
+        "This track is no longer in your library.",
+        "This track is no longer in your library.",
+      ]);
+
+      // A stale id among others is skipped; the rest still reach the engine.
+      expect(playback.addLastMany([removed, ids[1]]), 1);
+      expect(playback.addNextMany([removed]), 0);
+      expect(playback.queue.items, ids);
+      expect(backend.queueUpdates.last.$1.map((item) => item.trackId), ids);
+    },
+  );
 
   test("library playback sends file paths to the native player", () async {
     final ids = await tracks(["song.mp3", "next.mp3"]);
@@ -427,6 +454,23 @@ void main() {
       expect(playback.positionMs, 3456);
     },
   );
+
+  test("a restored track shows its saved progress before playing", () async {
+    final [id] = await tracks(["song.mp3"]);
+    store.set("playback", {
+      "queue": [id],
+      "current_index": 0,
+      "position_ms": 3456,
+      "duration_ms": 200000,
+    });
+    final playback = controller();
+    expect(playback.playing, isFalse);
+    expect(playback.positionMs, 3456);
+    expect(playback.durationMs, 200000);
+    playback.seek(500000);
+    expect(playback.positionMs, 200000);
+    expect(saved()["duration_ms"], 200000);
+  });
 
   test("an invalid restored position does not prevent startup", () async {
     final [id] = await tracks(["song.mp3"]);

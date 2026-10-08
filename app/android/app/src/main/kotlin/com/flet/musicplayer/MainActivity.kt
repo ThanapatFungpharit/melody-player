@@ -85,7 +85,9 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        applyPendingIcon()
+        // A configuration change configChanges doesn't cover (bold text,
+        // for one) recreates the activity while Melody is still on screen.
+        if (!isChangingConfigurations) applyPendingIcon()
         super.onDestroy()
     }
 

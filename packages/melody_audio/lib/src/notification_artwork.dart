@@ -8,6 +8,12 @@ import "notification_artwork_web.dart"
 import "notification_focal_point.dart";
 import "notification_saliency.dart";
 
+/// Keeps prepared media-session artwork in [path] (the app's cache folder,
+/// bounded to the 64 most recently used images) instead of the system's
+/// temporary folder. Call it before the media session starts.
+void useNotificationArtworkDirectory(String path) =>
+    artwork_io.useNotificationArtworkDirectory(path);
+
 // Names the automatic crop algorithm in cache keys. Change it whenever crops
 // change so artwork prepared by an earlier version is not reused.
 const _automaticMode = "auto-u2netp256-int8-composition-2";

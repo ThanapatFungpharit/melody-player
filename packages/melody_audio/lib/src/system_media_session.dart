@@ -31,6 +31,28 @@ String? platformArtwork(String uri, {TargetPlatform? platform}) {
   }
 }
 
+/// The (at most two) shortcuts the Android notification shows. The first two
+/// of [preference] are the chosen pair and keep their slots; a later one
+/// stands in for an unavailable pick in that pick's slot, so a button never
+/// slides to the other side while the queue changes.
+@visibleForTesting
+List<MediaShortcut> notificationShortcuts(
+  List<MediaShortcut> preference,
+  bool Function(MediaShortcut) available,
+) {
+  final pair = preference.take(2).toList();
+  final spares = preference.skip(2).where(available).iterator;
+  final shown = <MediaShortcut>[];
+  for (final pick in pair) {
+    if (available(pick)) {
+      shown.add(pick);
+    } else if (spares.moveNext()) {
+      shown.add(spares.current);
+    }
+  }
+  return shown;
+}
+
 /// What system controls show, with placeholders for empty fields.
 MediaMetadata _metadata(
   String title,
@@ -379,9 +401,15 @@ class SystemMediaSession {
     );
     if (_actionsSnapshot != actionsSnapshot) {
       final shortcuts = <MediaAction>[];
-      for (final shortcut in state.shortcuts) {
-        if (shortcuts.length == 2) break;
-        if (shortcut == MediaShortcut.shuffle && state.canShuffle) {
+      for (final shortcut in notificationShortcuts(
+        state.shortcuts,
+        (shortcut) => switch (shortcut) {
+          MediaShortcut.shuffle => state.canShuffle,
+          MediaShortcut.repeat => state.canRepeat,
+          MediaShortcut.favorite => state.canFavorite,
+        },
+      )) {
+        if (shortcut == MediaShortcut.shuffle) {
           shortcuts.add(
             MediaAction.custom(
               name: "shuffleUpcoming",
@@ -389,7 +417,7 @@ class SystemMediaSession {
               customIconResource: "ic_melody_shuffle",
             ),
           );
-        } else if (shortcut == MediaShortcut.repeat && state.canRepeat) {
+        } else if (shortcut == MediaShortcut.repeat) {
           shortcuts.add(
             MediaAction.custom(
               name: "cycleRepeat",
@@ -405,7 +433,7 @@ class SystemMediaSession {
               },
             ),
           );
-        } else if (shortcut == MediaShortcut.favorite && state.canFavorite) {
+        } else {
           shortcuts.add(
             MediaAction.custom(
               name: "toggleFavorite",

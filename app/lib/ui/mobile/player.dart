@@ -107,7 +107,7 @@ class MiniPlayer extends StatelessWidget {
                 LivePosition(
                   app,
                   builder: (context, positionMs) {
-                    final duration = app.playback.durationMs;
+                    final duration = knownDurationMs(app);
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       child: LinearProgressIndicator(
@@ -115,7 +115,7 @@ class MiniPlayer extends StatelessWidget {
                         minHeight: 2,
                         color: scheme.primary,
                         backgroundColor: scheme.onSurface.withValues(
-                          alpha: 0.08,
+                          alpha: 0.12,
                         ),
                       ),
                     );

@@ -108,7 +108,13 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
 # Bundled FFmpeg/FFprobe, staged by tools/build/media.py (melody-fetch-media).
-set(MELODY_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../media/windows/x86_64")
+# flutter build passes the target as FLUTTER_TARGET_PLATFORM.
+if(FLUTTER_TARGET_PLATFORM STREQUAL "windows-arm64")
+  set(MELODY_MEDIA_ARCH "arm64")
+else()
+  set(MELODY_MEDIA_ARCH "x86_64")
+endif()
+set(MELODY_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../media/windows/${MELODY_MEDIA_ARCH}")
 if(EXISTS "${MELODY_MEDIA_DIR}/ffmpeg.exe")
   install(FILES "${MELODY_MEDIA_DIR}/ffmpeg.exe" "${MELODY_MEDIA_DIR}/ffprobe.exe"
     DESTINATION "${CMAKE_INSTALL_PREFIX}/ffmpeg" COMPONENT Runtime)

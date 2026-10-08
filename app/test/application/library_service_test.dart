@@ -5,6 +5,7 @@ import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/library_service.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/models.dart";
+import "package:melody/application/owned_files.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/library/manager.dart";
@@ -83,6 +84,66 @@ void main() {
     expect(await File(path).exists(), isFalse);
     expect(thumbnails.cachedPath(_thumbnail), isNull);
     expect(await lyricsSaved(), isFalse);
+  });
+
+  test("a downloaded track's lyrics file goes with it", () async {
+    final id = await downloaded("song.mp3");
+    final lrc = File(p.join(music, "song.lrc"))..writeAsStringSync("[00:01]Hi");
+
+    await library.deleteTrack(id);
+
+    expect(lrc.existsSync(), isFalse);
+  });
+
+  test("a deletion a crash interrupted finishes at the next launch", () async {
+    final id = await downloaded("song.mp3");
+    final path = manager.trackPath(id);
+    // The entry went, but the process ended before the file did.
+    OwnedFiles(store, manager).mark([path]);
+    manager.deleteTrack(id);
+    store.removeTrackDetails(id);
+    expect(File(path).existsSync(), isTrue);
+
+    await library.releasePendingFiles();
+
+    expect(File(path).existsSync(), isFalse);
+    expect(store.get("pending_file_deletions"), isEmpty);
+  });
+
+  test(
+    "a file another program holds open is deleted once it is free",
+    () async {
+      final id = await downloaded("song.mp3");
+      final path = manager.trackPath(id);
+      final held = await File(path).open();
+      try {
+        await library.deleteTrack(id);
+        expect(manager.hasTrack(id), isFalse);
+        expect(File(path).existsSync(), isTrue);
+      } finally {
+        await held.close();
+      }
+
+      await library.releasePendingFiles();
+
+      expect(File(path).existsSync(), isFalse);
+    },
+    skip: Platform.isWindows
+        ? false
+        : "Only Windows refuses to delete open files",
+  );
+
+  test("a file whose entry survived a crash is kept", () async {
+    final id = await downloaded("song.mp3");
+    final path = manager.trackPath(id);
+    // The process ended after recording the deletion, before the entry went.
+    OwnedFiles(store, manager).mark([path]);
+
+    await library.releasePendingFiles();
+
+    expect(manager.hasTrack(id), isTrue);
+    expect(File(path).existsSync(), isTrue);
+    expect(store.get("pending_file_deletions"), isEmpty);
   });
 
   test("caches another track still uses are kept", () async {
@@ -227,18 +288,30 @@ void main() {
     expect(await library.canRestoreLocalFile(id), isFalse);
   });
 
-  test("unused cached artwork is removed at startup", () async {
+  test("unused artwork and lyrics are removed at startup", () async {
     await downloaded("song.mp3");
     const orphan = "https://i.ytimg.com/vi/zzzzzzzzzzz/hq.jpg";
     await thumbnails.storeBytes(orphan, _png);
     final unrelated = File(p.join(thumbnails.directory, "notes.txt"))
       ..writeAsStringSync("kept");
+    // Lyrics saved for a preview, or for a download that failed.
+    const preview = "https://music.youtube.com/watch?v=zzzzzzzzzzz";
+    await lyrics.load(preview);
 
-    expect(await library.removeUnusedArtwork(), 1);
+    expect(await library.removeUnusedCaches(), 2);
     expect(thumbnails.cachedPath(_thumbnail), isNotNull);
     expect(thumbnails.cachedPath(orphan), isNull);
     expect(unrelated.existsSync(), isTrue);
+    expect(await lyricsSaved(), isTrue);
+    expect(await lyrics.saved(preview), isNull);
     // Idempotent.
-    expect(await library.removeUnusedArtwork(), 0);
+    expect(await library.removeUnusedCaches(), 0);
+  });
+
+  test("favoriting a track that left the library changes nothing", () async {
+    final id = await downloaded("song.mp3");
+    await library.deleteTrack(id);
+    expect(() => library.toggleFavorite(id), throwsArgumentError);
+    expect(store.hasTrackDetails(id), isFalse);
   });
 }

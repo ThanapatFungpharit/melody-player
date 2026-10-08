@@ -175,6 +175,23 @@ void main() {
       );
     });
 
+    test("are read in UTF-16 and legacy encodings", () async {
+      final utf16 = await audio("Utf16.mp3");
+      final legacy = await audio("Legacy.mp3");
+      await File(LyricsLibrary.sidecarPath(utf16)).writeAsBytes([
+        0xFF, 0xFE, // UTF-16LE byte order mark
+        for (final unit in "[00:01.00]Café".codeUnits) ...[unit, 0],
+      ]);
+      // "Café" in Latin-1 is not valid UTF-8.
+      await File(
+        LyricsLibrary.sidecarPath(legacy),
+      ).writeAsBytes([...("[00:01.00]Caf").codeUnits, 0xE9]);
+      for (final path in [utf16, legacy]) {
+        final lyrics = await library().fromFiles(path);
+        expect(lyrics!.lines.single.text, "Café");
+      }
+    });
+
     test("are removed with their audio file", () async {
       final path = await audio("Song.mp3");
       await File(LyricsLibrary.sidecarPath(path)).writeAsString("x");
@@ -231,6 +248,38 @@ void main() {
         61230,
         3723450,
       ]);
+    });
+
+    test("tolerates a byte order mark, lone carriage returns, and word "
+        "timings", () {
+      final lyrics = Lyrics.parse(
+        "﻿[00:01.00]<00:01.00>Hello <00:01.50>world\r[00:02.00]Bye",
+      );
+      expect(lyrics.lines.map((line) => (line.startMs, line.text)), [
+        (1000, "Hello world"),
+        (2000, "Bye"),
+      ]);
+    });
+
+    test("skips a timestamp too large to be a time", () {
+      final lyrics = Lyrics.parse(
+        "[99999999999999999999999:00.00]Never\n[00:01.00]Once",
+      );
+      expect(lyrics.lines.map((line) => line.text), ["Once"]);
+    });
+
+    test("YouTube Music's timed lines are ordered and typed defensively", () {
+      final lyrics = Lyrics.fromYtMusic({
+        "lyrics": [
+          {"text": "Two", "start_time": 2000, "end_time": 3000},
+          {"text": "One", "start_time": "1000", "end_time": null},
+        ],
+      })!;
+      expect(lyrics.lines.map((line) => (line.startMs, line.text)), [
+        (1000, "One"),
+        (2000, "Two"),
+      ]);
+      expect(lyrics.lineAt(1500), 0);
     });
 
     test("YouTube Music's plain lyrics keep their lines", () {

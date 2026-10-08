@@ -1,11 +1,10 @@
 import "dart:async";
-import "dart:io";
 import "dart:math";
 
 import "package:flutter/material.dart";
 import "package:melody_audio/melody_audio.dart";
 
-import "../application/android_music_export.dart";
+import "../application/download_report.dart";
 import "../application/lyrics.dart";
 import "../application/models.dart";
 import "../application/playback.dart";
@@ -18,6 +17,7 @@ import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
 import "shared/app_icon.dart";
+import "shared/format.dart" show downloadReportMessage;
 
 /// A listenable that fires on demand.
 class Signal extends ChangeNotifier {
@@ -26,10 +26,13 @@ class Signal extends ChangeNotifier {
 
 /// A user-visible notification.
 class AppMessage {
-  const AppMessage(this.text, {this.error = false});
+  const AppMessage(this.text, {this.error = false, this.action});
 
   final String text;
   final bool error;
+
+  /// A button shown with the message, as (label, what it does).
+  final (String, VoidCallback)? action;
 }
 
 /// Utility destinations shown beside or over the main content.
@@ -83,19 +86,17 @@ class MelodyApp {
     library = LibraryController(this);
     playlists = PlaylistsController(this);
     settingsDraft = SettingsController(this);
-    if (Platform.isAndroid) {
-      _musicExport = AndroidMusicExport(
-        services.manager,
-        privateRoot: services.paths.dataDirectory,
-        publicRoot: services.paths.publicMusicDirectory,
-        isPlaying: (trackId) => playback.currentTrackId == trackId,
-        onFailure: showError,
-      )..resumeInterrupted();
-    }
+    // Leaving Settings without saving (close, Esc, back, another panel)
+    // drops a theme or accent preview, as Cancel does.
+    activePanel.addListener(() {
+      if (activePanel.value != AppPanel.settings) {
+        appearance.value = (settings.theme, settings.accentColor);
+      }
+    });
     final embedder = services.lyricsEmbedder;
     if (embedder != null) {
       embedder.isPlaying = (trackId) => playback.currentTrackId == trackId;
-      unawaited(embedder.embedLibrary());
+      embedder.embedLibrary();
     }
   }
 
@@ -119,7 +120,6 @@ class MelodyApp {
   late final PlaylistsController playlists;
   late final SettingsController settingsDraft;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
-  AndroidMusicExport? _musicExport;
 
   /// Track, transport, queue, and loading changes.
   final Signal playbackState = Signal();
@@ -157,8 +157,14 @@ class MelodyApp {
 
   // -- notifications -------------------------------------------------------
 
-  void showMessage(String message, {bool error = false}) {
-    if (!_messages.isClosed) _messages.add(AppMessage(message, error: error));
+  void showMessage(
+    String message, {
+    bool error = false,
+    (String, VoidCallback)? action,
+  }) {
+    if (!_messages.isClosed) {
+      _messages.add(AppMessage(message, error: error, action: action));
+    }
   }
 
   void showError(String message) =>
@@ -208,10 +214,6 @@ class MelodyApp {
     // once-a-second progress reports need no session sync of their own.
     if (change != PlaybackChange.volume && change != PlaybackChange.progress) {
       syncSystemMedia(refreshMetadata: change == PlaybackChange.track);
-    }
-    if (change == PlaybackChange.track &&
-        (_musicExport?.hasDeferredSources ?? false)) {
-      unawaited(_musicExport!.releasePlayedSources());
     }
     if (change == PlaybackChange.track) {
       // Files skipped while they played can take their lyrics now.
@@ -313,7 +315,10 @@ class MelodyApp {
         position: Duration(milliseconds: playback.positionMs),
         playing: playback.playing,
         loading: playback.loading,
-        hasNext: hasMedia && playback.queue.peekNext(automatic: true) != null,
+        // Skip buttons stay published even at the queue's ends (Next there
+        // pauses and rewinds). Android fills a missing skip slot with a
+        // custom shortcut, which would shift the notification's buttons.
+        hasNext: hasMedia,
         hasPrevious: hasMedia,
         repeatMode: audioRepeatMode(playback.queue.repeat),
         canRepeat: libraryTrack && playback.queue.items.isNotEmpty,
@@ -439,14 +444,36 @@ class MelodyApp {
 
   void _downloadChanged(DownloadRecord record) {
     if (record.status == DownloadStatus.completed) {
-      _musicExport?.export(record.trackIds);
       _saveLyrics(record.trackIds);
     }
     if (record.status.isFinished) {
+      // Playing or importing a song already tells the user how it went.
+      final reported =
+          pendingDownloadActions.containsKey(record.id) ||
+          playlists.ownsDownload(record.id);
+      if (!reported) _downloadReporter.add(record);
       _finishPendingDownloadAction(record);
       touchLibrary();
       playlists.notifyDownloadChanged();
+      _reportDownloads();
     }
+  }
+
+  final _downloadReporter = DownloadReporter();
+
+  /// One message once the downloads settle, not one per song.
+  void _reportDownloads() {
+    final report = _downloadReporter.settle(
+      active: services.downloads.activeCount(),
+    );
+    if (report == null) return;
+    showMessage(
+      downloadReportMessage(report),
+      error: report.hasFailures,
+      action: activePanel.value == AppPanel.downloads
+          ? null
+          : ("View", () => openPanel(AppPanel.downloads)),
+    );
   }
 
   void _finishPendingDownloadAction(DownloadRecord record) {
@@ -525,16 +552,16 @@ class MelodyApp {
   /// A library track's source and file, for lyrics lookups.
   LyricsTrack? lyricsTrack(String trackId) {
     if (!services.manager.hasTrack(trackId)) return null;
-    return (
-      source: services.manager.getTrack(trackId).source,
-      path: services.manager.trackPath(trackId),
-    );
+    try {
+      return (
+        source: services.manager.getTrack(trackId).source,
+        path: services.manager.trackPath(trackId),
+      );
+    } on ArgumentError {
+      // Its stored path is outside the music folders.
+      return null;
+    }
   }
-
-  // -- Android public Music folder ------------------------------------------
-
-  void exportImportedTracks(Iterable<String> trackIds) =>
-      _musicExport?.export(trackIds);
 
   void close() {
     if (_closed) return;
@@ -543,7 +570,6 @@ class MelodyApp {
     backend.close();
     playback.close();
     persistence.close();
-    _musicExport?.close();
     services.lyricsEmbedder?.close();
     // Running jobs observe cancellation at their next yt-dlp callback.
     services.downloads.shutdown();

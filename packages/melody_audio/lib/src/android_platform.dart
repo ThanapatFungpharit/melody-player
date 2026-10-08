@@ -1,8 +1,8 @@
 import "package:flutter/foundation.dart";
 import "package:flutter/services.dart";
 
-/// Android services implemented by the plugin's Kotlin side: MediaStore
-/// publishing and the directories Melody needs from the OS.
+/// Android services implemented by the plugin's Kotlin side: the
+/// directories Melody needs from the OS and opening the Music folder.
 class AndroidPlatform {
   AndroidPlatform._();
 
@@ -12,26 +12,6 @@ class AndroidPlatform {
 
   static bool get _android =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-
-  /// Copies a staged track into the public `Music/<relativePath>` collection
-  /// and returns the published absolute path.
-  static Future<String> publishAudio(
-    String source, {
-    String relativePath = "Melody",
-  }) async {
-    if (!_android) {
-      throw UnsupportedError("Shared audio publishing is Android-only");
-    }
-    final result = await _channel.invokeMapMethod<String, Object?>(
-      "publishAudio",
-      {"source": source, "relativePath": relativePath},
-    );
-    final path = result?["path"];
-    if (path is! String || path.isEmpty) {
-      throw StateError("Android did not return the published music path");
-    }
-    return path;
-  }
 
   /// The read-only directory where Android installed bundled executables
   /// (FFmpeg is packaged as `libffmpeg.so`).
@@ -44,6 +24,19 @@ class AndroidPlatform {
       throw StateError("Android did not report its native library directory");
     }
     return path;
+  }
+
+  /// Shows `Music/<relativePath>` in the system Files app, or the storage
+  /// root when Files cannot open that folder directly. Returns false when
+  /// no app can show either.
+  static Future<bool> openMusicFolder(String relativePath) async {
+    if (!_android) {
+      throw UnsupportedError("Opening the Music folder is Android-only");
+    }
+    return await _channel.invokeMethod<bool>("openMusicFolder", {
+          "relativePath": relativePath,
+        }) ??
+        false;
   }
 
   /// The public Music folder root, normally `/storage/emulated/0/Music`.

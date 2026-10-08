@@ -75,19 +75,25 @@ class _QueuePanelState extends State<QueuePanel> {
                         onPressed: app.playback.cycleRepeat,
                       ),
                     ),
-                    _Chip(
-                      icon: Icons.shuffle_rounded,
-                      label: "Shuffle upcoming",
-                      onPressed: queue.upcomingCount < 2
-                          ? null
-                          : app.playback.shuffleUpcoming,
+                    Tooltip(
+                      message: "Shuffle upcoming tracks",
+                      child: _Chip(
+                        icon: Icons.shuffle_rounded,
+                        label: "Shuffle",
+                        onPressed: queue.upcomingCount < 2
+                            ? null
+                            : app.playback.shuffleUpcoming,
+                      ),
                     ),
-                    _Chip(
-                      icon: Icons.clear_all_rounded,
-                      label: "Clear upcoming",
-                      onPressed: queue.items.length <= 1
-                          ? null
-                          : app.playback.clearQueue,
+                    Tooltip(
+                      message: "Clear upcoming tracks",
+                      child: _Chip(
+                        icon: Icons.clear_all_rounded,
+                        label: "Clear",
+                        onPressed: queue.items.length <= 1
+                            ? null
+                            : app.playback.clearQueue,
+                      ),
                     ),
                   ],
                 ),

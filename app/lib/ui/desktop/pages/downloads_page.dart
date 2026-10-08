@@ -2,6 +2,7 @@ import "package:flutter/material.dart";
 
 import "../../app_state.dart";
 import "../../../application/models.dart";
+import "../../shared/actions.dart";
 import "../../shared/format.dart";
 import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
@@ -30,7 +31,9 @@ class DownloadsPanel extends StatelessWidget {
       var active = 0;
       var completed = 0;
       var issues = 0;
+      var failed = 0;
       for (final record in records) {
+        if (record.status == DownloadStatus.failed) failed++;
         if (record.batchId.isNotEmpty) {
           batches.putIfAbsent(record.batchId, () => []).add(record);
         }
@@ -50,6 +53,11 @@ class DownloadsPanel extends StatelessWidget {
             "Downloads",
             "Save it here. Take it with you.",
             actions: [
+              TextButton.icon(
+                onPressed: failed == 0 ? null : () => retryFailed(app),
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: Text("Retry failed ($failed)"),
+              ),
               TextButton.icon(
                 onPressed: completed + issues == 0
                     ? null

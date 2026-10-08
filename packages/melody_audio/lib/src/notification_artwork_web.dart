@@ -9,6 +9,9 @@ Future<Uint8List?> readNotificationArtwork(Uri uri) async {
   return data.buffer.asUint8List();
 }
 
+/// Web artwork lives in data URIs; there is no folder.
+void useNotificationArtworkDirectory(String path) {}
+
 /// Web artwork lives in data URIs, so nothing survives a reload.
 Future<String?> existingNotificationArtwork(String key) async => null;
 

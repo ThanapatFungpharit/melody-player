@@ -14,12 +14,17 @@ import "../shared/widgets.dart" show pageBounds;
 import "library_controller.dart";
 
 class _ImportSession {
-  _ImportSession(this.playlistId, this.name, this.pending, this.order);
+  _ImportSession(this.playlistId, this.name, this.tracks)
+    : pending = Queue.of(tracks.keys);
 
   final String playlistId;
   final String name;
-  final Queue<(String, SearchResult)> pending;
-  final List<String> order;
+
+  /// Source key → result, in playlist order.
+  final Map<String, SearchResult> tracks;
+
+  /// Source keys not yet requested.
+  final Queue<String> pending;
   final Map<String, String> resolved = {};
 
   /// Source key → (task, whether this session created the task).
@@ -28,7 +33,7 @@ class _ImportSession {
   int downloaded = 0;
   int failed = 0;
 
-  int get total => order.length;
+  int get total => tracks.length;
 }
 
 /// Playlist view state, management workflows, and remote playlist import.
@@ -189,12 +194,7 @@ class PlaylistsController extends ChangeNotifier {
     final playlistId = app.services.manager.createPlaylist(name);
     app.touchLibrary();
     if (generation != _generation) return;
-    final session = _ImportSession(
-      playlistId,
-      name,
-      Queue.of([for (final entry in unique.entries) (entry.key, entry.value)]),
-      unique.keys.toList(),
-    );
+    final session = _ImportSession(playlistId, name, unique);
     _session = session;
     selectedPlaylistId = playlistId;
     notifyListeners();
@@ -208,10 +208,12 @@ class PlaylistsController extends ChangeNotifier {
         // Requests are non-blocking; submit until the downloader reports
         // backpressure, then refill after terminal notifications wake us.
         while (session.pending.isNotEmpty && identical(_session, session)) {
-          final (key, result) = session.pending.first;
+          final key = session.pending.first;
           final DownloadRequest request;
           try {
-            request = await app.services.downloads.request(result);
+            request = await app.services.downloads.request(
+              session.tracks[key]!,
+            );
           } on WorkerQueueFull {
             queueFull = true;
             break;
@@ -242,16 +244,24 @@ class PlaylistsController extends ChangeNotifier {
         // this snapshot or wakes the next wait.
         _wakeup = Completer();
         var terminalSeen = false;
-        for (final entry in session.activeDownloads.entries.toList()) {
-          final record = app.services.downloads.get(entry.value.$1);
-          if (record == null || !record.status.isFinished) {
-            continue;
-          }
+        for (final MapEntry(:key, value: (task, _))
+            in session.activeDownloads.entries.toList()) {
+          final record = app.services.downloads.get(task);
+          if (record != null && !record.status.isFinished) continue;
           terminalSeen = true;
-          session.activeDownloads.remove(entry.key);
-          if (record.status == DownloadStatus.completed &&
-              record.trackIds.isNotEmpty) {
-            session.resolved[entry.key] = record.trackIds.first;
+          session.activeDownloads.remove(key);
+          // Active records are never dropped, so a missing one finished and
+          // left the history (Clear finished) before this loop saw it; the
+          // library still knows whether its track arrived.
+          final trackId = record == null
+              ? app.services.manager
+                    .findTrackBySource(session.tracks[key]!.url)
+                    ?.id
+              : record.status == DownloadStatus.completed
+              ? record.trackIds.firstOrNull
+              : null;
+          if (trackId != null) {
+            session.resolved[key] = trackId;
             session.downloaded++;
             changed = true;
           } else {
@@ -260,7 +270,7 @@ class PlaylistsController extends ChangeNotifier {
         }
         if (changed) {
           app.services.manager.mergeTracksIntoPlaylist(playlistId, [
-            for (final key in session.order) ?session.resolved[key],
+            for (final key in session.tracks.keys) ?session.resolved[key],
           ]);
           app.touchLibrary();
         }
@@ -282,6 +292,12 @@ class PlaylistsController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  /// Whether the running import is waiting for [task]; its summary reports
+  /// the download.
+  bool ownsDownload(String task) =>
+      _session?.activeDownloads.values.any((entry) => entry.$1 == task) ??
+      false;
 
   /// Wakes the importer so it can inspect finished downloads.
   void notifyDownloadChanged() {

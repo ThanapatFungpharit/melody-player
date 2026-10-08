@@ -3,6 +3,10 @@ import "dart:typed_data";
 
 import "package:file_picker/file_picker.dart";
 import "package:flutter/material.dart";
+import "package:flutter/services.dart"
+    show Clipboard, ClipboardData, PlatformException;
+import "package:melody_audio/melody_audio.dart" show AndroidPlatform;
+import "package:path/path.dart" as p;
 
 import "../app_state.dart";
 import "../../application/downloads.dart";
@@ -11,6 +15,7 @@ import "../../application/models.dart";
 import "../../core/errors.dart" show failureMessage;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
+import "../../platform/folders.dart";
 import "../controllers/search_controller.dart";
 import "format.dart";
 import "widgets.dart";
@@ -138,6 +143,27 @@ Future<void> showConfirmDialog(
     );
   },
 );
+
+/// Saves the settings, first asking to move the library when the music
+/// folder changes while it has tracks.
+Future<void> saveSettings(BuildContext context, MelodyApp app) {
+  final settings = app.settingsDraft;
+  final tracks = settings.tracksToMove;
+  if (tracks == 0) return app.run(settings.save);
+  return showConfirmDialog(
+    context,
+    title: "Move your library?",
+    message:
+        "Melody will move the audio of ${plural(tracks, "library track")} "
+        "from ${app.settings.downloadDirectory} to "
+        "${settings.draftMusicFolder}, and save new downloads there. "
+        "Playback stops while the files move. Other files in the old folder "
+        "stay where they are.",
+    confirmLabel: "Move library",
+    icon: Icons.drive_file_move_rounded,
+    onConfirm: () => app.run(() => settings.save(moveLibrary: true)),
+  );
+}
 
 Future<void> showDetailsDialog(
   BuildContext context,
@@ -656,6 +682,79 @@ Future<void> pickCookieFile(MelodyApp app) async {
   } on FileSystemException catch (error) {
     app.showError(error.message);
   }
+}
+
+/// Chooses a new music folder for the settings draft; it applies on save.
+///
+/// Android lets Melody write audio only inside the shared Music folder, so a
+/// folder elsewhere is refused there.
+Future<void> pickMusicFolder(MelodyApp app) async {
+  final draft = app.settingsDraft;
+  final current = draft.draft.downloadDirectory;
+  final String? folder;
+  try {
+    folder = await FilePicker.getDirectoryPath(
+      dialogTitle: "Choose the music & download folder",
+      initialDirectory: Directory(current).existsSync() ? current : null,
+    );
+  } catch (error) {
+    app.showError("The folder picker could not be opened: $error");
+    return;
+  }
+  if (folder == null || folder.isEmpty) return;
+  final publicRoot = app.services.paths.publicMusicRoot;
+  if (publicRoot != null && !p.isWithin(publicRoot, folder)) {
+    app.showError(
+      "Choose or create a folder inside Music. Android lets Melody save "
+      "music only there.",
+    );
+    return;
+  }
+  draft.update((settings) => settings.downloadDirectory = p.normalize(folder!));
+}
+
+/// Opens [folder] in the system file manager, or on Android in the Files
+/// app.
+Future<void> openFolder(MelodyApp app, String folder) async {
+  final publicRoot = app.services.paths.publicMusicRoot;
+  if (Platform.isAndroid && publicRoot != null) {
+    await _openAndroidMusicFolder(app, publicRoot, folder);
+    return;
+  }
+  try {
+    await revealFolder(folder);
+  } on Exception catch (error) {
+    app.showError("$folder could not be opened: $error");
+  }
+}
+
+Future<void> _openAndroidMusicFolder(
+  MelodyApp app,
+  String publicRoot,
+  String folder,
+) async {
+  final relative = p.isWithin(publicRoot, folder)
+      ? p.relative(folder, from: publicRoot).replaceAll(r"\", "/")
+      : "";
+  final shown = relative.isEmpty ? "Music" : "Music/$relative";
+  // Files cannot open a folder that does not exist yet.
+  try {
+    await Directory(folder).create(recursive: true);
+  } on FileSystemException catch (error) {
+    debugPrint("Could not create $folder: $error");
+  }
+  try {
+    if (await AndroidPlatform.openMusicFolder(relative)) return;
+  } on PlatformException catch (error) {
+    debugPrint("Could not open $shown: $error");
+  }
+  app.showMessage("Open the Files app and go to $shown.");
+}
+
+/// Copies [folder] to the clipboard.
+Future<void> copyFolderPath(MelodyApp app, String folder) async {
+  await Clipboard.setData(ClipboardData(text: folder));
+  app.showMessage("Folder path copied.");
 }
 
 // -- settings ----------------------------------------------------------------

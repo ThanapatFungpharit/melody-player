@@ -154,7 +154,7 @@ class FakeWorkerTransport implements WorkerTransport {
         final task = "${frame["task"]}";
         final directory = "${frame["directory"]}";
         // yt-dlp streams into a .part file before converting.
-        if (p.basename(directory).startsWith(".melody-download-") &&
+        if (p.basename(directory).startsWith("job-") &&
             await Directory(directory).exists()) {
           await File(
             p.join(directory, "$downloadedName.webm.part"),

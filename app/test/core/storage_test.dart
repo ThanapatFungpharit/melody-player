@@ -124,4 +124,13 @@ void main() {
       expect(await existingFiles(const []), isEmpty);
     });
   });
+
+  test("availablePath avoids reserved names differing only in case", () {
+    final directory = Directory.systemTemp.createTempSync("melody_names");
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final reserved = {p.join(directory.path, "song.mp3")};
+    final path = availablePath(directory.path, "Song.mp3", reserved: reserved);
+    final caseInsensitive = Platform.isWindows || Platform.isMacOS;
+    expect(p.basename(path), caseInsensitive ? "Song (2).mp3" : "Song.mp3");
+  });
 }

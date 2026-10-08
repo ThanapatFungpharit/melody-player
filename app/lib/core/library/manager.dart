@@ -121,13 +121,16 @@ class MusicManager {
   /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
   /// imported once in the transaction that creates the schema.
   /// [syncInBackground] keeps commits from waiting for the disk on the
-  /// calling isolate (see [SqliteStore]).
+  /// calling isolate (see [SqliteStore]). [moveJournal] is where
+  /// [moveMusicFolder] records a move, so one a crash interrupted is settled
+  /// here: its files go to whichever folder [musicFolder] is.
   static MusicManager open(
     String metadataPath,
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
     String? legacyMetadataPath,
     bool syncInBackground = false,
+    String? moveJournal,
   }) {
     Directory(musicFolder).createSync(recursive: true);
     Directory(p.dirname(metadataPath)).createSync(recursive: true);
@@ -145,14 +148,89 @@ class MusicManager {
       root,
       additional,
       db,
-    );
+    ).._moveJournal = moveJournal;
     try {
       manager._open(legacyMetadataPath);
     } catch (_) {
       unawaited(db.close());
       rethrow;
     }
+    manager._settleInterruptedMove();
     return manager;
+  }
+
+  String? _moveJournal;
+
+  /// Finishes or undoes a [moveMusicFolder] that a crash interrupted, so
+  /// every recorded file is in the current music folder again. A file that
+  /// cannot be moved keeps the journal for the next launch.
+  void _settleInterruptedMove() {
+    final journal = _moveJournal;
+    if (journal == null || !File(journal).existsSync()) return;
+    var settled = true;
+    try {
+      final data = jsonDecode(File(journal).readAsStringSync());
+      final from = data is Map ? data["from"] : null;
+      final to = data is Map ? data["to"] : null;
+      final files = data is Map ? data["files"] : null;
+      if (from is! String || to is! String || files is! List) {
+        throw const FormatException("Invalid music folder move journal");
+      }
+      final String source;
+      if (pathKey(_musicRoot) == pathKey(from)) {
+        source = to;
+      } else if (pathKey(_musicRoot) == pathKey(to)) {
+        source = from;
+      } else {
+        // The music folder changed some other way since; nothing to settle.
+        files.clear();
+        source = to;
+      }
+      for (final name in files.whereType<String>()) {
+        final target = p.join(_musicRoot, name);
+        final stray = p.join(source, name);
+        if (p.isAbsolute(name) ||
+            !p.isWithin(_musicRoot, target) ||
+            !p.isWithin(source, stray) ||
+            File(target).existsSync() ||
+            !File(stray).existsSync()) {
+          continue;
+        }
+        try {
+          _moveFileSync(stray, target);
+        } on FileSystemException catch (error) {
+          debugPrint("Could not move $stray back to $target: $error");
+          settled = false;
+        }
+      }
+    } on Object catch (error) {
+      debugPrint("Discarding the music folder move journal: $error");
+    }
+    if (settled) {
+      try {
+        File(journal).deleteSync();
+      } on FileSystemException catch (error) {
+        debugPrint("Could not remove $journal: $error");
+      }
+    }
+  }
+
+  static void _moveFileSync(String source, String target) {
+    Directory(p.dirname(target)).createSync(recursive: true);
+    try {
+      File(source).renameSync(target);
+      return;
+    } on FileSystemException {
+      // Another volume: copied below.
+    }
+    final temporary = temporarySibling(target);
+    try {
+      File(source).copySync(temporary);
+      File(temporary).renameSync(target);
+    } finally {
+      if (File(temporary).existsSync()) File(temporary).deleteSync();
+    }
+    File(source).deleteSync();
   }
 
   Future<void> close() => _db.close();
@@ -178,6 +256,92 @@ class MusicManager {
     _musicRoot = _resolve(folder);
     _validatedPaths.clear();
   }
+
+  /// Moves every file stored in the music folder, with the [companions] of
+  /// each (such as a lyrics file beside it), to [folder] and makes it the
+  /// music folder. Stored filenames stay valid because they are relative.
+  /// Tracks whose file is already missing stay missing. A failure moves the
+  /// files back and keeps the current folder. Callers hold [mutation] and
+  /// make sure nothing holds a track file open. Returns the files moved.
+  Future<int> moveMusicFolder(
+    String folder, {
+    Iterable<String> Function(String path) companions = _noCompanions,
+  }) async {
+    final from = _musicRoot;
+    final to = _resolve(folder);
+    if (p.equals(from, to)) {
+      changeMusicFolder(folder);
+      return 0;
+    }
+    if (p.isWithin(from, to) || p.isWithin(to, from)) {
+      throw const FormatException(
+        "The new music folder can't be inside the current one, or contain it.",
+      );
+    }
+    final moves = <(String, String)>[];
+    final targets = <String>{};
+    for (final track in _tracks.values) {
+      if (p.isAbsolute(track.filename)) continue;
+      final source = p.join(from, track.filename);
+      for (final path in [source, ...companions(source)]) {
+        if (!await File(path).exists()) continue;
+        final target = p.join(to, p.relative(path, from: from));
+        // Two tracks may share one file.
+        if (!targets.add(pathKey(target))) continue;
+        if (await FileSystemEntity.type(target, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          throw FormatException(
+            "The new music folder already has a file named "
+            "“${p.relative(path, from: from)}”.",
+          );
+        }
+        moves.add((path, target));
+      }
+    }
+    await Directory(to).create(recursive: true);
+    final journal = _moveJournal;
+    if (journal != null) {
+      // Lets the next launch put files back where the saved settings say
+      // the library is, should the process end before they are saved.
+      await atomicWrite(
+        journal,
+        utf8.encode(
+          jsonEncode({
+            "from": from,
+            "to": to,
+            "files": [
+              for (final (path, _) in moves) p.relative(path, from: from),
+            ],
+          }),
+        ),
+      );
+    }
+    final done = <(String, String)>[];
+    try {
+      for (final move in moves) {
+        await moveFile(move.$1, move.$2);
+        done.add(move);
+      }
+    } catch (_) {
+      var restored = true;
+      for (final (source, target) in done.reversed) {
+        try {
+          await moveFile(target, source);
+        } on FileSystemException catch (error) {
+          debugPrint("Could not move $target back to $source: $error");
+          restored = false;
+        }
+      }
+      if (journal != null && restored) await deleteQuietly(journal);
+      rethrow;
+    }
+    _musicFolder = folder;
+    _musicRoot = to;
+    _validatedPaths.clear();
+    return moves.length;
+  }
+
+  static Iterable<String> _noCompanions(String path) => const [];
 
   /// Completes once every committed change is on durable storage.
   Future<void> flushed() => _db.flushed();
@@ -650,13 +814,13 @@ class MusicManager {
   bool isPathReferenced(String filename, {String? excluding}) {
     final String target;
     try {
-      target = _comparable(relativeFilename(filename));
+      target = pathKey(relativeFilename(filename));
     } on ArgumentError {
       return false;
     }
     final excluded = excluding == null ? null : normalizeUuid(excluding);
     return _tracks.values.any(
-      (track) => track.id != excluded && _comparable(track.filename) == target,
+      (track) => track.id != excluded && pathKey(track.filename) == target,
     );
   }
 
@@ -996,9 +1160,6 @@ class MusicManager {
       return absolute;
     }
   }
-
-  static String _comparable(String path) =>
-      Platform.isWindows ? path.toLowerCase().replaceAll("/", r"\") : path;
 
   /// A validated managed filename: compact and relative to [musicFolder], or
   /// absolute inside an explicitly configured public music root (Android).

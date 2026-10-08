@@ -25,7 +25,7 @@ android {
         // docs/releases-and-dependencies.md). Changing it would install a
         // separate app without the user's library and settings.
         applicationId = "com.flet.musicplayer"
-        minSdk = 29
+        minSdk = 30
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

@@ -3,6 +3,7 @@ import "dart:io";
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/lyrics_embedding.dart";
+import "package:melody/application/store.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/errors.dart";
 import "package:melody/core/library/manager.dart";
@@ -19,13 +20,14 @@ void main() {
   late Directory root;
   late String music;
   late MusicManager manager;
+  late ApplicationStore store;
   late LyricsLibrary lyrics;
   late List<String> fetched;
   late List<String> copied;
   late TagCopier copier;
 
   LyricsEmbedder embedder() =>
-      LyricsEmbedder(manager, lyrics, (source, target, tags) {
+      LyricsEmbedder(manager, lyrics, store, (source, target, tags) {
         copied.add(p.basename(source));
         return copier(source, target, tags);
       });
@@ -45,6 +47,10 @@ void main() {
     music = p.join(root.path, "music");
     await Directory(music).create();
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
+    store = ApplicationStore.open(
+      p.join(root.path, "state.db"),
+      defaultDownloadDirectory: music,
+    );
     fetched = [];
     copied = [];
     copier = (source, target, tags) async =>
@@ -56,7 +62,8 @@ void main() {
   });
 
   tearDown(() async {
-    manager.close();
+    await manager.close();
+    await store.close();
     await root.delete(recursive: true);
   });
 
@@ -187,17 +194,21 @@ void main() {
     expect(copied, ["Song.opus", "Song.opus", "Song.opus"]);
   });
 
-  test("leftover copies from an interrupted rewrite are removed", () async {
-    final id = await track("Song.mp3");
-    final leftover = File(p.join(music, ".melody-lyrics-1234.mp3"));
-    await leftover.writeAsString("partial");
+  test("the whole library is queued at launch", () async {
+    final first = await track("First.mp3");
+    final second = await track(
+      "Second.mp3",
+      fixture: "test/fixtures/artwork/cover_v24.mp3",
+    );
 
-    final embedding = embedder();
-    await embedding.embedLibrary();
+    final embedding = embedder()..embedLibrary();
     await embedding.idle;
 
-    expect(leftover.existsSync(), isFalse);
-    expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
+    for (final id in [first, second]) {
+      expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
+    }
+    // Only the audio files: the rewrites' copies are gone.
+    expect(Directory(music).listSync(), hasLength(2));
   });
 
   test(

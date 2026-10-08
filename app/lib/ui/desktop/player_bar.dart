@@ -285,7 +285,7 @@ class _VolumeControls extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: wide ? 112 : 84,
+            width: wide ? 132 : 96,
             child: Tooltip(
               message: "Volume ${playback.volume}%",
               child: Slider(
@@ -299,17 +299,6 @@ class _VolumeControls extends StatelessWidget {
               ),
             ),
           ),
-          if (wide)
-            SizedBox(
-              width: 34,
-              child: Text(
-                "${playback.volume}",
-                textAlign: TextAlign.right,
-                style: context.text.bodySmall!.copyWith(
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ),
         ],
       );
     },

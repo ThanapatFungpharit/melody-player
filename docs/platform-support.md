@@ -17,7 +17,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
 | Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |
-| Choose the download folder | Yes | Yes | Yes | Fixed: `Music/Melody` |
+| Choose the download folder | Yes | Yes | Yes | Inside `Music` (default `Music/Melody`) |
 | Import AIFF, WMA, APE, WavPack | Yes | Yes | Yes | No |
 | Embed lyrics into tracks already in the library | Yes | Yes | Yes | No |
 | ytmusicapi and yt-dlp engine updates | Yes | Yes | Yes | Yes |
@@ -47,8 +47,14 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 
 ### Android
 
-- Completed downloads are published to the public `Music/Melody` folder
-  through MediaStore, so the download folder cannot be changed.
+- Android 11 or newer is required.
+- Downloads are saved straight to a folder inside the public `Music` folder
+  (`Music/Melody` by default). Settings can choose another folder there and
+  open it in the Files app; folders outside `Music` are refused. Changing it
+  moves the library like on desktop.
+- Each download stages in private app data, as on desktop (Android would
+  refuse partial streams, thumbnails, and receipts in `Music`), and removes
+  its staging when it ends.
 - Only formats the Android audio decoders play can be imported: AIFF, WMA,
   APE, and WavPack need the desktop FFmpeg decoders.
 - Lyrics are written into new downloads, but tracks already in the library

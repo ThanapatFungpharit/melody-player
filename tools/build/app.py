@@ -202,10 +202,11 @@ def collect(target: str, version: str, architecture: str) -> Path:
     shutil.rmtree(output, ignore_errors=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     build = APP / "build"
+    # Flutter's name for the desktop architecture it built for.
+    arch = "arm64" if architecture == "arm64" else "x64"
     if target == "windows":
-        shutil.copytree(build / "windows" / "x64" / "runner" / "Release", output)
+        shutil.copytree(build / "windows" / arch / "runner" / "Release", output)
     elif target == "linux":
-        arch = "arm64" if architecture == "arm64" else "x64"
         shutil.copytree(build / "linux" / arch / "release" / "bundle", output)
     elif target == "macos":
         bundle = build / "macos" / "Build" / "Products" / "Release" / "melody.app"

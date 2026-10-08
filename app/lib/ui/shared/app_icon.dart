@@ -28,6 +28,10 @@ abstract final class AppIcon {
   static Future<void> _pending = Future.value();
 
   static void apply(String accent) {
+    // The theme draws an unknown saved accent (a hand-edited or newer
+    // settings file) as violet; the icon follows it. Android has no launcher
+    // entry for such an accent and would keep the previous one.
+    if (!themePalettes.containsKey(accent)) accent = "violet";
     if (accent == _applied || !_supported) return;
     _applied = accent;
     _pending = _pending.then((_) => _send(accent));
@@ -63,7 +67,9 @@ abstract final class AppIcon {
       await _channel.invokeMethod<void>("setImages", images);
     } on MissingPluginException {
       // A runner without the channel keeps its bundled icon.
-    } on PlatformException catch (error) {
+    } catch (error) {
+      // Rendering or the platform failed. Later accents still get their turn:
+      // a failure must not break the [_pending] chain.
       debugPrint("Could not update the app icon: $error");
     }
   }
@@ -117,7 +123,13 @@ abstract final class AppIcon {
       rect.center - Offset(glyph.width / 2, glyph.height / 2),
     );
     glyph.dispose();
-    final image = await recorder.endRecording().toImage(size, size);
+    final picture = recorder.endRecording();
+    final ui.Image image;
+    try {
+      image = await picture.toImage(size, size);
+    } finally {
+      picture.dispose();
+    }
     try {
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       return data!.buffer.asUint8List();

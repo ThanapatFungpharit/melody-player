@@ -12,6 +12,7 @@ import "../../application/models.dart";
 import "../../application/package_runtime.dart";
 import "../../core/errors.dart";
 import "../../core/media.dart";
+import "../../core/storage.dart" show deleteQuietly, samePath;
 
 /// In-progress settings choices and the save/reset workflows.
 class SettingsController extends ChangeNotifier {
@@ -33,10 +34,9 @@ class SettingsController extends ChangeNotifier {
   bool cleaningUp = false;
   bool _statusRefreshPending = false;
 
-  /// Whether the saved cookie file exists, checked asynchronously so
-  /// building the settings never waits on the disk. Assumed present until a
-  /// check says otherwise.
-  bool _savedCookieExists = true;
+  /// Whether the uploaded cookie file exists, checked asynchronously so
+  /// building the settings never waits on the disk.
+  bool _savedCookieExists = false;
   int _cookieCheck = 0;
   bool _disposed = false;
 
@@ -51,14 +51,11 @@ class SettingsController extends ChangeNotifier {
 
   Future<void> _checkSavedCookie() async {
     final check = ++_cookieCheck;
-    final path = app.settings.cookieFile;
     var exists = false;
-    if (path.isNotEmpty) {
-      try {
-        exists = await File(path).exists();
-      } on FileSystemException {
-        exists = false;
-      }
+    try {
+      exists = await File(app.services.paths.cookieFile).exists();
+    } on FileSystemException {
+      exists = false;
     }
     // A newer check, or nothing changed.
     if (_disposed || check != _cookieCheck || exists == _savedCookieExists) {
@@ -68,9 +65,8 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// A saved cookie file is configured and present.
-  bool get savedCookieAvailable =>
-      app.settings.cookieFile.isNotEmpty && _savedCookieExists;
+  /// A cookie file was uploaded and is in use.
+  bool get savedCookieAvailable => _savedCookieExists;
 
   @override
   void dispose() {
@@ -113,14 +109,8 @@ class SettingsController extends ChangeNotifier {
         false,
       );
     }
-    final configured = app.settings.cookieFile;
-    if (configured.isEmpty) {
-      return ("No cookie file uploaded.", false);
-    }
-    if (!_savedCookieExists) {
-      return ("The saved cookie file is missing. Upload a replacement.", true);
-    }
-    return ("Using ${p.basename(configured)}", false);
+    if (!_savedCookieExists) return ("No cookie file uploaded.", false);
+    return ("Using the uploaded cookie file.", false);
   }
 
   bool get hasCookie =>
@@ -144,7 +134,21 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> save() async {
+  /// The music folder the draft asks for, made absolute so it never depends
+  /// on the launch directory.
+  String get draftMusicFolder =>
+      p.normalize(p.absolute(_expandHome(draft.downloadDirectory)));
+
+  /// Library tracks that saving would move to a new music folder; zero when
+  /// the folder is unchanged.
+  int get tracksToMove =>
+      samePath(draftMusicFolder, app.settings.downloadDirectory)
+      ? 0
+      : app.services.manager.counts().$1;
+
+  /// Saves the draft. A new music folder for a library with tracks needs
+  /// [moveLibrary], which moves their files there.
+  Future<void> save({bool moveLibrary = false}) async {
     final old = app.settings.copy();
     final settings = draft.copy()
       // The playback controller owns volume; keep its current values.
@@ -153,37 +157,35 @@ class SettingsController extends ChangeNotifier {
       ..muted = app.playback.muted;
     final pending = pendingCookie;
     final removing = removeCookieRequested;
-    app.showMessage("Saving settings…");
-    // Absolute, so the folder never depends on the launch directory.
-    final folder = Platform.isAndroid
-        ? old.downloadDirectory
-        : p.normalize(p.absolute(_expandHome(settings.downloadDirectory)));
-    if (_sameFolder(folder, old.downloadDirectory)) {
+    final folder = draftMusicFolder;
+    var moved = 0;
+    if (samePath(folder, old.downloadDirectory)) {
+      app.showMessage("Saving settings…");
       await Directory(folder).create(recursive: true);
     } else {
+      app.showMessage(moveLibrary ? "Moving the library…" : "Saving settings…");
+      // The player may hold a track file open, which can't be moved.
+      if (moveLibrary) app.playback.releaseLibrarySource();
       // Applied now: a download before a restart must land where the
       // library will look for it afterwards.
-      await app.services.downloads.changeDirectory(folder);
+      moved = await app.services.downloads.changeDirectory(
+        folder,
+        moveLibrary: moveLibrary,
+      );
     }
     settings.downloadDirectory = folder;
     final managed = app.services.paths.cookieFile;
-    final removingManaged =
-        removing &&
-        settings.cookieFile.isNotEmpty &&
-        p.equals(p.absolute(settings.cookieFile), p.absolute(managed));
-    final cookieChanged = pending != null || removingManaged;
+    final cookieChanged =
+        pending != null || (removing && await File(managed).exists());
     List<int>? previousCookie;
     if (cookieChanged && await File(managed).exists()) {
       previousCookie = await File(managed).readAsBytes();
     }
     try {
       if (pending != null) {
-        settings.cookieFile = await installCookieFile(pending, managed);
-      } else if (removing) {
-        if (removingManaged && await File(managed).exists()) {
-          await File(managed).delete();
-        }
-        settings.cookieFile = "";
+        await installCookieFile(pending, managed);
+      } else if (cookieChanged) {
+        await File(managed).delete();
       }
       app.services.store.saveSettings(settings);
     } catch (_) {
@@ -205,6 +207,7 @@ class SettingsController extends ChangeNotifier {
       rethrow;
     }
     app.settings = settings;
+    app.services.downloads.historyDays = settings.downloadHistoryDays;
     if (settings.autoFocalPointLiveNotifications !=
         old.autoFocalPointLiveNotifications) {
       app.syncSystemMedia(refreshMetadata: true);
@@ -218,25 +221,23 @@ class SettingsController extends ChangeNotifier {
       old.audioFormat != settings.audioFormat,
       old.audioQuality != settings.audioQuality,
       old.concurrentDownloads != settings.concurrentDownloads,
-      old.cookieFile != settings.cookieFile,
-      pending != null,
+      cookieChanged,
     ].any((changed) => changed);
+    final saved = moved > 0
+        ? "Moved ${plural(moved, "file")} to the new music folder. "
+              "Settings saved."
+        : "Settings saved.";
     app.showMessage(
-      restart
-          ? "Settings saved. Restart to apply download changes."
-          : "Settings saved.",
+      restart ? "$saved Restart to apply download changes." : saved,
     );
   }
-
-  static bool _sameFolder(String a, String b) =>
-      p.equals(p.absolute(a), p.absolute(b));
 
   /// Moves the live library back to [previous] after the new [folder]
   /// could not be saved, so runtime and saved settings agree.
   Future<void> _revertMusicFolder(String folder, String previous) async {
-    if (_sameFolder(folder, previous)) return;
+    if (samePath(folder, previous)) return;
     try {
-      await app.services.downloads.changeDirectory(previous);
+      await app.services.downloads.changeDirectory(previous, moveLibrary: true);
     } on Object catch (error) {
       debugPrint("Could not restore the previous music folder: $error");
     }
@@ -308,7 +309,7 @@ class SettingsController extends ChangeNotifier {
     // takes effect immediately. Busy downloads keep the current folder.
     var folder = current.downloadDirectory;
     final defaultFolder = app.services.paths.defaultMusicDirectory;
-    if (!_sameFolder(folder, defaultFolder) &&
+    if (!samePath(folder, defaultFolder) &&
         app.services.manager.counts().$1 == 0) {
       try {
         await app.services.downloads.changeDirectory(defaultFolder);
@@ -318,19 +319,18 @@ class SettingsController extends ChangeNotifier {
       }
     }
     final defaults = AppSettings(downloadDirectory: folder);
-    final alreadyDefault = current.sameAs(defaults);
-    final managed = app.services.paths.cookieFile;
-    if (current.cookieFile.isNotEmpty &&
-        p.equals(p.absolute(current.cookieFile), p.absolute(managed)) &&
-        await File(managed).exists()) {
-      await File(managed).delete();
-    }
+    final cookies = app.services.paths.cookieFile;
+    final alreadyDefault =
+        current.sameAs(defaults) && !await File(cookies).exists();
     try {
       app.services.store.saveSettings(defaults);
     } catch (_) {
       await _revertMusicFolder(folder, current.downloadDirectory);
       rethrow;
     }
+    // The default is no cookies. Best effort: the other defaults are
+    // already saved.
+    await deleteQuietly(cookies);
     app.settings = defaults;
     app.playback.applySettings(defaults);
     if (current.autoFocalPointLiveNotifications !=

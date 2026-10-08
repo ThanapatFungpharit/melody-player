@@ -55,11 +55,7 @@ class MobilePlaylists extends StatelessWidget {
             app: app,
             title: playlist.name,
             credit: "${playlist.trackIds.length} tracks",
-            artwork: playlist.trackIds.isEmpty
-                ? ""
-                : app.services.library
-                      .details(playlist.trackIds.first)
-                      .thumbnail,
+            artwork: playlistArtwork(app, playlist),
             playlist: true,
             onTap: () => app.playlists.openPlaylist(playlist.id),
             trailing: TouchIconButton(
@@ -137,9 +133,7 @@ class _PlaylistDetail extends StatelessWidget {
         Center(
           child: Artwork(
             app,
-            tracks.isEmpty
-                ? ""
-                : app.services.library.details(tracks.first.id).thumbnail,
+            playlistArtwork(app, playlist),
             size: 200,
             playlist: true,
             seed: playlist.name,

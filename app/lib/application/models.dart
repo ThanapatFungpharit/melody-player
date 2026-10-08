@@ -1,3 +1,5 @@
+import "dart:math";
+
 import "../core/downloader/downloader.dart";
 import "../core/media.dart";
 import "../core/storage.dart";
@@ -95,23 +97,39 @@ enum DownloadFormat {
       .firstWhere((format) => format.codec == value, orElse: () => mp3);
 }
 
+// Stored numbers may be hand-edited or written by an older version: a
+// non-finite value (`1e999` decodes to infinity) falls back instead of
+// throwing on toInt() or spreading NaN into layout and progress math.
 int _int(Object? value, int fallback) => switch (value) {
   int number => number,
-  num number => number.toInt(),
-  String text => int.tryParse(text) ?? fallback,
+  num number when number.isFinite => number.toInt(),
+  String text => switch (num.tryParse(text.trim())) {
+    final num number when number.isFinite => number.toInt(),
+    _ => fallback,
+  },
   _ => fallback,
 };
 
 double _double(Object? value, double fallback) => switch (value) {
-  num number => number.toDouble(),
-  String text => double.tryParse(text) ?? fallback,
+  num number when number.isFinite => number.toDouble(),
+  String text => switch (double.tryParse(text.trim())) {
+    final double number when number.isFinite => number,
+    _ => fallback,
+  },
   _ => fallback,
 };
+
+int _count(Object? value) => max(0, _int(value, 0));
+
+double _seconds(Object? value) => max(0, _double(value, 0));
 
 String _string(Object? value, String fallback) =>
     value is String ? value : (value == null ? fallback : "$value");
 
 bool _bool(Object? value, bool fallback) => value is bool ? value : fallback;
+
+/// How long finished downloads stay listed, in days; 0 means forever.
+const downloadHistoryChoices = [1, 7, 30, 90, 0];
 
 class AppSettings {
   AppSettings({
@@ -125,13 +143,13 @@ class AppSettings {
     // Audio extraction launches external encoder processes; two concurrent
     // jobs keep downloads responsive without overwhelming low-core devices.
     this.concurrentDownloads = 2,
-    this.cookieFile = "",
     this.resumeSession = true,
     this.skipLoadingDelay = false,
     this.notifications = true,
     this.notificationActionPair = "shuffle_favorite",
     this.autoFocalPointLiveNotifications = false,
     this.accentColor = "violet",
+    this.downloadHistoryDays = 30,
   });
 
   String downloadDirectory;
@@ -142,13 +160,15 @@ class AppSettings {
   String audioFormat;
   String audioQuality;
   int concurrentDownloads;
-  String cookieFile;
   bool resumeSession;
   bool skipLoadingDelay;
   bool notifications;
   String notificationActionPair;
   bool autoFocalPointLiveNotifications;
   String accentColor;
+
+  /// Days a finished download stays in the history; 0 keeps it forever.
+  int downloadHistoryDays;
 
   DownloadFormat get downloadFormat => DownloadFormat.parse(audioFormat);
 
@@ -179,9 +199,6 @@ class AppSettings {
         data["concurrent_downloads"],
         defaults.concurrentDownloads,
       ).clamp(1, 8),
-      cookieFile: data["cookie_file"] is String
-          ? data["cookie_file"] as String
-          : "",
       resumeSession: _bool(data["resume_session"], defaults.resumeSession),
       skipLoadingDelay: data["skip_loading_delay"] == true,
       notifications: _bool(data["notifications"], defaults.notifications),
@@ -191,6 +208,10 @@ class AppSettings {
       autoFocalPointLiveNotifications:
           data["auto_focal_point_live_notifications"] == true,
       accentColor: _string(data["accent_color"], defaults.accentColor),
+      downloadHistoryDays: switch (data["download_history_days"]) {
+        final int days when downloadHistoryChoices.contains(days) => days,
+        _ => defaults.downloadHistoryDays,
+      },
     );
   }
 
@@ -203,13 +224,13 @@ class AppSettings {
     "audio_format": audioFormat,
     "audio_quality": audioQuality,
     "concurrent_downloads": concurrentDownloads,
-    "cookie_file": cookieFile,
     "resume_session": resumeSession,
     "skip_loading_delay": skipLoadingDelay,
     "notifications": notifications,
     "notification_action_pair": notificationActionPair,
     "auto_focal_point_live_notifications": autoFocalPointLiveNotifications,
     "accent_color": accentColor,
+    "download_history_days": downloadHistoryDays,
   };
 
   AppSettings copy() => AppSettings.fromJson(
@@ -246,11 +267,11 @@ class TrackDetails {
   factory TrackDetails.fromJson(Map<String, Object?> data) => TrackDetails(
     // Before version 0.2 the uploader/channel was stored as an artist.
     uploader: _string(data["uploader"] ?? data["artist"], ""),
-    duration: _double(data["duration"], 0),
+    duration: _seconds(data["duration"]),
     thumbnail: _string(data["thumbnail"], ""),
     favorite: data["favorite"] == true,
-    playCount: _int(data["play_count"], 0),
-    lastPlayed: _double(data["last_played"], 0),
+    playCount: _count(data["play_count"]),
+    lastPlayed: _seconds(data["last_played"]),
     sourceName: _string(data["source_name"], "Local"),
   );
 
@@ -380,23 +401,23 @@ class DownloadRecord {
     source: _string(data["source"], youtubeMusicName),
     kind: _string(data["kind"], "track"),
     status: DownloadStatus.parse(data["status"]),
-    progress: _double(data["progress"], 0),
+    progress: _double(data["progress"], 0).clamp(0.0, 1.0),
     filename: _string(data["filename"], ""),
-    downloadedBytes: _int(data["downloaded_bytes"], 0),
-    totalBytes: _int(data["total_bytes"], 0),
+    downloadedBytes: _count(data["downloaded_bytes"]),
+    totalBytes: _count(data["total_bytes"]),
     error: _string(data["error"], ""),
     errorKind: _string(data["error_kind"], ""),
     recovery: _string(data["recovery"], ""),
-    createdAt: _double(data["created_at"], 0),
-    completedAt: _double(data["completed_at"], 0),
+    createdAt: _seconds(data["created_at"]),
+    completedAt: _seconds(data["completed_at"]),
     trackIds: [
       if (data["track_ids"] case final List<Object?> ids)
         for (final id in ids)
           if (id is String) id,
     ],
     batchId: _string(data["batch_id"], ""),
-    batchPosition: _int(data["batch_position"], 0),
-    batchSize: _int(data["batch_size"], 0),
+    batchPosition: _count(data["batch_position"]),
+    batchSize: _count(data["batch_size"]),
   );
 
   Map<String, Object?> toJson() => {
