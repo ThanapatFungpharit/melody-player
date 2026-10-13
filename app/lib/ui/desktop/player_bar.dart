@@ -17,7 +17,7 @@ class DesktopPlayerBar extends StatelessWidget {
     final scheme = context.colors;
     final width = MediaQuery.sizeOf(context).width;
     return SizedBox(
-      height: 88,
+      height: 96,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 18, 10),
         child: Watch(
