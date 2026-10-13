@@ -34,6 +34,17 @@ class _SearchPageState extends State<SearchPage> {
 
   void _requestFocus() => _focus.requestFocus();
 
+  void _searchAgain(String query) {
+    _query.text = query;
+    widget.app.search.searchAgain(query);
+  }
+
+  void _clear() {
+    _query.clear();
+    widget.app.search.clear();
+    _focus.requestFocus();
+  }
+
   @override
   void dispose() {
     widget.app.search.focusRequest.removeListener(_requestFocus);
@@ -75,9 +86,18 @@ class _SearchPageState extends State<SearchPage> {
                         padding: EdgeInsets.only(left: 6),
                         child: Icon(Icons.search_rounded),
                       ),
-                      suffixIcon: Padding(
-                        padding: const EdgeInsets.only(right: 12),
-                        child: Center(widthFactor: 1, child: Pill("Ctrl L")),
+                      suffixIcon: ValueListenableBuilder(
+                        valueListenable: _query,
+                        builder: (context, value, _) => Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: value.text.isEmpty
+                              ? Center(widthFactor: 1, child: Pill("Ctrl L"))
+                              : IconButton(
+                                  onPressed: _clear,
+                                  tooltip: "Clear search",
+                                  icon: const Icon(Icons.close_rounded),
+                                ),
+                        ),
                       ),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 18,
@@ -190,6 +210,25 @@ class _SearchPageState extends State<SearchPage> {
     if (search.busy) return const Center(child: CircularProgressIndicator());
     if (search.error != null) {
       return EmptyState(Icons.cloud_off_rounded, search.error!);
+    }
+    final recent = search.queryText.isEmpty
+        ? search.recentSearches
+        : const <String>[];
+    if (recent.isNotEmpty) {
+      return Align(
+        alignment: Alignment.topLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: SingleChildScrollView(
+            child: RecentSearches(
+              recent,
+              onSelect: _searchAgain,
+              onRemove: search.forgetSearch,
+              onClear: search.clearSearchHistory,
+            ),
+          ),
+        ),
+      );
     }
     if (search.results.isEmpty) {
       return EmptyState(

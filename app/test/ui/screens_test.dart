@@ -538,6 +538,85 @@ void main() {
     });
   }
 
+  for (final mobile in [false, true]) {
+    final layout = mobile ? "mobile" : "desktop";
+    testWidgets("$layout search offers recent searches", (tester) async {
+      final app = await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1540, 960),
+      );
+      final search = app.search;
+      for (final query in ["old tune", "lofi beats", "night drive"]) {
+        app.services.store.addRecent("search_history", query);
+      }
+      app.navigate(1);
+      await tester.pumpAndSettle();
+      expect(find.text("Recent searches"), findsOneWidget);
+      await shoot(tester, "${layout}_recent_searches");
+
+      await tester.tap(
+        find.byTooltip("Remove from recent searches").last, // "old tune"
+      );
+      await tester.pumpAndSettle();
+      expect(find.text("old tune"), findsNothing);
+      expect(search.recentSearches, ["night drive", "lofi beats"]);
+
+      await tester.tap(find.text("lofi beats"));
+      await tester.pump();
+      for (var attempt = 0; attempt < 50 && search.busy; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(search.queryText, "lofi beats");
+      expect(find.text("Recent searches"), findsNothing);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        "lofi beats",
+      );
+      expect(search.recentSearches.first, "lofi beats");
+
+      await tester.tap(find.byTooltip("Clear search"));
+      await tester.pumpAndSettle();
+      expect(search.queryText, isEmpty);
+      expect(search.results, isEmpty);
+      expect(find.text("Recent searches"), findsOneWidget);
+
+      await tester.tap(find.text("Clear all"));
+      await tester.pumpAndSettle();
+      expect(search.recentSearches, isEmpty);
+      expect(find.text("Recent searches"), findsNothing);
+    });
+  }
+
+  testWidgets("mobile player follows swipes", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(390, 844),
+    );
+    final playback = app.playback;
+    final first = playback.currentTrackId;
+    final mini = find.byTooltip("Open Now Playing");
+    await tester.fling(mini, const Offset(-200, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(playback.currentTrackId, isNot(first));
+
+    await tester.fling(mini, const Offset(0, -200), 1000);
+    await tester.pumpAndSettle();
+    expect(find.byType(NowPlaying), findsOneWidget);
+
+    await tester.fling(find.text("NOW PLAYING"), const Offset(0, 300), 1000);
+    await tester.pumpAndSettle();
+    expect(find.byType(NowPlaying), findsNothing);
+    // The skipped-to track never loads here; let its load watchdog lapse.
+    await tester.pump(const Duration(seconds: 15));
+    await tester.pumpAndSettle();
+  });
+
   testWidgets("narrow desktop window collapses the rail", (tester) async {
     final app = await pumpShell(
       tester,

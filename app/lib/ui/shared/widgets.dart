@@ -274,6 +274,68 @@ class SectionTitle extends StatelessWidget {
   );
 }
 
+/// Earlier queries, newest first: tap one to search again, or forget it.
+class RecentSearches extends StatelessWidget {
+  const RecentSearches(
+    this.queries, {
+    super.key,
+    required this.onSelect,
+    required this.onRemove,
+    required this.onClear,
+  });
+
+  final List<String> queries;
+  final void Function(String query) onSelect;
+  final void Function(String query) onRemove;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = context.colors.onSurfaceVariant;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text("Recent searches", style: context.text.titleMedium),
+            ),
+            TextButton(onPressed: onClear, child: const Text("Clear all")),
+          ],
+        ),
+        for (final query in queries)
+          InkWell(
+            onTap: () => onSelect(query),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Row(
+                spacing: 14,
+                children: [
+                  Icon(Icons.history_rounded, size: 20, color: muted),
+                  Expanded(
+                    child: Text(
+                      query,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.text.bodyMedium,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => onRemove(query),
+                    tooltip: "Remove from recent searches",
+                    icon: Icon(Icons.close_rounded, size: 18, color: muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 /// Tracks whether the pointer is over [builder]'s widget.
 class Hoverable extends StatefulWidget {
   const Hoverable({super.key, required this.builder, this.cursor});

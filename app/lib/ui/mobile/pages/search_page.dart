@@ -21,6 +21,17 @@ class _MobileSearchState extends State<MobileSearch> {
     text: widget.app.search.draft,
   );
 
+  void _searchAgain(String query) {
+    FocusScope.of(context).unfocus();
+    _query.text = query;
+    widget.app.search.searchAgain(query);
+  }
+
+  void _clear() {
+    _query.clear();
+    widget.app.search.clear();
+  }
+
   @override
   void dispose() {
     _query.dispose();
@@ -36,6 +47,9 @@ class _MobileSearchState extends State<MobileSearch> {
       [search, app.libraryRevision],
       builder: (context) {
         final playlists = app.services.manager.listPlaylists();
+        final recent = search.queryText.isEmpty
+            ? search.recentSearches
+            : const <String>[];
         final Widget results;
         if (search.busy) {
           results = const Padding(
@@ -44,6 +58,13 @@ class _MobileSearchState extends State<MobileSearch> {
           );
         } else if (search.error != null) {
           results = EmptyState(Icons.cloud_off_rounded, search.error!);
+        } else if (recent.isNotEmpty) {
+          results = RecentSearches(
+            recent,
+            onSelect: _searchAgain,
+            onRemove: search.forgetSearch,
+            onClear: search.clearSearchHistory,
+          );
         } else if (search.results.isEmpty) {
           results = EmptyState(
             Icons.search_rounded,
@@ -81,15 +102,26 @@ class _MobileSearchState extends State<MobileSearch> {
             spacing: 4,
             children: [
               Expanded(
-                child: TextField(
-                  controller: _query,
-                  onChanged: (value) => search.draft = value,
-                  onSubmitted: (_) => search.startSearch(),
-                  style: const TextStyle(fontSize: 14),
-                  textInputAction: TextInputAction.search,
-                  decoration: const InputDecoration(
-                    hintText: "Song, artist or $youtubeMusicName link",
-                    prefixIcon: Icon(Icons.search_rounded),
+                child: ValueListenableBuilder(
+                  valueListenable: _query,
+                  builder: (context, value, _) => TextField(
+                    controller: _query,
+                    onChanged: (value) => search.draft = value,
+                    onSubmitted: (_) => search.startSearch(),
+                    style: const TextStyle(fontSize: 14),
+                    textInputAction: TextInputAction.search,
+                    decoration: InputDecoration(
+                      hintText: "Song, artist or $youtubeMusicName link",
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      // Only while there is text, so the hint keeps its room.
+                      suffixIcon: value.text.isEmpty
+                          ? null
+                          : IconButton(
+                              onPressed: _clear,
+                              tooltip: "Clear search",
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                    ),
                   ),
                 ),
               ),

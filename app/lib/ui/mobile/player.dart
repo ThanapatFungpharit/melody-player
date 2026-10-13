@@ -12,6 +12,87 @@ import "controls.dart";
 import "pages/lyrics_page.dart";
 import "pages/queue_page.dart";
 
+/// Fling speed, in logical pixels per second, that counts as a swipe.
+const _flingVelocity = 300.0;
+
+/// Swipes on [child]: left plays the next track and right the previous one;
+/// [onSwipeUp] answers an upward swipe.
+class _TrackSwipe extends StatelessWidget {
+  const _TrackSwipe(this.app, {required this.child, this.onSwipeUp});
+
+  final MelodyApp app;
+  final Widget child;
+  final VoidCallback? onSwipeUp;
+
+  @override
+  Widget build(BuildContext context) {
+    final playback = app.playback;
+    final hasMedia =
+        playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+    return GestureDetector(
+      onHorizontalDragEnd: hasMedia
+          ? (details) {
+              final velocity = details.primaryVelocity ?? 0;
+              if (velocity < -_flingVelocity) playback.next();
+              if (velocity > _flingVelocity) playback.previous();
+            }
+          : null,
+      onVerticalDragEnd: onSwipeUp == null
+          ? null
+          : (details) {
+              if ((details.primaryVelocity ?? 0) < -_flingVelocity) {
+                onSwipeUp!();
+              }
+            },
+      child: child,
+    );
+  }
+}
+
+/// Closes the page when it is pulled down past its top.
+class _PullToClose extends StatefulWidget {
+  const _PullToClose({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PullToClose> createState() => _PullToCloseState();
+}
+
+class _PullToCloseState extends State<_PullToClose> {
+  static const _distance = 80.0;
+  double _pulled = 0;
+  bool _closing = false;
+
+  bool _onScroll(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
+    final dragging = switch (notification) {
+      ScrollUpdateNotification(:final dragDetails) => dragDetails != null,
+      OverscrollNotification(:final dragDetails) => dragDetails != null,
+      _ => false,
+    };
+    if (notification is ScrollStartNotification ||
+        notification is ScrollEndNotification) {
+      _pulled = 0;
+    } else if (notification is OverscrollNotification && dragging) {
+      // Clamping physics report the pull as overscroll at the top edge.
+      if (notification.overscroll < 0) _pulled -= notification.overscroll;
+    } else if (dragging) {
+      // Bouncing physics move past the top instead.
+      _pulled = max(0, -notification.metrics.pixels);
+    }
+    if (_pulled > _distance && !_closing) {
+      _closing = true;
+      Navigator.of(context).maybePop();
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      NotificationListener(onNotification: _onScroll, child: widget.child);
+}
+
 /// The mini player floating above the navigation bar.
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer(this.app, {super.key});
@@ -21,6 +102,13 @@ class MiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.colors;
+    void open() => pushPanel(
+      context,
+      app,
+      AppPanel.player,
+      NowPlaying(app),
+      immersive: true,
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
       child: Material(
@@ -43,47 +131,45 @@ class MiniPlayer extends StatelessWidget {
                     Expanded(
                       child: Tooltip(
                         message: "Open Now Playing",
-                        child: InkWell(
-                          onTap: () => pushPanel(
-                            context,
-                            app,
-                            AppPanel.player,
-                            NowPlaying(app),
-                            immersive: true,
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
-                            child: Row(
-                              spacing: 12,
-                              children: [
-                                Artwork(
-                                  app,
-                                  info.thumbnail,
-                                  size: 42,
-                                  seed: hasMedia ? info.title : "",
-                                ),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    spacing: 1,
-                                    children: [
-                                      Text(
-                                        info.title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: context.text.titleSmall,
-                                      ),
-                                      Text(
-                                        info.credit,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: context.text.bodySmall,
-                                      ),
-                                    ],
+                        child: _TrackSwipe(
+                          app,
+                          onSwipeUp: open,
+                          child: InkWell(
+                            onTap: open,
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+                              child: Row(
+                                spacing: 12,
+                                children: [
+                                  Artwork(
+                                    app,
+                                    info.thumbnail,
+                                    size: 42,
+                                    seed: hasMedia ? info.title : "",
                                   ),
-                                ),
-                              ],
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      spacing: 1,
+                                      children: [
+                                        Text(
+                                          info.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: context.text.titleSmall,
+                                        ),
+                                        Text(
+                                          info.credit,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: context.text.bodySmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -203,208 +289,218 @@ class NowPlaying extends StatelessWidget {
                 );
                 // Fills tall screens by spreading the gaps; scrolls when the
                 // window is too short for everything.
-                return SingleChildScrollView(
-                  padding: EdgeInsets.fromLTRB(gutter, 4, gutter, 16),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      minHeight: max(0, constraints.maxHeight - 20),
-                    ),
-                    child: IntrinsicHeight(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              Transform.translate(
-                                offset: const Offset(-12, 0),
-                                child: TouchIconButton(
-                                  Icons.keyboard_arrow_down_rounded,
-                                  "Close Now Playing",
-                                  () => Navigator.of(context).maybePop(),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  "NOW PLAYING",
-                                  textAlign: TextAlign.center,
-                                  style: context.text.labelSmall!.copyWith(
-                                    color: scheme.onSurface,
+                return _PullToClose(
+                  child: SingleChildScrollView(
+                    // Always draggable, so a pull down can close the page.
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: EdgeInsets.fromLTRB(gutter, 4, gutter, 16),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: max(0, constraints.maxHeight - 20),
+                      ),
+                      child: IntrinsicHeight(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Transform.translate(
+                                  offset: const Offset(-12, 0),
+                                  child: TouchIconButton(
+                                    Icons.keyboard_arrow_down_rounded,
+                                    "Close Now Playing",
+                                    () => Navigator.of(context).maybePop(),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: touchTarget - 12),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          const Spacer(),
-                          Center(
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(
-                                  Radii.panel,
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(
-                                      alpha: dark ? 0.45 : 0.18,
+                                Expanded(
+                                  child: Text(
+                                    "NOW PLAYING",
+                                    textAlign: TextAlign.center,
+                                    style: context.text.labelSmall!.copyWith(
+                                      color: scheme.onSurface,
                                     ),
-                                    blurRadius: 40,
-                                    offset: const Offset(0, 18),
                                   ),
-                                ],
-                              ),
-                              child: Artwork(
-                                app,
-                                info.thumbnail,
-                                size: cover,
-                                seed: hasMedia ? info.title : "",
-                                radius: Radii.panel,
+                                ),
+                                const SizedBox(width: touchTarget - 12),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            const Spacer(),
+                            _TrackSwipe(
+                              app,
+                              child: Center(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(
+                                      Radii.panel,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(
+                                          alpha: dark ? 0.45 : 0.18,
+                                        ),
+                                        blurRadius: 40,
+                                        offset: const Offset(0, 18),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Artwork(
+                                    app,
+                                    info.thumbnail,
+                                    size: cover,
+                                    seed: hasMedia ? info.title : "",
+                                    radius: Radii.panel,
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 28),
-                          const Spacer(),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  spacing: 4,
-                                  children: [
-                                    Text(
-                                      info.title,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: context.text.headlineSmall,
-                                    ),
-                                    Text(
-                                      info.credit,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: context.text.bodyLarge!.copyWith(
-                                        color: scheme.onSurfaceVariant,
+                            const SizedBox(height: 28),
+                            const Spacer(),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    spacing: 4,
+                                    children: [
+                                      Text(
+                                        info.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: context.text.headlineSmall,
                                       ),
-                                    ),
-                                  ],
+                                      Text(
+                                        info.credit,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: context.text.bodyLarge!.copyWith(
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              IconButton(
-                                onPressed: info.canFavorite
-                                    ? () => app.toggleFavorite(
-                                        playback.currentTrackId!,
-                                      )
-                                    : null,
-                                tooltip: info.favorite
-                                    ? "Remove favorite"
-                                    : "Favorite",
-                                iconSize: 26,
-                                icon: Icon(
-                                  info.favorite
-                                      ? Icons.favorite_rounded
-                                      : Icons.favorite_border_rounded,
-                                  color: info.favorite
-                                      ? context.palette.favorite
+                                IconButton(
+                                  onPressed: info.canFavorite
+                                      ? () => app.toggleFavorite(
+                                          playback.currentTrackId!,
+                                        )
+                                      : null,
+                                  tooltip: info.favorite
+                                      ? "Remove favorite"
+                                      : "Favorite",
+                                  iconSize: 26,
+                                  icon: Icon(
+                                    info.favorite
+                                        ? Icons.favorite_rounded
+                                        : Icons.favorite_border_rounded,
+                                    color: info.favorite
+                                        ? context.palette.favorite
+                                        : null,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 18),
+                            SeekBar(app, stacked: true),
+                            const SizedBox(height: 14),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                TouchIconButton(
+                                  Icons.shuffle_rounded,
+                                  "Shuffle upcoming tracks",
+                                  playback.queue.upcomingCount >= 2
+                                      ? playback.shuffleUpcoming
                                       : null,
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 18),
-                          SeekBar(app, stacked: true),
-                          const SizedBox(height: 14),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              TouchIconButton(
-                                Icons.shuffle_rounded,
-                                "Shuffle upcoming tracks",
-                                playback.queue.upcomingCount >= 2
-                                    ? playback.shuffleUpcoming
-                                    : null,
-                              ),
-                              IconButton(
-                                onPressed: hasMedia ? playback.previous : null,
-                                tooltip: "Previous track",
-                                iconSize: 38,
-                                icon: const Icon(Icons.skip_previous_rounded),
-                              ),
-                              IconButton.filled(
-                                onPressed: hasMedia ? playback.toggle : null,
-                                tooltip: playback.playing ? "Pause" : "Play",
-                                iconSize: 40,
-                                style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(72),
-                                  backgroundColor: scheme.onSurface,
-                                  foregroundColor: scheme.surface,
-                                ),
-                                icon: Icon(
-                                  playback.playing
-                                      ? Icons.pause_rounded
-                                      : Icons.play_arrow_rounded,
-                                ),
-                              ),
-                              IconButton(
-                                onPressed: hasMedia ? playback.next : null,
-                                tooltip: "Next track",
-                                iconSize: 38,
-                                icon: const Icon(Icons.skip_next_rounded),
-                              ),
-                              IconButton(
-                                onPressed: playback.cycleRepeat,
-                                tooltip: repeatLabel(repeat),
-                                constraints: const BoxConstraints.tightFor(
-                                  width: touchTarget,
-                                  height: touchTarget,
-                                ),
-                                icon: Icon(
-                                  repeatIcon(repeat),
-                                  color: repeat != RepeatMode.off
-                                      ? scheme.primary
+                                IconButton(
+                                  onPressed: hasMedia
+                                      ? playback.previous
                                       : null,
+                                  tooltip: "Previous track",
+                                  iconSize: 38,
+                                  icon: const Icon(Icons.skip_previous_rounded),
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          const Spacer(),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              TouchIconButton(
-                                Icons.lyrics_outlined,
-                                "Lyrics",
-                                () => pushPanel(
-                                  context,
-                                  app,
-                                  AppPanel.lyrics,
-                                  MobileLyrics(app),
+                                IconButton.filled(
+                                  onPressed: hasMedia ? playback.toggle : null,
+                                  tooltip: playback.playing ? "Pause" : "Play",
+                                  iconSize: 40,
+                                  style: IconButton.styleFrom(
+                                    fixedSize: const Size.square(72),
+                                    backgroundColor: scheme.onSurface,
+                                    foregroundColor: scheme.surface,
+                                  ),
+                                  icon: Icon(
+                                    playback.playing
+                                        ? Icons.pause_rounded
+                                        : Icons.play_arrow_rounded,
+                                  ),
                                 ),
-                              ),
-                              TouchIconButton(
-                                muted
-                                    ? Icons.volume_off_rounded
-                                    : Icons.volume_up_rounded,
-                                muted ? "Restore sound" : "Mute",
-                                playback.toggleMute,
-                              ),
-                              TouchIconButton(
-                                Icons.stop_rounded,
-                                "Stop playback and clear notification",
-                                hasMedia ? playback.stop : null,
-                              ),
-                              TextButton.icon(
-                                onPressed: () => pushPanel(
-                                  context,
-                                  app,
-                                  AppPanel.queue,
-                                  MobileQueue(app),
+                                IconButton(
+                                  onPressed: hasMedia ? playback.next : null,
+                                  tooltip: "Next track",
+                                  iconSize: 38,
+                                  icon: const Icon(Icons.skip_next_rounded),
                                 ),
-                                icon: const Icon(Icons.queue_music_rounded),
-                                label: const Text("Queue"),
-                              ),
-                            ],
-                          ),
-                        ],
+                                IconButton(
+                                  onPressed: playback.cycleRepeat,
+                                  tooltip: repeatLabel(repeat),
+                                  constraints: const BoxConstraints.tightFor(
+                                    width: touchTarget,
+                                    height: touchTarget,
+                                  ),
+                                  icon: Icon(
+                                    repeatIcon(repeat),
+                                    color: repeat != RepeatMode.off
+                                        ? scheme.primary
+                                        : null,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            const Spacer(),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                TouchIconButton(
+                                  Icons.lyrics_outlined,
+                                  "Lyrics",
+                                  () => pushPanel(
+                                    context,
+                                    app,
+                                    AppPanel.lyrics,
+                                    MobileLyrics(app),
+                                  ),
+                                ),
+                                TouchIconButton(
+                                  muted
+                                      ? Icons.volume_off_rounded
+                                      : Icons.volume_up_rounded,
+                                  muted ? "Restore sound" : "Mute",
+                                  playback.toggleMute,
+                                ),
+                                TouchIconButton(
+                                  Icons.stop_rounded,
+                                  "Stop playback and clear notification",
+                                  hasMedia ? playback.stop : null,
+                                ),
+                                TextButton.icon(
+                                  onPressed: () => pushPanel(
+                                    context,
+                                    app,
+                                    AppPanel.queue,
+                                    MobileQueue(app),
+                                  ),
+                                  icon: const Icon(Icons.queue_music_rounded),
+                                  label: const Text("Queue"),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

@@ -152,10 +152,56 @@ class MusicSearchController extends ChangeNotifier {
   /// results that were found.
   void _rememberQuery(String query) {
     try {
-      app.services.store.addRecent("search_history", query, limit: 20);
+      app.services.store.addRecent(_historyKey, query, limit: 20);
     } on Object catch (error) {
       debugPrint("Search history was not saved: $error");
     }
+  }
+
+  static const _historyKey = "search_history";
+
+  /// Earlier queries, newest first, offered while the search is empty.
+  List<String> get recentSearches => [
+    if (app.services.store.get(_historyKey) case final List<Object?> items)
+      for (final item in items)
+        if (item is String && item.trim().isNotEmpty) item,
+  ];
+
+  /// Runs [query] again, as if it had been typed and submitted.
+  Future<void> searchAgain(String query) {
+    draft = query;
+    return startSearch();
+  }
+
+  void forgetSearch(String query) =>
+      _saveHistory(recentSearches.where((item) => item != query).toList());
+
+  void clearSearchHistory() => _saveHistory(const []);
+
+  void _saveHistory(List<String> items) {
+    try {
+      app.services.store.set(_historyKey, items);
+    } on Object catch (failure) {
+      app.reportFailure(failure);
+    }
+    notifyListeners();
+  }
+
+  /// Empties the field and returns to recent searches.
+  void clear() {
+    ++_request;
+    draft = "";
+    queryText = "";
+    results = [];
+    localTracks = {};
+    _checkedIds = {};
+    pageNumber = 1;
+    hasNext = false;
+    playlistTitle = "";
+    busy = false;
+    status = null;
+    error = null;
+    notifyListeners();
   }
 
   String _statusText() {
