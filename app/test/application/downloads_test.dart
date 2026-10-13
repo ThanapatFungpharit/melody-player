@@ -45,7 +45,9 @@ void main() {
   final published = <String>{};
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-downloads");
+    final created = await Directory.systemTemp.createTemp("melody-downloads");
+    // Windows temp paths can use 8.3 short names; compare the long form.
+    root = Directory(await created.resolveSymbolicLinks());
     music = p.join(root.path, "music");
     staging = p.join(root.path, "downloads", "staging");
     receipts = p.join(root.path, "downloads", "receipts");
