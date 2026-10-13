@@ -1,1 +1,1 @@
-"""Build tooling for Melody application artifacts."""
+"""Melody's build, development, and test tooling (``uv run melody-*``)."""

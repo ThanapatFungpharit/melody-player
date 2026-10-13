@@ -13,8 +13,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  FLUTTER_VERSION: "3.44.8"
+
+# Every job runs `melody-check` (tools/checks/check.py), the same checks
+# `uv run melody-check` runs locally.
 jobs:
-  quality:
+  worker:
+    name: Python worker (Python 3.14)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,50 +28,11 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked --python 3.14 --group build
-      - run: uv run --locked --python 3.14 --group build ruff check src tests tools packages/flet_background_audio/src/flet_background_audio
-      - run: uv run --locked --python 3.14 --group build ruff format --check src tests tools packages/flet_background_audio/src/flet_background_audio
-      - run: uv run --locked --python 3.14 --group build ty check src tests tools
-
-  tests-linux:
-    name: Tests (ubuntu-latest, Python 3.14)
-    needs: quality
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
       - run: uv sync --locked --python 3.14
-      - name: Unit tests
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/unit -t . -v
-      - name: Integration tests (offline)
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/integration -t . -v
-      - name: UI tests (headless)
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/ui -t . -v
+      - run: uv run --locked melody-check worker
 
-  tests-windows:
-    name: Tests (windows-latest, Python 3.14)
-    needs: quality
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-      - run: uv sync --locked --python 3.14
-      - name: Unit tests
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/unit -t . -v
-      - name: Integration tests (offline)
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/integration -t . -v
-      - name: UI tests (headless)
-        run: uv run --locked --python 3.14 python -m unittest discover -s tests/ui -t . -v
-
-  build-contracts:
-    name: Packaging contracts and compiled UI smoke tests
-    needs: quality
+  tools:
+    name: Build tools
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -73,5 +40,28 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked --python 3.14 --group build
-      - run: uv run --locked --python 3.14 --group build python -m unittest discover -s tests/packaging -t . -v
+      - run: uv sync --locked --python 3.14
+      - run: uv run --locked melody-check tools
+
+  flutter:
+    name: Flutter (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install Linux audio libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libmpv-dev
+      - run: uv sync --locked --python 3.14
+      - run: uv run --locked melody-check audio app

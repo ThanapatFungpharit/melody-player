@@ -1,0 +1,197 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application
+        android:label="Melody"
+        android:extractNativeLibs="true"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:documentLaunchMode="never"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- singleTask routes launcher and notification intents to the one
+                 activity (and its cached engine) instead of starting a second
+                 playback owner; documentLaunchMode closes the other route. -->
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <!-- The launcher entries are the aliases below. INFO keeps this
+                 activity the package's launch intent whichever alias is
+                 enabled, so the media notification always reopens Melody. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.INFO"/>
+            </intent-filter>
+            <!-- `flutter run` launches the first <activity> whose filter names
+                 MAIN and LAUNCHER. Launchers send no data, so the scheme keeps
+                 them from listing this one beside the aliases. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+                <data android:scheme="melody-launch"/>
+            </intent-filter>
+        </activity>
+        <!-- One launcher entry per accent color; LauncherIcon enables the one
+             matching the saved accent. Names are "icon.<accent>". -->
+        <activity-alias
+            android:name=".icon.violet"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_violet"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.ocean"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_ocean"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.rose"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_rose"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.emerald"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_emerald"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.amber"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_amber"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.slate"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_slate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.blue"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_blue"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.teal"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_teal"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.coral"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_coral"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.magenta"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_magenta"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".icon.lime"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_lime"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+        <!-- Re-enables the default launcher entry if an update left none. -->
+        <receiver
+            android:name=".LauncherIconRepair"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

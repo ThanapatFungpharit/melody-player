@@ -1,0 +1,52 @@
+group = "com.melodyplayer.melody_audio"
+version = "1.0"
+
+buildscript {
+    ext.kotlin_version = "2.1.0"
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:8.7.3"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+apply plugin: "com.android.library"
+// AGP 9 compiles Kotlin itself; applying the Kotlin Gradle plugin there is
+// deprecated by Flutter and would leave built-in-Kotlin plugins uncompiled.
+def isAgp9OrAbove = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize(".")[0].toInteger() >= 9
+if (!isAgp9OrAbove) {
+    apply plugin: "kotlin-android"
+}
+
+android {
+    namespace = "com.melodyplayer.melody_audio"
+    compileSdk = 35
+
+    defaultConfig {
+        minSdk = 30
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+    // CPU-only LiteRT: Dart calls its TensorFlow Lite C API through FFI to
+    // find the subject of notification artwork.
+    implementation "com.google.ai.edge.litert:litert:1.4.0"
+}
+
+if (!isAgp9OrAbove) {
+    android.kotlinOptions.jvmTarget = "17"
+}

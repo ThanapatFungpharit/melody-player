@@ -1,0 +1,3 @@
+tags:
+  network:
+    # Talks to YouTube Music through the real worker; opt in with --tags network.

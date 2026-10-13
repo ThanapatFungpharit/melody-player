@@ -1,0 +1,32 @@
+name: melody
+description: "Melody: a local music player with YouTube Music downloads."
+publish_to: 'none'
+version: 1.0.1+1000001
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  crypto: ^3.0.7
+  file_picker: ^11.0.3
+  flutter:
+    sdk: flutter
+  melody_audio:
+    path: ../packages/melody_audio
+  path: ^1.9.1
+  path_provider: ^2.1.6
+  serious_python: 4.5.1
+  sqlite3: ^3.5.2
+  uuid: ^4.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # The screen tests replace the media-session platform with a quiet fake.
+  flutter_media_session: 3.0.9
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

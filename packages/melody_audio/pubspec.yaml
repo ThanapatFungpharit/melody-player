@@ -1,0 +1,35 @@
+name: melody_audio
+description: Melody's audio player, system media session, and Android storage bridge
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.12.0 <4.0.0"
+  flutter: ">=3.44.0"
+
+dependencies:
+  audio_session: 0.2.4
+  flutter:
+    sdk: flutter
+  flutter_media_session: 3.0.9
+  just_audio: 0.10.6
+  just_audio_media_kit: 2.1.0
+  media_kit_libs_linux: 1.2.1
+  media_kit_libs_windows_audio: 1.0.9
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+  just_audio_platform_interface: 4.6.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.melodyplayer.melody_audio
+        pluginClass: MelodyAudioPlugin
+  assets:
+    # U²-Netp salient object model (Apache-2.0, see u2netp_LICENSE.txt).
+    - assets/u2netp_256_int8.tflite
+    - assets/u2netp_LICENSE.txt

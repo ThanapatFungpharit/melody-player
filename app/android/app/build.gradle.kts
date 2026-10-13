@@ -1,0 +1,74 @@
+import java.io.File
+
+// Stay on AGP 8.11 and Kotlin 2.2: just_audio, audio_session, and
+// flutter_media_session still apply the Kotlin Gradle plugin, which AGP 9's
+// built-in Kotlin rejects.
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+android {
+    namespace = "com.flet.musicplayer"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        // Every Melody release has shipped with this identity (see
+        // docs/releases-and-dependencies.md). Changing it would install a
+        // separate app without the user's library and settings.
+        applicationId = "com.flet.musicplayer"
+        minSdk = 30
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    val releaseKeyStore = System.getenv("MELODY_ANDROID_KEY_STORE").orEmpty()
+    signingConfigs {
+        if (releaseKeyStore.isNotBlank()) {
+            create("release") {
+                storeFile = File(releaseKeyStore)
+                storePassword = System.getenv("MELODY_ANDROID_KEY_STORE_PASSWORD")
+                keyPassword = System.getenv("MELODY_ANDROID_KEY_PASSWORD")
+                keyAlias = System.getenv("MELODY_ANDROID_KEY_ALIAS")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // melody-build (tools/build/app.py) requires the release key for production
+            // builds; local release runs fall back to debug signing.
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // FFmpeg ships as libffmpeg.so/libffprobe.so executables. Legacy
+            // packaging makes the installer extract them to the read-only,
+            // executable nativeLibraryDir (Android 10+ forbids executing
+            // programs from writable app storage).
+            useLegacyPackaging = true
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+flutter {
+    source = "../.."
+}
