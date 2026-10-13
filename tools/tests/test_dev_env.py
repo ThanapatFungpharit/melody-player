@@ -117,6 +117,15 @@ class CommonTests(unittest.TestCase):
 
         self.assertEqual(Path(found or "").resolve(), program.resolve())
 
+    @unittest.skipUnless(os.name == "nt", "PATHEXT spelling is Windows-only")
+    def test_windows_extension_is_lowercased_for_dart_hooks(self) -> None:
+        with mock.patch(
+            "tools.common.shutil.which", return_value=r"C:\sdk\bin\dart.EXE"
+        ):
+            found = find_executable("dart")
+
+        self.assertEqual(found, r"C:\sdk\bin\dart.exe")
+
 
 def _which_only_in_sdk(name: str, path: str | None = None) -> str | None:
     """shutil.which, but nothing on PATH (the SDK is passed as ``path``)."""

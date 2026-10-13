@@ -129,6 +129,14 @@ jobs:
               exit 1
             fi
           done
+      # The Android SDK, NDK, Flutter and Gradle caches outgrow the runner's
+      # free disk; drop preinstalled toolchains this job never uses.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift
+          sudo docker image prune --all --force
+          df -h /
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v9.0.0
         with:

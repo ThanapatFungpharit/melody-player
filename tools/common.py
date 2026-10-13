@@ -38,6 +38,11 @@ def find_executable(name: str) -> str | None:
     java = os.environ.get("JAVA_HOME")
     if found is None and name == "keytool" and java:
         found = shutil.which(name, path=str(Path(java) / "bin"))
+    if found is not None and os.name == "nt":
+        # shutil.which spells the extension as PATHEXT does (".EXE"), and
+        # Dart's build hook runner then launches the nonexistent "dart.EXE.exe".
+        program = Path(found)
+        found = str(program.with_suffix(program.suffix.lower()))
     return found
 
 
