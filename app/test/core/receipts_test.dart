@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:convert";
 import "dart:io";
 
@@ -12,7 +13,7 @@ void main() {
   late Directory root;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-receipts");
+    root = await createTestDirectory("melody-receipts");
   });
 
   tearDown(() => root.delete(recursive: true));

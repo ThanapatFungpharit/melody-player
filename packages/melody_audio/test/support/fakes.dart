@@ -91,6 +91,14 @@ class FakeJustAudioPlatform extends JustAudioPlatform {
   Future<AudioPlayerPlatform> init(InitRequest request) async {
     final player = FakeAudioPlayer(request.id, loadGate)
       ..completionOutlivesSeek = completionOutlivesSeek;
+    for (final effect in request.androidAudioEffects) {
+      if (effect is AndroidLoudnessEnhancerMessage) {
+        player
+          ..hasEnhancer = true
+          ..boostEnabled = effect.enabled
+          ..boostDb = effect.targetGain;
+      }
+    }
     loadGate = null;
     completionOutlivesSeek = false;
     players.add(player);
@@ -264,9 +272,39 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
     return DisposeResponse();
   }
 
+  /// Every volume the decoder was given, in order.
+  final List<double> volumes = [];
+
+  /// The Android LoudnessEnhancer attached to this decoder, if any.
+  bool hasEnhancer = false;
+  bool boostEnabled = false;
+  double boostDb = 0;
+
+  /// The gain the enhancer adds right now, in dB.
+  double get activeBoostDb => boostEnabled ? boostDb : 0;
+
   @override
-  Future<SetVolumeResponse> setVolume(SetVolumeRequest request) async =>
-      SetVolumeResponse();
+  Future<AudioEffectSetEnabledResponse> audioEffectSetEnabled(
+    AudioEffectSetEnabledRequest request,
+  ) async {
+    boostEnabled = request.enabled;
+    return AudioEffectSetEnabledResponse();
+  }
+
+  @override
+  Future<AndroidLoudnessEnhancerSetTargetGainResponse>
+  androidLoudnessEnhancerSetTargetGain(
+    AndroidLoudnessEnhancerSetTargetGainRequest request,
+  ) async {
+    boostDb = request.targetGain;
+    return AndroidLoudnessEnhancerSetTargetGainResponse();
+  }
+
+  @override
+  Future<SetVolumeResponse> setVolume(SetVolumeRequest request) async {
+    volumes.add(request.volume);
+    return SetVolumeResponse();
+  }
 
   @override
   Future<SetSpeedResponse> setSpeed(SetSpeedRequest request) async =>

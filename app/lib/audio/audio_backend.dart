@@ -8,7 +8,13 @@ import "../core/storage.dart";
 
 /// The decoder contract the playback controller drives.
 abstract class TrackPlayerBackend {
-  void load(String source, {bool autoplay = false, int positionMs = 0});
+  /// [gain] is the source's loudness normalization factor (0 to 1).
+  void load(
+    String source, {
+    bool autoplay = false,
+    int positionMs = 0,
+    double gain = 1,
+  });
   void setQueue(
     List<AudioQueueItem> items,
     int currentIndex, {
@@ -42,6 +48,10 @@ class BackendCallbacks {
   void Function(String message)? onError;
   void Function(MediaCommand command, int? seekPositionMs)? onMediaAction;
 }
+
+/// How far, in dB, the audio engine can raise a quiet track on this
+/// platform (0 where it can only attenuate).
+double get audioMaxBoostDb => AudioEngine.maxBoostDb;
 
 AudioRepeatMode audioRepeatMode(RepeatMode mode) => switch (mode) {
   RepeatMode.off => AudioRepeatMode.off,
@@ -242,7 +252,12 @@ class NativeAudioBackend implements TrackPlayerBackend {
   }
 
   @override
-  void load(String source, {bool autoplay = false, int positionMs = 0}) {
+  void load(
+    String source, {
+    bool autoplay = false,
+    int positionMs = 0,
+    double gain = 1,
+  }) {
     if (_closing) return;
     // A new explicit selection is the retry boundary after a failure.
     _beginSource();
@@ -253,6 +268,7 @@ class NativeAudioBackend implements TrackPlayerBackend {
         generation: generation,
         autoplay: autoplay,
         position: _milliseconds(positionMs),
+        gain: gain,
       ),
       generation,
     );

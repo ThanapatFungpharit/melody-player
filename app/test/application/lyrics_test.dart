@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -28,7 +29,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-lyrics");
+    root = await createTestDirectory("melody-lyrics");
     fetched = [];
     reply = () => const Lyrics([
       LyricLine("Hello", startMs: 0, endMs: 900),

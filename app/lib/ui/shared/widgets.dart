@@ -359,6 +359,55 @@ class _HoverableState extends State<Hoverable> {
   );
 }
 
+/// A horizontal row of same-sized cards that builds only the cards in or
+/// near view. A hidden [prototype] card sets the row's height, so it follows
+/// the text scale without hard-coded extents.
+class LazyShelf extends StatelessWidget {
+  const LazyShelf({
+    super.key,
+    required this.itemCount,
+    required this.itemBuilder,
+    required this.prototype,
+    this.spacing = 0,
+    this.clipBehavior = Clip.hardEdge,
+  });
+
+  /// Prototype text with tall accents and fallback scripts, so a line measures
+  /// at least as tall as any real title.
+  static const sampleText = "Ágjy ปั้ญ 音한 🎵";
+
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+  final Widget prototype;
+  final double spacing;
+  final Clip clipBehavior;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    child: Stack(
+      children: [
+        Visibility(
+          visible: false,
+          maintainSize: true,
+          maintainAnimation: true,
+          maintainState: true,
+          child: ExcludeSemantics(child: prototype),
+        ),
+        Positioned.fill(
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            clipBehavior: clipBehavior,
+            itemCount: itemCount,
+            itemBuilder: itemBuilder,
+            separatorBuilder: (context, _) => SizedBox(width: spacing),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 /// The accent's equalizer mark for whatever is playing now.
 class NowPlayingMark extends StatelessWidget {
   const NowPlayingMark({super.key, this.size = 18});

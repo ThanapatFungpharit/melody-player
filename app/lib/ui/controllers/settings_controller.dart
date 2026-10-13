@@ -208,6 +208,7 @@ class SettingsController extends ChangeNotifier {
     }
     app.settings = settings;
     app.services.downloads.historyDays = settings.downloadHistoryDays;
+    _applyLoudness(settings);
     if (settings.autoFocalPointLiveNotifications !=
         old.autoFocalPointLiveNotifications) {
       app.syncSystemMedia(refreshMetadata: true);
@@ -230,6 +231,27 @@ class SettingsController extends ChangeNotifier {
     app.showMessage(
       restart ? "$saved Restart to apply download changes." : saved,
     );
+  }
+
+  void _applyLoudness(AppSettings settings) => app.services.loudness.configure(
+    enabled: settings.normalizeLoudness,
+    targetLufs: settings.loudnessTarget.toDouble(),
+  );
+
+  /// A short account of loudness measurement for Settings.
+  String get loudnessStatus {
+    final loudness = app.services.loudness;
+    if (!loudness.available) {
+      return "Melody's bundled FFmpeg could not be started, so tracks play "
+          "at their own loudness until Melody restarts.";
+    }
+    final total = app.services.manager.counts().$1;
+    final measured = loudness.analyzedCount.clamp(0, total);
+    return measured >= total
+        ? "Every library track has been measured."
+        : "Measured ${plural(measured, "library track")} of $total. Melody "
+              "measures the rest in the background; until then they play "
+              "at a typical level.";
   }
 
   /// Moves the live library back to [previous] after the new [folder]
@@ -333,6 +355,7 @@ class SettingsController extends ChangeNotifier {
     await deleteQuietly(cookies);
     app.settings = defaults;
     app.playback.applySettings(defaults);
+    _applyLoudness(defaults);
     if (current.autoFocalPointLiveNotifications !=
         defaults.autoFocalPointLiveNotifications) {
       app.syncSystemMedia(refreshMetadata: true);

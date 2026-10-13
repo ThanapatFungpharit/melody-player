@@ -72,7 +72,7 @@ class HomeController extends ChangeNotifier {
     return true;
   }
 
-  /// Track count, up to six recent tracks, and up to six favorites.
+  /// Track count, up to six recent tracks, and every favorite.
   (int, List<Track>, List<Track>) collections() {
     final manager = app.services.manager;
     final recentIds = app.services.store.get("recent_tracks", const []);
@@ -86,7 +86,6 @@ class HomeController extends ChangeNotifier {
     }
     final favorites = manager.tracksByIds(
       app.services.store.favoriteTrackIds(),
-      limit: 6,
     );
     return (manager.counts().$1, recent, favorites);
   }

@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -8,7 +9,7 @@ void main() {
   late Directory root;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-storage");
+    root = await createTestDirectory("melody-storage");
   });
 
   tearDown(() => root.delete(recursive: true));

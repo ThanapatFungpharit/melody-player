@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -24,7 +25,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-manager");
+    root = await createTestDirectory("melody-manager");
     music = p.join(root.path, "music");
     manager = open();
   });

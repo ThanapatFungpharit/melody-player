@@ -1,6 +1,7 @@
 @Tags(["network"])
 library;
 
+import "../support/temp.dart";
 import "dart:async";
 import "dart:io";
 
@@ -33,7 +34,7 @@ void main() {
 
   setUpAll(() async {
     if (python == null) return;
-    root = await Directory.systemTemp.createTemp("melody-worker");
+    root = await createTestDirectory("melody-worker");
     worker = WorkerClient(
       await ProcessTransport.start(
         python: python,

@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter/material.dart";
@@ -9,6 +10,8 @@ import "package:melody/ui/app_state.dart";
 import "package:melody/services.dart";
 import "package:melody/application/downloads.dart";
 import "package:melody/application/library_service.dart";
+import "package:melody/application/loudness.dart";
+import "package:melody/core/loudness.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/catalog.dart";
 import "package:melody/application/store.dart";
@@ -193,6 +196,14 @@ Future<MelodyApp> _app(
     ytMusic: PackageRuntime(ytMusicRuntimeInfo, store, worker),
     lyrics: LyricsLibrary(paths.lyrics, catalog.lyrics),
     lyricsEmbedder: null,
+    loudness: LoudnessNormalizer(
+      manager,
+      paths.loudnessCache,
+      (path, {cancel}) async =>
+          throw const LoudnessUnmeasurable("Not measured in screen tests"),
+      enabled: true,
+      targetLufs: -14,
+    ),
     availableTrackIds: ids.toSet(),
   );
   return MelodyApp(services, mobile: mobile);
@@ -205,7 +216,7 @@ void main() {
   setUpAll(_loadFonts);
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-screens");
+    root = await createTestDirectory("melody-screens");
     FlutterMediaSessionPlatform.instance = _QuietMediaSession();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(

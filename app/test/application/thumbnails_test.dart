@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 import "dart:typed_data";
 
@@ -21,7 +22,7 @@ void main() {
   late ThumbnailCache cache;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-thumbnails");
+    root = await createTestDirectory("melody-thumbnails");
     cache = ThumbnailCache(root.path);
   });
 

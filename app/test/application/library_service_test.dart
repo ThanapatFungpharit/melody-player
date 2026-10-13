@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 import "dart:typed_data";
 
@@ -34,7 +35,7 @@ void main() {
   late LibraryService library;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-library");
+    root = await createTestDirectory("melody-library");
     music = p.join(root.path, "music");
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
     store = ApplicationStore.open(

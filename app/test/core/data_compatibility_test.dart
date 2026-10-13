@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:convert";
 import "dart:io";
 
@@ -32,7 +33,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-compat");
+    root = await createTestDirectory("melody-compat");
     await copyTree(fixtures, root.path);
   });
 
@@ -54,10 +55,12 @@ void main() {
     ]);
     final gamma = manager.getTrack(ids["gamma"]!);
     expect(gamma.title, "Gamma ü");
-    expect(gamma.filename, p.join("sub", "Gamma.opus"));
+    // The fixture was written on Windows, so its separators are backslashes.
+    String portable(String path) => path.replaceAll(r"\", "/");
+    expect(portable(gamma.filename), "sub/Gamma.opus");
     expect(
-      manager.trackPath(gamma.id),
-      p.join(root.path, "music", "sub", "Gamma.opus"),
+      portable(manager.trackPath(gamma.id)),
+      portable(p.join(root.path, "music", "sub", "Gamma.opus")),
     );
     expect(manager.getTrack(ids["beta"]!).displayTitle, "Beta");
 
@@ -227,5 +230,29 @@ void main() {
     expect(settings.notificationActionPair, "shuffle_favorite");
     expect(settings.skipLoadingDelay, isFalse);
     expect(settings.downloadDirectory, "/m");
+  });
+
+  test("loudness settings default on, and odd values fall back", () {
+    // Settings saved before normalization existed.
+    final earlier = AppSettings.fromJson({}, defaultDownloadDirectory: "/m");
+    expect(earlier.normalizeLoudness, isTrue);
+    expect(earlier.loudnessTarget, -14);
+
+    final odd = AppSettings.fromJson({
+      "normalize_loudness": "no",
+      "loudness_target": -3,
+    }, defaultDownloadDirectory: "/m");
+    expect(odd.normalizeLoudness, isTrue);
+    expect(odd.loudnessTarget, -14);
+
+    final saved = AppSettings.fromJson(
+      (earlier
+            ..normalizeLoudness = false
+            ..loudnessTarget = -18)
+          .toJson(),
+      defaultDownloadDirectory: "/m",
+    );
+    expect(saved.normalizeLoudness, isFalse);
+    expect(saved.loudnessTarget, -18);
   });
 }

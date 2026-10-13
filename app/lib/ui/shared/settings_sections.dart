@@ -461,6 +461,45 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           ),
           contentPadding: EdgeInsets.zero,
         ),
+        SwitchListTile(
+          value: draft.normalizeLoudness,
+          onChanged: (value) =>
+              settings.update((draft) => draft.normalizeLoudness = value),
+          title: const Text("Normalize loudness"),
+          subtitle: const Text(
+            "Play songs at a similar volume. Your files and volume setting "
+            "are not changed.",
+          ),
+          contentPadding: EdgeInsets.zero,
+        ),
+        _dropdown(
+          "Target loudness",
+          "${draft.loudnessTarget}",
+          [
+            for (final target in loudnessTargetChoices)
+              (
+                "$target",
+                switch (target) {
+                  -11 => "Loud ($target LUFS)",
+                  -14 => "Normal ($target LUFS)",
+                  -23 => "Quiet ($target LUFS, broadcast)",
+                  _ => "$target LUFS",
+                },
+              ),
+          ],
+          draft.normalizeLoudness
+              ? (value) => settings.update(
+                  (draft) => draft.loudnessTarget = int.parse(value),
+                )
+              : null,
+          helper: app.services.loudness.maxBoostDb > 0
+              ? "Quiet tracks are raised by up to "
+                    "${app.services.loudness.maxBoostDb.round()} dB, as far "
+                    "as their peaks allow."
+              : "Tracks quieter than the target play as they are on this "
+                    "device. A lower target evens out more tracks.",
+        ),
+        if (draft.normalizeLoudness) _note(context, settings.loudnessStatus),
         const Divider(height: 18),
         _label(context, "NOTIFICATIONS"),
         SwitchListTile(

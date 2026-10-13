@@ -180,6 +180,7 @@ them to the playback controller.
 | Saved lyrics, keyed by media identity | `LyricsLibrary` (`lyrics/<provider>_<id>.json`) | Saved on download completion, first play, and the library pass at launch; keeps lyrics showing until they are embedded (and on mobile); tracks without lyrics are rechecked weekly |
 | Lyrics embedded in downloaded audio | The media file, written in staging before artwork verification and hashing | MP3 gets a `USLT` frame from `core/id3_lyrics.dart` (FFmpeg can only write a non-standard `TXXX`); other formats get FFmpeg's tag through the worker |
 | Lyrics embedded in library audio (desktop) | `LyricsEmbedder`, at launch for the whole library, after downloads, and on play | Written into a `.melody-tmp-*` copy, swapped in under the library mutation lock, then rehashed; a playing file waits until playback moves on; files that cannot take lyrics are recorded by content hash in `state.db` (`lyrics_not_embedded`) |
+| Loudness measurements and normalization gains | `LoudnessNormalizer` (`application/loudness.dart`), cached in `cache/loudness.json` by track ID with the file's size and modification time | FFmpeg's `ebur128` filter measures integrated loudness and true peak (`core/loudness.dart`), one file at a time in its own process, from 10 seconds after launch, for new tracks, and for what plays next; a file whose size or time changed is hashed first (its audio packets, with FFmpeg's `streamhash`, no decoding), so a rewrite of only tags, lyrics, or cover art keeps its measurement and only new audio is measured again; a corrupted or unsupported one is recorded so it is not retried until it changes; each `AudioQueueItem` carries its gain, which the engine multiplies with the volume |
 | `.lrc` files beside library audio | Read by `LyricsLibrary`; no longer written | Melody's old ones (marked `[re:Melody]`) are removed once the audio carries the lyrics; a user's `.lrc` is never changed; deleting or replacing the audio removes it; imports copy a `.lrc` beside the original |
 
 Both SQLite schemas are unchanged since the first SQLite release, and fixtures
@@ -210,6 +211,29 @@ foreground media service keeps the process alive. Full process death still
 loses decoder identity; the persisted queue can be restored, but automatic
 continuation is not claimed. Physical-device testing is still required for
 background, lock-screen, and lifecycle behavior.
+
+Loudness normalization never changes files or the saved volume. Each row's
+gain is a linear amplitude factor. It reaches the target loudness while keeping
+the true peak at or below -1 dBTP, and it raises quiet tracks by at most
+`AudioEngine.maxBoostDb` (6 dB, or 0 where the decoder only attenuates). The
+engine turns volume × gain into a decoder level, because the decoders differ:
+
+| Platform | Decoder level | Boost |
+| --- | --- | --- |
+| Android (ExoPlayer) | Volume is linear amplitude, at most 1 | Above 1, full volume plus the same gain from an `AndroidLoudnessEnhancer` on the decoder's audio session; the effect is switched off whenever nothing is boosted |
+| Windows, Linux (media_kit) | mpv plays `(volume/100)^3`, so the gain's cube root scales the volume | Volumes up to mpv's 130%; +6 dB at full volume is 126% |
+| macOS (AVPlayer) | Linear amplitude, at most 1 | None: quieter tracks play unchanged |
+
+just_audio has no per-source volume, and the engine hears of a gapless
+transition only after it is audible. So the engine schedules the change from
+the playhead instead. A quieter next row is reached over the last 150 ms of the
+outgoing track; a louder one switches at the boundary. The plan is redone on
+every play, pause, seek, playback event, queue edit, and volume change, and an
+approach that does not end in a transition is undone. An explicit selection
+starts at its own gain. A measurement that arrives while a track plays applies
+from its next play. Switching normalization or the target fades the playing
+track over 1.5 seconds. Unmeasured and unmeasurable tracks, and streams, use
+the median gain of the measured library, and silent tracks are left alone.
 
 Shuffle is a one-time in-place reorder of the upcoming rows (or the whole
 collection when starting shuffled). Next, Previous, repeat, persistence, and
@@ -265,6 +289,7 @@ installs upgrade in place; inside it:
 | `cache/artwork/` | Artwork copied out of downloaded files | `ThumbnailCache` |
 | `cache/yt-dlp/` | yt-dlp's player and signature cache (`cachedir`) | yt-dlp; pruned by `pruneYtDlpCache` |
 | `cache/notification-artwork/` | Square crops for the system media controls | melody_audio; the 64 most recently used are kept |
+| `cache/loudness.json` | Loudness measurements of library tracks | `LoudnessNormalizer`; removed tracks are dropped at launch |
 
 Rules that keep it predictable:
 
@@ -402,7 +427,8 @@ Everything below runs on the UI isolate unless it says otherwise, so slow
 work stays out of builds and event handlers:
 
 - Network, yt-dlp, and tagging run in the Python worker; audio decoding runs
-  natively.
+  natively, and loudness measurement runs in an FFmpeg process (one at a
+  time; the app reads only its summary).
 - Hashing, file copies, artwork and lyrics tag reads, and MP3 lyrics writes
   run in `Isolate.run`. The lyrics writer keeps only the tag in memory and
   streams the audio through a fixed buffer.
