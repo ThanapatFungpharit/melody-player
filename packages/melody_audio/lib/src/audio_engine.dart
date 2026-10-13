@@ -1,4 +1,5 @@
 import "dart:async";
+import "dart:math" show ln10, log, max, min, pow;
 
 import "package:audio_session/audio_session.dart";
 import "package:flutter/foundation.dart";
@@ -20,6 +21,7 @@ class AudioQueueItem {
     this.artist = "",
     this.album = "",
     this.artworkUri = "",
+    this.gain = 1,
   });
 
   final String trackId;
@@ -30,6 +32,10 @@ class AudioQueueItem {
   final String artist;
   final String album;
   final String artworkUri;
+
+  /// Loudness normalization: a linear amplitude factor for this row, from 0
+  /// to [AudioEngine.maxGain], applied on top of the volume while it plays.
+  final double gain;
 
   bool get isPlayable => trackId.isNotEmpty && source.isNotEmpty;
 }
@@ -182,6 +188,19 @@ class AudioEngine {
   Duration? _reportedDuration;
   Duration? _pendingSeekPosition;
   double _volume = 1;
+
+  /// The active row's normalization gain, and the preparing selection's.
+  double _gain = 1;
+  double _preparingGain = 1;
+
+  /// The volume last given to the active decoder, and the ramp moving it.
+  double _appliedVolume = 1;
+  Timer? _ramp;
+
+  /// Fires as the active track nears a gapless transition to a row with
+  /// another gain; [_boundaryGain] is that gain once the volume heads for it.
+  Timer? _boundaryTimer;
+  double? _boundaryGain;
   bool _playbackWanted = false;
   bool _removingGhost = false;
 
@@ -197,12 +216,13 @@ class AudioEngine {
   // -- requests ------------------------------------------------------------
 
   /// Replaces the engine's source with a single path or URL outside any
-  /// queue.
+  /// queue. [gain] is its normalization gain, as on [AudioQueueItem].
   Future<void> loadSource(
     String source, {
     required int generation,
     bool autoplay = false,
     Duration position = Duration.zero,
+    double gain = 1,
   }) async {
     await _select(
       sources: [_source(source)],
@@ -217,6 +237,7 @@ class AudioEngine {
       position: position,
       // A new source starts at its own position, never the old playhead.
       transferPlayhead: false,
+      gain: gain,
     );
   }
 
@@ -247,10 +268,12 @@ class AudioEngine {
       autoplay: autoplay,
       position: position,
       transferPlayhead: false,
+      gain: queue[index].gain,
     );
   }
 
-  /// Edits the queue around the active decoder without interrupting it.
+  /// Edits the queue around the active decoder without interrupting it. A
+  /// new gain for the active row fades in rather than jumping.
   Future<void> updateQueue(
     List<AudioQueueItem> items, {
     required int currentIndex,
@@ -286,6 +309,8 @@ class AudioEngine {
     final preparing = _preparingPlayer;
     _player = null;
     _preparingPlayer = null;
+    _cancelRamp();
+    _cancelBoundary();
     _queue = const [];
     _playlistQueueIndexes = const [];
     _queueIndex = -1;
@@ -362,15 +387,228 @@ class AudioEngine {
     }
   }
 
+  /// Sets the listener's volume, which the active row's normalization gain
+  /// scales. Applied at once, cutting short a gain fade.
   void setVolume(double value) {
     _volume = value.clamp(0, 1).toDouble();
-    for (final player in <AudioPlayer>{?_player, ?_preparingPlayer}) {
-      unawaited(
-        player.setVolume(_volume).catchError((Object error) {
-          _playerError(player, error);
-        }),
-      );
+    _cancelRamp();
+    // Nearing a transition, the next track's level is the one to keep.
+    _setPlayerVolume(_level(_boundaryGain ?? _gain));
+    final preparing = _preparingPlayer;
+    if (preparing != null && !identical(preparing, _player)) {
+      _sendVolume(preparing, _level(_preparingGain));
     }
+    _planBoundary();
+  }
+
+  /// How long a new gain for the playing row takes to fade in.
+  static const gainRamp = Duration(milliseconds: 1500);
+
+  /// How long before a gapless transition to a quieter row the outgoing
+  /// track eases down to that row's level. The engine learns of a native
+  /// transition only after it is audible, so without this the next track's
+  /// first moments would play at the previous track's gain.
+  static const boundaryLead = Duration(milliseconds: 150);
+  static const _boundarySlack = Duration(milliseconds: 50);
+
+  /// Moves the active decoder to the volume times [gain]: at once for a new
+  /// track, or as a fade when the playing track's gain changes.
+  void _applyGain(double gain, {required bool fade}) {
+    _gain = _clampGain(gain);
+    _boundaryGain = null;
+    final to = _level(_gain);
+    if (fade) {
+      _rampVolume(to, gainRamp, const Duration(milliseconds: 50));
+    } else {
+      _cancelRamp();
+      _setPlayerVolume(to);
+    }
+    _planBoundary();
+  }
+
+  /// Moves the active decoder's volume to [to] over [duration], in equal
+  /// steps of decibels (which sound even).
+  void _rampVolume(double to, Duration duration, Duration step) {
+    _cancelRamp();
+    final from = _appliedVolume;
+    final steps = max(1, duration.inMicroseconds ~/ step.inMicroseconds);
+    if (steps == 1 || from <= 0 || to <= 0 || (from - to).abs() < 0.001) {
+      _setPlayerVolume(to);
+      return;
+    }
+    var done = 0;
+    _ramp = Timer.periodic(step, (timer) {
+      done++;
+      _setPlayerVolume(
+        done >= steps ? to : from * pow(to / from, done / steps),
+      );
+      if (done >= steps) _cancelRamp();
+    });
+  }
+
+  /// The gain of the row a native transition would play next, when it
+  /// differs from the active row's.
+  double? _nextGain(AudioPlayer player) {
+    final next = player.nextIndex;
+    if (next == null ||
+        next == player.currentIndex ||
+        next >= _playlistQueueIndexes.length) {
+      return null;
+    }
+    final row = _playlistQueueIndexes[next];
+    if (row < 0 || row >= _queue.length) return null;
+    final gain = _clampGain(_queue[row].gain);
+    return (gain - _gain).abs() < 0.001 ? null : gain;
+  }
+
+  /// Schedules the volume change for the next gapless transition from the
+  /// playhead, so it lands on the boundary rather than when the engine
+  /// hears about it. Replanned on every play, pause, seek, track, queue,
+  /// gain, and volume change; an approach that did not end in a transition
+  /// (a pause or seek near the end) is undone.
+  void _planBoundary() {
+    _cancelBoundaryTimer();
+    final player = _player;
+    final duration = player?.duration;
+    final active =
+        player != null &&
+        duration != null &&
+        player.playing &&
+        player.processingState == ProcessingState.ready;
+    final next = active ? _nextGain(player) : null;
+    if (_boundaryGain case final heading?) {
+      // Still heading for the same transition: let the approach finish.
+      if (active &&
+          next == heading &&
+          duration - player.position <= boundaryLead + _boundarySlack) {
+        return;
+      }
+      _boundaryGain = null;
+      _cancelRamp();
+      _setPlayerVolume(_level(_gain));
+    }
+    if (!active || next == null) return;
+    // A louder next track switches at the boundary; a quieter one is
+    // reached by then.
+    final lead = next < _gain ? boundaryLead : Duration.zero;
+    final wait = duration - player.position - lead;
+    _boundaryTimer = Timer(
+      wait.isNegative ? Duration.zero : wait,
+      () => _approachBoundary(player, duration),
+    );
+  }
+
+  void _approachBoundary(AudioPlayer player, Duration duration) {
+    _boundaryTimer = null;
+    if (player != _player || !player.playing) return;
+    final next = _nextGain(player);
+    if (next == null) return;
+    final remaining = duration - player.position;
+    // Timers can fire early; wait for the edge if it is still far off.
+    if (remaining > boundaryLead + _boundarySlack) {
+      _planBoundary();
+      return;
+    }
+    _boundaryGain = next;
+    final to = _level(next);
+    if (next < _gain && remaining > Duration.zero) {
+      _rampVolume(to, remaining, const Duration(milliseconds: 25));
+    } else {
+      _cancelRamp();
+      _setPlayerVolume(to);
+    }
+  }
+
+  void _cancelBoundaryTimer() {
+    _boundaryTimer?.cancel();
+    _boundaryTimer = null;
+  }
+
+  void _cancelBoundary() {
+    _cancelBoundaryTimer();
+    _boundaryGain = null;
+  }
+
+  void _cancelRamp() {
+    _ramp?.cancel();
+    _ramp = null;
+  }
+
+  void _setPlayerVolume(double value) {
+    _appliedVolume = value;
+    final player = _player;
+    if (player != null) _sendVolume(player, value);
+  }
+
+  void _sendVolume(AudioPlayer player, double level) {
+    unawaited(
+      _applyLevel(player, level).catchError((Object error) {
+        _playerError(player, error);
+      }),
+    );
+  }
+
+  /// How far normalization may raise a quiet track on this platform, in dB.
+  /// media_kit (mpv) plays volumes up to 130%, and Android adds gain with
+  /// its LoudnessEnhancer effect; AVPlayer on Apple platforms only
+  /// attenuates.
+  static double get maxBoostDb =>
+      !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || _mpvVolume)
+      ? 6
+      : 0;
+
+  /// [maxBoostDb] as a linear amplitude factor.
+  static double get maxGain => pow(10, maxBoostDb / 20).toDouble();
+
+  static double _clampGain(double gain) =>
+      gain.isFinite ? gain.clamp(0, maxGain).toDouble() : 1;
+
+  /// mpv applies `(volume / 100)^3`, so an amplitude factor is its cube root
+  /// there; other decoders take amplitude as it is.
+  static bool get _mpvVolume =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  /// The decoder level for the listener's volume scaled by [gain]. Above 1
+  /// it is a boost: mpv takes it as a volume over 100%, and Android splits
+  /// it into full volume plus LoudnessEnhancer gain.
+  double _level(double gain) =>
+      _volume * (_mpvVolume ? pow(gain, 1 / 3).toDouble() : gain);
+
+  /// Each Android decoder's gain stage for boosts.
+  final _enhancers = Expando<AndroidLoudnessEnhancer>();
+
+  AudioPlayer _newPlayer() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return AudioPlayer();
+    }
+    final enhancer = AndroidLoudnessEnhancer();
+    final player = AudioPlayer(
+      audioPipeline: AudioPipeline(androidAudioEffects: [enhancer]),
+    );
+    _enhancers[player] = enhancer;
+    return player;
+  }
+
+  Future<void> _applyLevel(AudioPlayer player, double level) async {
+    final enhancer = _enhancers[player];
+    if (enhancer == null) {
+      await player.setVolume(level);
+      return;
+    }
+    final boostDb = level > 1 ? 20 * log(level) / ln10 : 0.0;
+    // The effect is only switched on while it boosts, so unboosted
+    // playback takes exactly the same path as without normalization.
+    if (boostDb > 0.01) {
+      if ((enhancer.targetGain - boostDb).abs() > 0.01) {
+        await enhancer.setTargetGain(boostDb);
+      }
+      if (!enhancer.enabled) await enhancer.setEnabled(true);
+    } else if (enhancer.enabled) {
+      await enhancer.setEnabled(false);
+    }
+    await player.setVolume(min(level, 1));
   }
 
   /// Carries out a system media command on the decoder. Returns false when
@@ -497,16 +735,20 @@ class AudioEngine {
     required bool autoplay,
     required Duration position,
     required bool transferPlayhead,
+    required double gain,
   }) async {
     final token = ++_loadToken;
     _pendingSeekPosition = null;
     _playbackWanted = autoplay;
     if (autoplay) _retainPlayback();
-    final candidate = AudioPlayer();
+    final candidate = _newPlayer();
     _preparingPlayer = candidate;
+    // A queue edit continues the playing track at its current level and
+    // fades to a new gain after the swap; a new selection starts at its own.
+    _preparingGain = transferPlayhead ? _gain : _clampGain(gain);
     try {
       await _ensureSession();
-      await candidate.setVolume(_volume);
+      await _applyLevel(candidate, _level(_preparingGain));
       await candidate.setLoopMode(
         queueIndexes.contains(-1) ? LoopMode.off : _loopMode(repeatMode),
       );
@@ -546,6 +788,15 @@ class AudioEngine {
       _positionBucket = -1;
       _reportedDuration = null;
       _listen(candidate);
+      if (transferPlayhead) {
+        _setPlayerVolume(_appliedVolume);
+        _applyGain(gain, fade: true);
+      } else {
+        // The candidate was prepared at this level.
+        _cancelRamp();
+        _gain = _preparingGain;
+        _appliedVolume = _level(_gain);
+      }
 
       if (!transferPlayhead && _queueIndex >= 0) {
         _announceTrack(queue[_queueIndex]);
@@ -591,6 +842,8 @@ class AudioEngine {
         if (player != _player) return;
         _onIndex(player, event.currentIndex);
         _reportDuration(player, _generation);
+        // The playhead may have jumped (a seek, a stall, a native skip).
+        _planBoundary();
       }, onError: (Object error) => _playerError(player, error)),
     );
     _subscriptions.add(
@@ -612,6 +865,8 @@ class AudioEngine {
           return;
         }
         _onIndex(player, player.currentIndex);
+        // Playing, pausing, buffering, and completing move the boundary.
+        _planBoundary();
         if (state.processingState == ProcessingState.ready &&
             _pendingLoadedGeneration == _generation) {
           _pendingLoadedGeneration = null;
@@ -666,6 +921,8 @@ class AudioEngine {
     _reportedDuration = null;
     _reportedErrorGeneration = null;
     _pendingLoadedGeneration = _generation;
+    // The new track starts at its own level straight away.
+    _applyGain(item.gain, fade: false);
     _announceTrack(item);
     _event(AudioTrackChanged(item.trackId, queueIndex, _generation));
     if (player.processingState == ProcessingState.ready) {
@@ -767,6 +1024,15 @@ class AudioEngine {
     if (unchanged && player != null && !_playlistQueueIndexes.contains(-1)) {
       _queue = items;
       _repeatMode = repeatMode;
+      if (_queueIndex >= 0 && _queueIndex < items.length) {
+        final gain = items[_queueIndex].gain;
+        if (gain != _gain) {
+          _applyGain(gain, fade: true);
+        } else {
+          // The next row, or its gain, may have changed.
+          _planBoundary();
+        }
+      }
       await player.setLoopMode(_loopMode(repeatMode));
       return true;
     }
@@ -784,6 +1050,7 @@ class AudioEngine {
         requestedIndex,
       ),
     );
+    final active = layout.queueIndexes[layout.initialIndex];
     return _select(
       sources: [
         for (final index in layout.queueIndexes)
@@ -799,6 +1066,7 @@ class AudioEngine {
       autoplay: _playbackWanted,
       position: player.position,
       transferPlayhead: true,
+      gain: active >= 0 ? items[active].gain : _gain,
     );
   }
 
@@ -840,6 +1108,7 @@ class AudioEngine {
     }
     _reportedDuration = current;
     _event(AudioDurationChanged(current, generation));
+    _planBoundary();
   }
 
   void _publishPosition(AudioPlayer player) {
@@ -865,6 +1134,7 @@ class AudioEngine {
       await player.stop();
     }
     await player.seek(position < Duration.zero ? Duration.zero : position);
+    if (player == _player) _planBoundary();
     // A paused seek can remain in the same one-second bucket. Publish its
     // exact position instead of waiting for the next periodic decoder tick.
     _publishPosition(player);

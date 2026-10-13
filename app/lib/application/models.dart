@@ -131,6 +131,9 @@ bool _bool(Object? value, bool fallback) => value is bool ? value : fallback;
 /// How long finished downloads stay listed, in days; 0 means forever.
 const downloadHistoryChoices = [1, 7, 30, 90, 0];
 
+/// Loudness normalization targets in LUFS, loudest first.
+const loudnessTargetChoices = [-11, -14, -16, -18, -23];
+
 class AppSettings {
   AppSettings({
     required this.downloadDirectory,
@@ -150,6 +153,8 @@ class AppSettings {
     this.autoFocalPointLiveNotifications = false,
     this.accentColor = "violet",
     this.downloadHistoryDays = 30,
+    this.normalizeLoudness = true,
+    this.loudnessTarget = -14,
   });
 
   String downloadDirectory;
@@ -169,6 +174,13 @@ class AppSettings {
 
   /// Days a finished download stays in the history; 0 keeps it forever.
   int downloadHistoryDays;
+
+  /// Plays every track at a similar loudness (`application/loudness.dart`).
+  bool normalizeLoudness;
+
+  /// The loudness tracks are brought down to, in LUFS; one of
+  /// [loudnessTargetChoices].
+  int loudnessTarget;
 
   DownloadFormat get downloadFormat => DownloadFormat.parse(audioFormat);
 
@@ -212,6 +224,14 @@ class AppSettings {
         final int days when downloadHistoryChoices.contains(days) => days,
         _ => defaults.downloadHistoryDays,
       },
+      normalizeLoudness: _bool(
+        data["normalize_loudness"],
+        defaults.normalizeLoudness,
+      ),
+      loudnessTarget: switch (data["loudness_target"]) {
+        final int target when loudnessTargetChoices.contains(target) => target,
+        _ => defaults.loudnessTarget,
+      },
     );
   }
 
@@ -231,6 +251,8 @@ class AppSettings {
     "auto_focal_point_live_notifications": autoFocalPointLiveNotifications,
     "accent_color": accentColor,
     "download_history_days": downloadHistoryDays,
+    "normalize_loudness": normalizeLoudness,
+    "loudness_target": loudnessTarget,
   };
 
   AppSettings copy() => AppSettings.fromJson(

@@ -3,12 +3,14 @@ import "dart:math";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/library_service.dart";
+import "package:melody/application/loudness.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/playback.dart";
 import "package:melody/application/queue.dart";
 import "package:melody/application/store.dart";
 import "package:melody/audio/audio_backend.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/loudness.dart";
 import "package:melody_audio/melody_audio.dart" show AudioQueueItem;
 import "package:path/path.dart" as p;
 
@@ -23,9 +25,17 @@ class FakeBackend implements TrackPlayerBackend {
   int cancelledLoads = 0;
   int discardedSources = 0;
 
+  double loadGain = 1;
+
   @override
-  void load(String source, {bool autoplay = false, int positionMs = 0}) {
+  void load(
+    String source, {
+    bool autoplay = false,
+    int positionMs = 0,
+    double gain = 1,
+  }) {
     this.source = source;
+    loadGain = gain;
     if (autoplay) playedAt.add(positionMs);
   }
 
@@ -795,4 +805,117 @@ void main() {
       expect(store.get("recent_tracks"), [ids[0], ids[1]]);
     },
   );
+
+  group("loudness normalization", () {
+    late Map<String, double> lufs;
+    late LoudnessNormalizer loudness;
+
+    setUp(() {
+      lufs = {};
+      loudness = LoudnessNormalizer(
+        manager,
+        p.join(root.path, "loudness.json"),
+        (path, {cancel}) async {
+          final value = lufs[p.basename(path)];
+          if (value == null) throw const LoudnessUnmeasurable("Invalid data");
+          return LoudnessMeasurement(integratedLufs: value, truePeakDb: -3);
+        },
+        enabled: true,
+        targetLufs: -14,
+        saveDelay: Duration.zero,
+        notifyDelay: Duration.zero,
+      );
+    });
+
+    tearDown(() => loudness.close());
+
+    PlaybackController normalized() => PlaybackController(
+      manager,
+      LibraryService(manager, store),
+      store,
+      backend,
+      loudness: loudness,
+    );
+
+    Future<void> measure(Iterable<String> ids) async {
+      loudness.analyze(ids);
+      await loudness.idle;
+      // Announcements are batched on a timer.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    test("every queue row carries its gain; the volume is untouched", () async {
+      final ids = await tracks(["loud.mp3", "quiet.mp3"]);
+      lufs.addAll({"loud.mp3": -8, "quiet.mp3": -20});
+      await measure(ids);
+      final playback = normalized()..setVolume(40);
+      playback.playTracks(ids);
+
+      final items = backend.queues.last.$1;
+      expect(items[0].gain, closeTo(linearGain(-6), 1e-9));
+      expect(items[1].gain, 1);
+      expect(backend.volume, 0.4);
+      expect(playback.volume, 40);
+    });
+
+    test(
+      "a measurement reaches upcoming rows but not the playing track",
+      () async {
+        final ids = await tracks(["a.mp3", "b.mp3"]);
+        final playback = normalized();
+        playback.playTracks(ids);
+        expect(backend.queues.last.$1.map((item) => item.gain), [1, 1]);
+
+        lufs.addAll({"a.mp3": -10, "b.mp3": -8});
+        await measure(ids);
+        var items = backend.queueUpdates.last.$1;
+        // The playing track keeps the level it started at.
+        expect(items[0].gain, 1);
+        expect(items[1].gain, closeTo(linearGain(-6), 1e-9));
+
+        // Once the engine moves on, the new track holds the gain it was
+        // given, and the first track's measurement applies next time.
+        playback.onTrackChanged(ids[1], 1);
+        await measure(ids);
+        playback.playQueueIndex(0);
+        items = backend.queues.last.$1;
+        expect(items[0].gain, closeTo(linearGain(-4), 1e-9));
+      },
+    );
+
+    test("settings changes reach the playing track", () async {
+      final ids = await tracks(["a.mp3"]);
+      lufs["a.mp3"] = -8;
+      await measure(ids);
+      final playback = normalized();
+      playback.playTracks(ids);
+      expect(backend.queues.last.$1.single.gain, lessThan(1));
+
+      loudness.configure(enabled: false, targetLufs: -14);
+      expect(backend.queueUpdates.last.$1.single.gain, 1);
+      loudness.configure(enabled: true, targetLufs: -18);
+      expect(
+        backend.queueUpdates.last.$1.single.gain,
+        closeTo(linearGain(-10), 1e-9),
+      );
+    });
+
+    test(
+      "unanalyzed tracks and streams play at the typical library gain",
+      () async {
+        final ids = await tracks(["a.mp3", "b.mp3", "c.mp3", "new.mp3"]);
+        lufs.addAll({"a.mp3": -10, "b.mp3": -11, "c.mp3": -12});
+        await measure(ids.take(3));
+        final playback = normalized();
+        playback.playTracks([ids[3]]);
+        expect(
+          backend.queues.last.$1.single.gain,
+          closeTo(linearGain(-3), 1e-9),
+        );
+
+        playback.playStream("https://example.com/stream", title: "Preview");
+        expect(backend.loadGain, closeTo(linearGain(-3), 1e-9));
+      },
+    );
+  });
 }

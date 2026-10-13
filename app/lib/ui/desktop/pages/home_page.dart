@@ -88,7 +88,11 @@ class _HomePageState extends State<HomePage> {
                 "Favorite a track to keep it close.",
               )
             else
-              _Shelf([for (final track in favorites) _trackCard(track)]),
+              _CardShelf(
+                app,
+                itemCount: favorites.length,
+                itemBuilder: (context, index) => _trackCard(favorites[index]),
+              ),
             if (playlists.isNotEmpty) ...[
               const SizedBox(height: 28),
               SectionTitle(
@@ -104,9 +108,12 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 10),
-              _Shelf([
-                for (final playlist in playlists.take(12))
-                  CoverCard(
+              _CardShelf(
+                app,
+                itemCount: playlists.length,
+                itemBuilder: (context, index) {
+                  final playlist = playlists[index];
+                  return CoverCard(
                     app: app,
                     title: playlist.name,
                     subtitle: plural(playlist.trackIds.length, "track"),
@@ -117,8 +124,9 @@ class _HomePageState extends State<HomePage> {
                         ? null
                         : () => app.playlists.play(playlist),
                     playTooltip: "Play ${playlist.name}",
-                  ),
-              ]),
+                  );
+                },
+              ),
             ],
             const SizedBox(height: 28),
             ListenableBuilder(
@@ -161,6 +169,35 @@ class _Shelf extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: children,
+      ),
+    ),
+  );
+}
+
+/// A lazily built row of [CoverCard]s for collections of any size.
+class _CardShelf extends StatelessWidget {
+  const _CardShelf(
+    this.app, {
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  final MelodyApp app;
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  @override
+  Widget build(BuildContext context) => Transform.translate(
+    // Cards carry their own padding; pull the row flush with the headings.
+    offset: const Offset(-10, 0),
+    child: LazyShelf(
+      itemCount: itemCount,
+      itemBuilder: itemBuilder,
+      prototype: CoverCard(
+        app: app,
+        title: LazyShelf.sampleText,
+        subtitle: LazyShelf.sampleText,
+        artwork: "",
       ),
     ),
   );

@@ -400,20 +400,31 @@ class MobileCoverCard extends StatelessWidget {
   );
 }
 
-/// A horizontally scrolling row that bleeds to the screen edges.
+/// A lazily built row of [MobileCoverCard]s that bleeds to the screen edges.
 class MobileShelf extends StatelessWidget {
-  const MobileShelf({super.key, required this.children});
+  const MobileShelf(
+    this.app, {
+    super.key,
+    required this.itemCount,
+    required this.itemBuilder,
+  });
 
-  final List<Widget> children;
+  final MelodyApp app;
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
 
   @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
+  Widget build(BuildContext context) => LazyShelf(
+    itemCount: itemCount,
+    itemBuilder: itemBuilder,
+    spacing: 14,
     clipBehavior: Clip.none,
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      spacing: 14,
-      children: children,
+    prototype: MobileCoverCard(
+      app: app,
+      title: LazyShelf.sampleText,
+      subtitle: LazyShelf.sampleText,
+      artwork: "",
+      onTap: () {},
     ),
   );
 }

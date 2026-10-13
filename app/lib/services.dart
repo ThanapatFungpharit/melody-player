@@ -7,6 +7,7 @@ import "package:path/path.dart" as p;
 import "application/catalog.dart";
 import "application/downloads.dart";
 import "application/library_service.dart";
+import "application/loudness.dart";
 import "application/lyrics.dart";
 import "application/lyrics_embedding.dart";
 import "application/package_runtime.dart";
@@ -14,6 +15,9 @@ import "application/storage_upgrade.dart";
 import "application/store.dart";
 import "application/thumbnails.dart";
 import "core/library/manager.dart";
+import "audio/audio_backend.dart" show audioMaxBoostDb;
+import "core/loudness.dart"
+    show ffmpegAudioHasher, ffmpegExecutable, ffmpegLoudnessMeter;
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
 import "package:melody_audio/melody_audio.dart"
     show useNotificationArtworkDirectory;
@@ -36,6 +40,7 @@ class AppServices {
     required this.ytMusic,
     required this.lyrics,
     required this.lyricsEmbedder,
+    required this.loudness,
     required this.availableTrackIds,
   });
 
@@ -54,6 +59,9 @@ class AppServices {
   /// Puts lyrics inside library audio files. Null on Android, where
   /// library files are published media that are not rewritten.
   final LyricsEmbedder? lyricsEmbedder;
+
+  /// Measures library tracks and gives playback their normalization gains.
+  final LoudnessNormalizer loudness;
 
   /// Both updatable packages, in the order Settings lists them.
   List<PackageRuntime> get runtimes => [ytMusic, ytDlp];
@@ -161,6 +169,16 @@ class AppServices {
       stagingDirectory: paths.downloadStaging,
       receiptDirectory: paths.downloadReceipts,
     );
+    final ffmpeg = ffmpegExecutable(paths.ffmpegLocation);
+    final loudness = await LoudnessNormalizer.open(
+      manager,
+      paths.loudnessCache,
+      ffmpegLoudnessMeter(ffmpeg),
+      hasher: ffmpegAudioHasher(ffmpeg),
+      enabled: store.settings.normalizeLoudness,
+      targetLufs: store.settings.loudnessTarget.toDouble(),
+      maxBoostDb: audioMaxBoostDb,
+    );
     onStage?.call("Restoring your queue");
     final availableTrackIds = await _availableResumeTracks(manager, store);
     return AppServices(
@@ -176,6 +194,7 @@ class AppServices {
       ytMusic: PackageRuntime(ytMusicRuntimeInfo, store, worker),
       lyrics: lyrics,
       lyricsEmbedder: lyricsEmbedder,
+      loudness: loudness,
       availableTrackIds: availableTrackIds,
     );
   }

@@ -66,31 +66,36 @@ class _MobileHomeState extends State<MobileHome> {
             )
           else
             MobileShelf(
-              children: [
-                for (final track in favorites)
-                  MobileCoverCard(
-                    app: app,
-                    title: track.displayTitle,
-                    subtitle: app.services.library.details(track.id).credit,
-                    artwork: app.services.library.details(track.id).thumbnail,
-                    onTap: () => app.playback.playTrack(track.id),
-                  ),
-              ],
+              app,
+              itemCount: favorites.length,
+              itemBuilder: (context, index) {
+                final track = favorites[index];
+                final details = app.services.library.details(track.id);
+                return MobileCoverCard(
+                  app: app,
+                  title: track.displayTitle,
+                  subtitle: details.credit,
+                  artwork: details.thumbnail,
+                  onTap: () => app.playback.playTrack(track.id),
+                );
+              },
             ),
           if (playlists.isNotEmpty) ...[
             const MobileHeading("Your playlists"),
             MobileShelf(
-              children: [
-                for (final playlist in playlists.take(12))
-                  MobileCoverCard(
-                    app: app,
-                    title: playlist.name,
-                    subtitle: plural(playlist.trackIds.length, "track"),
-                    artwork: playlistArtwork(app, playlist),
-                    playlist: true,
-                    onTap: () => app.playlists.openPlaylist(playlist.id),
-                  ),
-              ],
+              app,
+              itemCount: playlists.length,
+              itemBuilder: (context, index) {
+                final playlist = playlists[index];
+                return MobileCoverCard(
+                  app: app,
+                  title: playlist.name,
+                  subtitle: plural(playlist.trackIds.length, "track"),
+                  artwork: playlistArtwork(app, playlist),
+                  playlist: true,
+                  onTap: () => app.playlists.openPlaylist(playlist.id),
+                );
+              },
             ),
           ],
           MobileHeading(

@@ -26,12 +26,14 @@ source), and `tools/checks/` (validation), with shared helpers in
 `tools/common.py` and tests in `tools/tests/`. Register a new tool under
 `[project.scripts]` in the root `pyproject.toml` and run `uv sync`.
 
-- `app/test/core` covers storage, the library manager, and embedded artwork.
+- `app/test/core` covers storage, the library manager, embedded artwork, and
+  loudness measurement (real FFmpeg runs when `MELODY_FFMPEG_DIR` is set or
+  FFmpeg is staged under `app/media/`; otherwise those tests are skipped).
   The data-compatibility fixtures were written by earlier releases; never
   regenerate them with the current code.
 - `app/test/application` covers downloads (with a fake worker transport),
   the catalog, lyrics (saved, embedded, `.lrc`, LRC parsing), playback, the
-  queue, the application store, and scheduled package updates. `app/test/core` covers reading artwork and lyrics from every
+  queue, loudness normalization (with a fake meter), the application store, and scheduled package updates. `app/test/core` covers reading artwork and lyrics from every
   container and writing MP3 lyrics.
 - `app/test/worker` covers the worker client's typed status and its behavior
   when Python stops or never starts.

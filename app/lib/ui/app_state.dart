@@ -65,6 +65,7 @@ class MelodyApp {
       services.store,
       backend,
       persistence: persistence,
+      loudness: services.loudness,
       availableTrackIds: services.availableTrackIds,
       artworkUri: services.thumbnails.artworkUri,
       onError: showError,
@@ -98,6 +99,13 @@ class MelodyApp {
       embedder.isPlaying = (trackId) => playback.currentTrackId == trackId;
       embedder.embedLibrary();
     }
+    // Measuring waits for the first view to settle; FFmpeg then runs one
+    // file at a time in its own process.
+    _loudnessStart = Timer(
+      const Duration(seconds: 10),
+      () => unawaited(services.loudness.analyzeLibrary()),
+    );
+    libraryRevision.addListener(services.loudness.analyzeNew);
   }
 
   final AppServices services;
@@ -120,6 +128,7 @@ class MelodyApp {
   late final PlaylistsController playlists;
   late final SettingsController settingsDraft;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
+  Timer? _loudnessStart;
 
   /// Track, transport, queue, and loading changes.
   final Signal playbackState = Signal();
@@ -219,6 +228,7 @@ class MelodyApp {
       // Files skipped while they played can take their lyrics now.
       services.lyricsEmbedder?.retryDeferred();
       _saveLyrics([?playback.currentTrackId]);
+      _measureUpcoming();
     }
     switch (change) {
       case PlaybackChange.progress:
@@ -537,6 +547,18 @@ class MelodyApp {
     }
   }
 
+  /// Measures what plays next first, so it starts at its own level; the
+  /// playing track is measured for its next play.
+  void _measureUpcoming() {
+    final queue = playback.queue;
+    final current = queue.currentIndex;
+    if (current < 0) return;
+    services.loudness.analyze([
+      ...queue.items.skip(current + 1).take(3),
+      queue.items[current],
+    ], first: true);
+  }
+
   /// Saves lyrics for library tracks in the background so they show
   /// offline: inside the audio file where Melody can rewrite it.
   void _saveLyrics(Iterable<String> trackIds) {
@@ -571,6 +593,9 @@ class MelodyApp {
     playback.close();
     persistence.close();
     services.lyricsEmbedder?.close();
+    _loudnessStart?.cancel();
+    libraryRevision.removeListener(services.loudness.analyzeNew);
+    unawaited(services.loudness.close());
     // Running jobs observe cancellation at their next yt-dlp callback.
     services.downloads.shutdown();
     unawaited(_playbackSubscription.cancel());

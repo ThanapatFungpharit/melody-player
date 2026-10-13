@@ -20,6 +20,7 @@ import "package:path_provider/path_provider.dart";
 /// cache/artwork/          artwork copied out of downloaded files
 /// cache/yt-dlp/           yt-dlp's player and signature cache
 /// cache/notification-artwork/  cropped media-session artwork
+/// cache/loudness.json     loudness measurements for normalization
 /// ```
 ///
 /// `cache/` is safe to delete while Melody is closed. The music folder
@@ -78,6 +79,9 @@ class AppPaths {
   /// are kept (melody_audio).
   String get notificationArtworkCache => p.join(cache, "notification-artwork");
 
+  /// Loudness measurements of library tracks (LoudnessNormalizer).
+  String get loudnessCache => p.join(cache, "loudness.json");
+
   /// Folders holding files Melody writes atomically, where a crash can
   /// leave a temporary file behind.
   List<String> get atomicWriteFolders => [
@@ -85,6 +89,7 @@ class AppPaths {
     lyrics,
     downloadReceipts,
     artworkCache,
+    cache,
   ];
 
   static Future<AppPaths> resolve() async {

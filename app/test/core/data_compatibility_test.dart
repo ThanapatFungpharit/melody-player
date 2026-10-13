@@ -228,4 +228,28 @@ void main() {
     expect(settings.skipLoadingDelay, isFalse);
     expect(settings.downloadDirectory, "/m");
   });
+
+  test("loudness settings default on, and odd values fall back", () {
+    // Settings saved before normalization existed.
+    final earlier = AppSettings.fromJson({}, defaultDownloadDirectory: "/m");
+    expect(earlier.normalizeLoudness, isTrue);
+    expect(earlier.loudnessTarget, -14);
+
+    final odd = AppSettings.fromJson({
+      "normalize_loudness": "no",
+      "loudness_target": -3,
+    }, defaultDownloadDirectory: "/m");
+    expect(odd.normalizeLoudness, isTrue);
+    expect(odd.loudnessTarget, -14);
+
+    final saved = AppSettings.fromJson(
+      (earlier
+            ..normalizeLoudness = false
+            ..loudnessTarget = -18)
+          .toJson(),
+      defaultDownloadDirectory: "/m",
+    );
+    expect(saved.normalizeLoudness, isFalse);
+    expect(saved.loudnessTarget, -18);
+  });
 }

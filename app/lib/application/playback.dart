@@ -8,6 +8,7 @@ import "package:path/path.dart" as p;
 import "../audio/audio_backend.dart";
 import "../core/library/manager.dart";
 import "library_service.dart";
+import "loudness.dart";
 import "models.dart";
 import "queue.dart";
 import "store.dart";
@@ -95,6 +96,7 @@ class PlaybackController {
     this.store,
     this.backend, {
     this.persistence,
+    this.loudness,
     Set<String>? availableTrackIds,
     String Function(String source)? artworkUri,
     this.onError,
@@ -145,6 +147,7 @@ class PlaybackController {
     previousVolume = settings.previousVolume;
     backend.setVolume(muted ? 0 : volume / 100);
     if (!listEquals(queue.items, originalItems)) _persist();
+    _loudnessSubscription = loudness?.changes.listen(_loudnessChanged);
   }
 
   final MusicManager manager;
@@ -152,6 +155,9 @@ class PlaybackController {
   final ApplicationStore store;
   final TrackPlayerBackend backend;
   final PlaybackPersistence? persistence;
+
+  /// Per-track loudness gains; without it every track plays unscaled.
+  final LoudnessNormalizer? loudness;
   final String Function(String source) _artworkUri;
   void Function(String message)? onError;
 
@@ -180,6 +186,15 @@ class PlaybackController {
   DateTime? _lastBackendErrorAt;
   String? _pendingPlayRecordId;
   bool _mediaSessionActive = false;
+  StreamSubscription<LoudnessChange>? _loudnessSubscription;
+
+  /// The rows last given to the engine, whose gains it is applying.
+  List<AudioQueueItem> _engineItems = const [];
+
+  /// The gain the playing track started with. A measurement that arrives
+  /// while it plays applies from its next play, so the level never moves
+  /// mid-song by itself; only a settings change does (with a fade).
+  ({String trackId, double gain})? _heldGain;
 
   bool get playing => _playing;
   bool get loading => _loading || _playerLoading;
@@ -277,7 +292,7 @@ class PlaybackController {
     _playing = true;
     _mediaSessionActive = true;
     try {
-      backend.load(source, autoplay: true);
+      backend.load(source, autoplay: true, gain: loudness?.fallbackGain ?? 1);
     } catch (error) {
       onBackendError("$error");
     }
@@ -741,6 +756,14 @@ class PlaybackController {
         : queue.items.indexOf(trackId);
     if (selected < 0) return;
     queue.select(selected);
+    // The engine already applied the gain it was given for this row.
+    final sent =
+        index >= 0 &&
+            index < _engineItems.length &&
+            _engineItems[index].trackId == trackId
+        ? _engineItems[index]
+        : _engineItems.where((item) => item.trackId == trackId).firstOrNull;
+    _heldGain = sent == null ? null : (trackId: trackId, gain: sent.gain);
     externalTitle = "";
     externalUploader = "";
     externalThumbnail = "";
@@ -857,7 +880,7 @@ class PlaybackController {
   List<AudioQueueItem> _queueItems() {
     final details = library.detailsMany(queue.items);
     return [
-      for (final trackId in queue.items)
+      for (final (row, trackId) in queue.items.indexed)
         AudioQueueItem(
           trackId: trackId,
           // A native path; the decoder validates existence and format.
@@ -868,8 +891,28 @@ class PlaybackController {
           artworkUri: details[trackId] == null
               ? ""
               : _artworkUri(details[trackId]!.thumbnail),
+          gain: _gainFor(trackId, row),
         ),
     ];
+  }
+
+  double _gainFor(String trackId, int row) {
+    final held = _heldGain;
+    if (held != null && row == queue.currentIndex && held.trackId == trackId) {
+      return held.gain;
+    }
+    return loudness?.gainFor(trackId) ?? 1;
+  }
+
+  /// New measurements reach upcoming rows; a settings change also reaches
+  /// the playing track, which the engine fades to its new level.
+  void _loudnessChanged(LoudnessChange change) {
+    if (_closed) return;
+    final trackId = currentTrackId;
+    if (change == LoudnessChange.settings && trackId != null) {
+      _heldGain = (trackId: trackId, gain: loudness?.gainFor(trackId) ?? 1);
+    }
+    _syncQueue();
   }
 
   void _activateQueue(
@@ -877,9 +920,12 @@ class PlaybackController {
     required bool autoplay,
     required int positionMs,
   }) {
+    _heldGain = null;
     final items = _queueItems();
     // The selected row, not the first copy: the queue may repeat a track.
     final index = queue.currentIndex;
+    _heldGain = (trackId: trackId, gain: items[index].gain);
+    _engineItems = items;
     _sourceLoaded = true;
     _playerLoading = true;
     this.positionMs = positionMs;
@@ -913,6 +959,7 @@ class PlaybackController {
     } on Object {
       return;
     }
+    _engineItems = items;
     backend.updateQueue(items, queue.currentIndex, repeat: queue.repeat);
   }
 
@@ -968,6 +1015,7 @@ class PlaybackController {
   void close() {
     _persist();
     _closed = true;
+    unawaited(_loudnessSubscription?.cancel());
     _cancelPendingLoad();
   }
 
