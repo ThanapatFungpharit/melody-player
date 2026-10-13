@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -43,7 +44,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-embed");
+    root = await createTestDirectory("melody-embed");
     music = p.join(root.path, "music");
     await Directory(music).create();
     manager = MusicManager.open(p.join(root.path, "library.db"), music);

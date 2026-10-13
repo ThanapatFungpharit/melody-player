@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:convert";
 import "dart:io";
 import "dart:typed_data";
@@ -24,7 +25,7 @@ void main() {
   late Directory root;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-lyrics-tags");
+    root = await createTestDirectory("melody-lyrics-tags");
   });
 
   tearDown(() => root.delete(recursive: true));

@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:async";
 import "dart:convert";
 import "dart:io";
@@ -66,7 +67,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-loudness");
+    root = await createTestDirectory("melody-loudness");
     music = p.join(root.path, "music");
     cache = p.join(root.path, "cache", "loudness.json");
     await Directory(music).create();

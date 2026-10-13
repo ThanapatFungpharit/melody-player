@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:convert";
 import "dart:io";
 
@@ -32,7 +33,7 @@ void main() {
   }
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-compat");
+    root = await createTestDirectory("melody-compat");
     await copyTree(fixtures, root.path);
   });
 

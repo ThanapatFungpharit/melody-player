@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter/material.dart";
@@ -215,7 +216,7 @@ void main() {
   setUpAll(_loadFonts);
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-screens");
+    root = await createTestDirectory("melody-screens");
     FlutterMediaSessionPlatform.instance = _QuietMediaSession();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(

@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -20,7 +21,7 @@ void main() {
     late ApplicationStore store;
 
     setUp(() async {
-      root = await Directory.systemTemp.createTemp("melody-runtime");
+      root = await createTestDirectory("melody-runtime");
       store = ApplicationStore.open(
         p.join(root.path, "state.db"),
         defaultDownloadDirectory: p.join(root.path, "music"),

@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:io";
 import "dart:math";
 
@@ -100,7 +101,7 @@ void main() {
   late FakeBackend backend;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-playback");
+    root = await createTestDirectory("melody-playback");
     music = p.join(root.path, "music");
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
     store = ApplicationStore.open(

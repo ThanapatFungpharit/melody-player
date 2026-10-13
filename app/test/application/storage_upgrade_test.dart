@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:convert";
 import "dart:io";
 
@@ -17,7 +18,7 @@ void main() {
   late LegacyLayout legacy;
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp("melody-upgrade");
+    root = await createTestDirectory("melody-upgrade");
     music = p.join(root.path, "Music");
     paths = AppPaths(dataDirectory: root.path, defaultMusicDirectory: music);
     legacy = LegacyLayout(paths);
