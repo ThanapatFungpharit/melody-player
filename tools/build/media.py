@@ -115,12 +115,16 @@ ARCHIVES: dict[tuple[str, str], Archive] = {
 
 
 def _latest_release(repository: str) -> tuple[str, tuple[tuple[str, str, str], ...]]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Melody-build/1",
+    }
+    # CI runners share IPs, so anonymous requests soon hit GitHub's rate limit.
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repository}/releases/latest",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Melody-build/1",
-        },
+        headers=headers,
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         payload: Any = json.load(response)

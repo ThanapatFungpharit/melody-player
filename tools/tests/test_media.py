@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import tarfile
@@ -18,6 +19,7 @@ from tools.build.media import (
     Archive,
     ResolvedArchive,
     _extract_programs,
+    _latest_release,
     _resolve_archive,
     _validate_audio_encoders,
     fetch_bundle,
@@ -59,6 +61,17 @@ class MediaBinaryFetcherTests(unittest.TestCase):
         self.assertEqual(resolved.url, archive.url)
         self.assertEqual(resolved.sha256, "a" * 64)
         self.assertEqual(resolved.version, "latest")
+
+    def test_release_lookup_sends_github_token_when_set(self) -> None:
+        response = io.BytesIO(json.dumps({"tag_name": "v1", "assets": []}).encode())
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+            mock.patch("urllib.request.urlopen", return_value=response) as urlopen,
+        ):
+            _latest_release("owner/repo")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer token")
 
     def test_rejects_missing_audio_encoders(self) -> None:
         result = subprocess.CompletedProcess(
