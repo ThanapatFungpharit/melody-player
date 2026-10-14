@@ -7,6 +7,7 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/catalog.dart";
 import "../../application/downloads.dart";
+import "../../application/library_service.dart" show favoritesPlaylistId;
 import "../../core/downloader/downloader.dart";
 import "../../core/library/models.dart";
 import "../../core/media.dart";
@@ -79,6 +80,37 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Whether [playlistId] is the app-managed Favorites playlist, which the
+  /// user changes only by favoriting tracks.
+  static bool isFavorites(String playlistId) =>
+      playlistId == favoritesPlaylistId;
+
+  bool exists(String playlistId) =>
+      isFavorites(playlistId) || app.services.manager.hasPlaylist(playlistId);
+
+  Playlist playlist(String playlistId) => isFavorites(playlistId)
+      ? app.services.library.favoritesPlaylist()
+      : app.services.manager.getPlaylist(playlistId);
+
+  List<Track> tracks(String playlistId) => isFavorites(playlistId)
+      ? app.services.library.favoriteTrackList()
+      : app.services.manager.playlistTracks(playlistId);
+
+  /// Favorites first, then the user's playlists.
+  List<Playlist> all() => [
+    app.services.library.favoritesPlaylist(),
+    ...app.services.manager.listPlaylists(),
+  ];
+
+  static void _requireEditable(String playlistId) {
+    if (isFavorites(playlistId)) {
+      throw StateError(
+        "Favorites is managed by Melody. Favorite or unfavorite a track to "
+        "change it.",
+      );
+    }
+  }
+
   void play(Playlist playlist) => app.playback.playTracks(playlist.trackIds);
 
   void shuffle(Playlist playlist) =>
@@ -93,11 +125,13 @@ class PlaylistsController extends ChangeNotifier {
   }
 
   void rename(String playlistId, String name) {
+    _requireEditable(playlistId);
     app.services.manager.renamePlaylist(playlistId, name);
     app.touchLibrary();
   }
 
   void delete(String playlistId) {
+    _requireEditable(playlistId);
     app.services.manager.deletePlaylist(playlistId);
     abandonImport(playlistId);
     selectedPlaylistId = null;
@@ -106,12 +140,14 @@ class PlaylistsController extends ChangeNotifier {
   }
 
   void addTrack(String playlistId, String trackId) {
+    _requireEditable(playlistId);
     app.services.manager.addToPlaylist(playlistId, trackId);
     app.touchLibrary();
     app.showMessage("Added to playlist.");
   }
 
   int addTracks(String playlistId, List<String> trackIds) {
+    _requireEditable(playlistId);
     final added = app.services.manager.addTracksToPlaylist(
       playlistId,
       trackIds,
@@ -121,12 +157,14 @@ class PlaylistsController extends ChangeNotifier {
   }
 
   void removeTrack(String playlistId, String trackId) {
+    _requireEditable(playlistId);
     app.services.manager.removeFromPlaylist(playlistId, trackId);
     app.touchLibrary();
   }
 
   /// Moves a row; [newIndex] is the drop slot, as reorderable lists report.
   void reorder(String playlistId, int oldIndex, int newIndex) {
+    _requireEditable(playlistId);
     final ordered = List.of(
       app.services.manager.getPlaylist(playlistId).trackIds,
     );
@@ -148,6 +186,8 @@ class PlaylistsController extends ChangeNotifier {
     String trackId, {
     required bool move,
   }) {
+    _requireEditable(source);
+    _requireEditable(target);
     if (move) {
       app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
     } else {

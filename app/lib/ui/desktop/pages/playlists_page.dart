@@ -2,8 +2,8 @@ import "package:flutter/material.dart";
 
 import "../../app_state.dart";
 import "../../../core/library/models.dart";
-import "../../../core/media.dart";
 import "../../controllers/home_controller.dart";
+import "../../controllers/playlists_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/format.dart";
@@ -25,11 +25,11 @@ class PlaylistsPage extends StatelessWidget {
     ]),
     builder: (context, _) {
       final selected = app.playlists.selectedPlaylistId;
-      if (selected != null && app.services.manager.hasPlaylist(selected)) {
-        return _PlaylistDetail(app, app.services.manager.getPlaylist(selected));
+      if (selected != null && app.playlists.exists(selected)) {
+        return _PlaylistDetail(app, app.playlists.playlist(selected));
       }
       app.playlists.selectedPlaylistId = null;
-      final playlists = app.services.manager.listPlaylists();
+      final playlists = app.playlists.all();
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -56,24 +56,19 @@ class PlaylistsPage extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 24),
+          // Favorites is always listed, so the grid is never empty.
           Expanded(
-            child: playlists.isEmpty
-                ? const EmptyState(
-                    Icons.queue_music_rounded,
-                    "Create a playlist or import one from $youtubeMusicName to get started.",
-                  )
-                : SingleChildScrollView(
-                    child: Transform.translate(
-                      offset: const Offset(-10, 0),
-                      child: CoverGrid(
-                        children: [
-                          for (final playlist in playlists)
-                            (width) =>
-                                PlaylistCard(app, playlist, width: width),
-                        ],
-                      ),
-                    ),
-                  ),
+            child: SingleChildScrollView(
+              child: Transform.translate(
+                offset: const Offset(-10, 0),
+                child: CoverGrid(
+                  children: [
+                    for (final playlist in playlists)
+                      (width) => PlaylistCard(app, playlist, width: width),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       );
@@ -113,7 +108,8 @@ class _PlaylistDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tracks = app.services.manager.playlistTracks(playlist.id);
+    final favorites = PlaylistsController.isFavorites(playlist.id);
+    final tracks = app.playlists.tracks(playlist.id);
     final (start, end) = app.playlists.visibleRange(tracks.length);
     final visible = tracks.sublist(start, end);
     final others = [
@@ -187,7 +183,10 @@ class _PlaylistDetail extends StatelessWidget {
                             style: context.text.displaySmall,
                           ),
                           Text(
-                            plural(tracks.length, "track"),
+                            favorites
+                                ? "${plural(tracks.length, "track")} · "
+                                      "Follows the tracks you favorite"
+                                : plural(tracks.length, "track"),
                             style: context.text.bodyMedium!.copyWith(
                               color: scheme.onSurfaceVariant,
                             ),
@@ -229,29 +228,37 @@ class _PlaylistDetail extends StatelessWidget {
             ),
             ActionMenu(() => playlistActions(context, app, playlist)),
             const Spacer(),
-            OutlinedButton.icon(
-              onPressed: () => showBulkAddTracksDialog(context, app, playlist),
-              icon: const Icon(Icons.playlist_add_rounded, size: 20),
-              label: const Text("Add tracks"),
-            ),
+            if (!favorites)
+              OutlinedButton.icon(
+                onPressed: () =>
+                    showBulkAddTracksDialog(context, app, playlist),
+                icon: const Icon(Icons.playlist_add_rounded, size: 20),
+                label: const Text("Add tracks"),
+              ),
           ],
         ),
         const SizedBox(height: 18),
         if (tracks.isNotEmpty) ...[
-          const TrackListHeader(leadingWidth: 28, trailingWidth: 48),
+          const TrackListHeader(leadingWidth: 28, trailingWidth: 48 + 40 + 8),
           const SizedBox(height: 8),
         ],
         Expanded(
           child: tracks.isEmpty
-              ? const EmptyState(
-                  Icons.playlist_add_rounded,
-                  "This playlist is empty. Add tracks from Search or Library.",
-                )
+              ? favorites
+                    ? const EmptyState(
+                        Icons.favorite_border_rounded,
+                        "Favorite a track and it appears here.",
+                      )
+                    : const EmptyState(
+                        Icons.playlist_add_rounded,
+                        "This playlist is empty. Add tracks from Search or Library.",
+                      )
               : ReorderableListView.builder(
                   buildDefaultDragHandles: false,
                   itemCount: visible.length,
                   // onReorderItem reports the index after removal; the
                   // controller takes the drop slot, as the queue does.
+                  // Favorites rows have no drag handles, so never reorder.
                   onReorderItem: (oldIndex, newIndex) => app.run(
                     () => app.playlists.reorder(
                       playlist.id,
@@ -267,29 +274,33 @@ class _PlaylistDetail extends StatelessWidget {
                       key: ValueKey("${playlist.id}:$position:${track.id}"),
                       app: app,
                       number: position + 1,
-                      leading: ReorderableDragStartListener(
-                        index: index,
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.grab,
-                          child: Tooltip(
-                            message: "Drag to reorder",
-                            child: SizedBox(
-                              width: 28,
-                              height: 40,
-                              child: Icon(
-                                Icons.drag_indicator_rounded,
-                                size: 18,
-                                color: scheme.outline,
+                      leading: favorites
+                          ? const SizedBox(width: 28)
+                          : ReorderableDragStartListener(
+                              index: index,
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.grab,
+                                child: Tooltip(
+                                  message: "Drag to reorder",
+                                  child: SizedBox(
+                                    width: 28,
+                                    height: 40,
+                                    child: Icon(
+                                      Icons.drag_indicator_rounded,
+                                      size: 18,
+                                      color: scheme.outline,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      ),
                       title: track.displayTitle,
                       subtitle: info.credit,
                       artwork: info.thumbnail,
                       duration: formatDuration(info.duration),
                       current: app.playback.currentTrackId == track.id,
+                      favorite: info.favorite,
+                      onFavorite: () => app.toggleFavorite(track.id),
                       onPlay: () => app.playback.playTracks([
                         for (final item in tracks) item.id,
                       ], startIndex: position),

@@ -317,6 +317,8 @@ class SearchResultRow extends StatelessWidget {
           : result.duration > 0
           ? formatDuration(result.duration)
           : "",
+      favorite: result.isPlaylist ? null : app.search.isFavorite(result),
+      onFavorite: () => app.search.actOnResult(result, TrackAction.favorite),
       onPlay: () => app.search.playResult(result),
       playTooltip: result.isPlaylist ? "Preview playlist" : "Play",
       trailing: [

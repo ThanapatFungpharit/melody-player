@@ -566,7 +566,7 @@ class _SidebarPlaylists extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final playlists = app.services.manager.listPlaylists();
+    final playlists = app.playlists.all();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -588,61 +588,54 @@ class _SidebarPlaylists extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: playlists.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text(
-                    "Playlists you create or import appear here.",
-                    style: context.text.bodySmall,
-                  ),
-                )
-              : ListView.builder(
-                  itemCount: playlists.length,
-                  itemBuilder: (context, index) {
-                    final playlist = playlists[index];
-                    final count = playlist.trackIds.length;
-                    final selected = playlist.id == openPlaylist;
-                    return _SidebarTile(
-                      selected: selected,
-                      onTap: () => app.playlists.openPlaylist(playlist.id),
-                      child: Row(
-                        spacing: 10,
+          // Favorites is always listed, so the list is never empty.
+          child: ListView.builder(
+            itemCount: playlists.length,
+            itemBuilder: (context, index) {
+              final playlist = playlists[index];
+              final count = playlist.trackIds.length;
+              final selected = playlist.id == openPlaylist;
+              return _SidebarTile(
+                selected: selected,
+                onTap: () => app.playlists.openPlaylist(playlist.id),
+                child: Row(
+                  spacing: 10,
+                  children: [
+                    Artwork(
+                      app,
+                      playlistArtwork(app, playlist),
+                      size: 34,
+                      playlist: true,
+                      seed: playlist.name,
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Artwork(
-                            app,
-                            playlistArtwork(app, playlist),
-                            size: 34,
-                            playlist: true,
-                            seed: playlist.name,
+                          Text(
+                            playlist.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.text.labelLarge!.copyWith(
+                              fontWeight: selected
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                            ),
                           ),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  playlist.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: context.text.labelLarge!.copyWith(
-                                    fontWeight: selected
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                  ),
-                                ),
-                                Text(
-                                  plural(count, "track"),
-                                  style: context.text.bodySmall!.copyWith(
-                                    fontSize: 11.5,
-                                  ),
-                                ),
-                              ],
+                          Text(
+                            plural(count, "track"),
+                            style: context.text.bodySmall!.copyWith(
+                              fontSize: 11.5,
                             ),
                           ),
                         ],
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
+              );
+            },
+          ),
         ),
       ],
     );

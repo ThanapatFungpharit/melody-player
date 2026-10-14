@@ -39,6 +39,10 @@ final audioSuffixes = {
   if (!Platform.isAndroid) ..._desktopAudioSuffixes,
 };
 
+/// The ID of the app-managed Favorites playlist. It is not a UUID, so it
+/// never collides with a playlist the user creates.
+const favoritesPlaylistId = "favorites";
+
 class LibraryReconciliation {
   const LibraryReconciliation(
     this.staleReferencesRemoved,
@@ -436,12 +440,27 @@ class LibraryService {
 
   List<Playlist> playlists() => manager.listPlaylists();
 
+  /// Every favorite library track, newest first.
+  List<Track> favoriteTrackList() =>
+      manager.tracksByIds(store.favoriteTrackIds());
+
+  /// The app-managed playlist of every favorite track. It follows the
+  /// favorites, so it is never stored, renamed, reordered, or deleted.
+  Playlist favoritesPlaylist() => Playlist(
+    id: favoritesPlaylistId,
+    name: "Favorites",
+    trackIds: [for (final track in favoriteTrackList()) track.id],
+  );
+
   /// An ordered M3U8 index of the managed library files.
   List<int> exportLibraryM3u8() => _m3u8(manager.listTracks());
 
   /// An M3U8 index in the playlist's saved track order.
-  List<int> exportPlaylistM3u8(String playlistId) =>
-      _m3u8(manager.playlistTracks(playlistId));
+  List<int> exportPlaylistM3u8(String playlistId) => _m3u8(
+    playlistId == favoritesPlaylistId
+        ? favoriteTrackList()
+        : manager.playlistTracks(playlistId),
+  );
 
   /// Tracks whose stored path is outside the music folders are left out:
   /// no player could open them.

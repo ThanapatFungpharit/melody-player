@@ -4,6 +4,7 @@ import "../../app_state.dart";
 import "../../../core/library/models.dart";
 import "../../../core/media.dart";
 import "../../controllers/home_controller.dart";
+import "../../controllers/playlists_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/format.dart";
@@ -21,11 +22,11 @@ class MobilePlaylists extends StatelessWidget {
     [app.playlists, app.libraryRevision, app.playbackState],
     builder: (context) {
       final selected = app.playlists.selectedPlaylistId;
-      if (selected != null && app.services.manager.hasPlaylist(selected)) {
-        return _PlaylistDetail(app, app.services.manager.getPlaylist(selected));
+      if (selected != null && app.playlists.exists(selected)) {
+        return _PlaylistDetail(app, app.playlists.playlist(selected));
       }
       app.playlists.selectedPlaylistId = null;
-      final playlists = app.services.manager.listPlaylists();
+      final playlists = app.playlists.all();
       return scrollPage([
         MobileHeading(
           "Playlists",
@@ -64,7 +65,8 @@ class MobilePlaylists extends StatelessWidget {
               () => app.playlists.play(playlist),
             ),
           ),
-        if (playlists.isEmpty)
+        // Favorites is always listed, so only the user's own can be missing.
+        if (playlists.length == 1)
           const EmptyState(
             Icons.album_rounded,
             "Create a playlist or import one from $youtubeMusicName.",
@@ -82,7 +84,8 @@ class _PlaylistDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tracks = app.services.manager.playlistTracks(playlist.id);
+    final favorites = PlaylistsController.isFavorites(playlist.id);
+    final tracks = app.playlists.tracks(playlist.id);
     final (start, end) = app.playlists.visibleRange(tracks.length);
     final visible = tracks.sublist(start, end);
     final others = [
@@ -93,12 +96,26 @@ class _PlaylistDetail extends StatelessWidget {
       visible.map((track) => track.id),
     );
     final ids = [for (final track in tracks) track.id];
+    Widget actions(Track track, int position) => MoreButton(
+      track.displayTitle,
+      () => playlistTrackActions(
+        context,
+        app,
+        playlist,
+        track,
+        position,
+        others,
+        details[track.id]!,
+      ),
+    );
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) app.playlists.closePlaylist();
       },
       child: reorderablePage(
+        // Favorites lists the newest tracks first.
+        reorderable: !favorites,
         // Rows map to the visible page; the controller takes the drop slot.
         onReorder: (oldIndex, newIndex) => app.run(
           () => app.playlists.reorder(
@@ -123,11 +140,12 @@ class _PlaylistDetail extends StatelessWidget {
                 playlist.name,
                 () => [
                   if (tracks.isNotEmpty) ...[
-                    MenuAction(
-                      "Add tracks",
-                      Icons.playlist_add_rounded,
-                      () => showBulkAddTracksDialog(context, app, playlist),
-                    ),
+                    if (!favorites)
+                      MenuAction(
+                        "Add tracks",
+                        Icons.playlist_add_rounded,
+                        () => showBulkAddTracksDialog(context, app, playlist),
+                      ),
                     MenuAction(
                       "Add playlist to queue",
                       Icons.add_to_queue_rounded,
@@ -156,7 +174,9 @@ class _PlaylistDetail extends StatelessWidget {
             style: context.text.headlineMedium!.copyWith(fontSize: 28),
           ),
           Text(
-            "${plural(tracks.length, "track")} · Drag a track to reorder",
+            favorites
+                ? "${plural(tracks.length, "track")} · Follows the tracks you favorite"
+                : "${plural(tracks.length, "track")} · Drag a track to reorder",
             style: context.text.bodySmall,
           ),
           Row(
@@ -194,24 +214,11 @@ class _PlaylistDetail extends StatelessWidget {
               credit: details[track.id]!.credit,
               artwork: details[track.id]!.thumbnail,
               selected: app.playback.currentTrackId == track.id,
+              favorite: details[track.id]!.favorite,
               onTap: () =>
                   app.playback.playTracks(ids, startIndex: start + offset),
-              trailing: reorderableTrailing(
-                context,
-                offset,
-                MoreButton(
-                  track.displayTitle,
-                  () => playlistTrackActions(
-                    context,
-                    app,
-                    playlist,
-                    track,
-                    start + offset,
-                    others,
-                    details[track.id]!,
-                  ),
-                ),
-              ),
+              leading: favorites ? null : reorderHandle(context, offset),
+              trailing: actions(track, start + offset),
             ),
         ],
         footer: [
@@ -222,7 +229,12 @@ class _PlaylistDetail extends StatelessWidget {
               end: end,
               onChange: app.playlists.changePage,
             ),
-          if (tracks.isEmpty)
+          if (tracks.isEmpty && favorites)
+            const EmptyState(
+              Icons.favorite_border_rounded,
+              "Favorite a track and it appears here.",
+            )
+          else if (tracks.isEmpty)
             FilledButton.icon(
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),

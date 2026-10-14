@@ -24,7 +24,8 @@ import "package:melody/ui/desktop/player_bar.dart";
 import "package:melody/ui/desktop/shell.dart";
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
-import "package:melody/ui/shared/actions.dart" show queueDropSlot;
+import "package:melody/ui/shared/actions.dart"
+    show playlistActions, queueDropSlot;
 import "package:melody/ui/shared/theme.dart";
 import "package:melody/ui/startup.dart";
 import "package:melody/worker/worker_client.dart";
@@ -404,6 +405,8 @@ void main() {
     }
     app.playlists.openPlaylist(app.services.manager.listPlaylists().single.id);
     await shoot(tester, "desktop_playlist_detail");
+    app.playlists.openPlaylist(favoritesPlaylistId);
+    await shoot(tester, "desktop_favorites");
     for (final panel in [
       AppPanel.queue,
       AppPanel.lyrics,
@@ -777,6 +780,55 @@ void main() {
       third,
       first,
     ]);
+  });
+
+  testWidgets("Favorites lists favorites and cannot be edited", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(390, 844),
+    );
+    final [first, second, third] = app.services.manager
+        .listPlaylists()
+        .single
+        .trackIds;
+    app.navigate(3);
+    await tester.pumpAndSettle();
+    // Listed first, before the user's playlists.
+    expect(find.text("Favorites"), findsOneWidget);
+    await tester.tap(find.text("Favorites"));
+    await tester.pumpAndSettle();
+
+    await shoot(tester, "mobile_favorites");
+    expect(app.playlists.selectedPlaylistId, favoritesPlaylistId);
+    expect(app.playlists.playlist(favoritesPlaylistId).trackIds, [
+      third,
+      first,
+    ]);
+    expect(find.byTooltip("Drag to reorder"), findsNothing);
+    expect(find.byIcon(Icons.favorite_rounded), findsNWidgets(2));
+    expect(
+      playlistActions(
+        tester.element(find.byType(Scaffold).first),
+        app,
+        app.playlists.playlist(favoritesPlaylistId),
+      ).map((action) => action.label),
+      ["Export playlist"],
+    );
+    expect(() => app.playlists.delete(favoritesPlaylistId), throwsStateError);
+    expect(
+      () => app.playlists.rename(favoritesPlaylistId, "Mine"),
+      throwsStateError,
+    );
+    expect(
+      () => app.playlists.addTrack(favoritesPlaylistId, second),
+      throwsStateError,
+    );
+
+    await app.toggleFavorite(first);
+    await tester.pumpAndSettle();
+    expect(app.playlists.playlist(favoritesPlaylistId).trackIds, [third]);
+    expect(find.byIcon(Icons.favorite_rounded), findsOneWidget);
   });
 
   test("queue drops land between the visible rows", () {

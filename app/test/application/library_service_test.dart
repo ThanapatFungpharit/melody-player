@@ -315,4 +315,40 @@ void main() {
     expect(() => library.toggleFavorite(id), throwsArgumentError);
     expect(store.hasTrackDetails(id), isFalse);
   });
+
+  test("the Favorites playlist follows favorites, newest first", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    final third = await downloaded(
+      "third.mp3",
+      source: "https://music.youtube.com/watch?v=ccccccccccc",
+    );
+    expect(library.favoritesPlaylist().trackIds, isEmpty);
+
+    library
+      ..toggleFavorite(third)
+      ..toggleFavorite(first)
+      ..toggleFavorite(second);
+    final favorites = library.favoritesPlaylist();
+    expect(favorites.id, favoritesPlaylistId);
+    expect(favorites.name, "Favorites");
+    expect(favorites.trackIds, [third, second, first]);
+    // It is never stored with the user's playlists.
+    expect(manager.listPlaylists(), isEmpty);
+    expect(manager.hasPlaylist(favoritesPlaylistId), isFalse);
+
+    library.toggleFavorite(second);
+    expect(library.favoritesPlaylist().trackIds, [third, first]);
+    await library.deleteTrack(third);
+    expect(library.favoritesPlaylist().trackIds, [first]);
+
+    final m3u8 = String.fromCharCodes(
+      library.exportPlaylistM3u8(favoritesPlaylistId),
+    );
+    expect(m3u8, contains("#EXTINF:-1,first.mp3"));
+    expect(m3u8, isNot(contains("second.mp3")));
+  });
 }

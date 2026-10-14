@@ -6,6 +6,7 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/sleep_timer.dart";
 import "../../core/library/models.dart";
+import "../controllers/playlists_controller.dart";
 import "dialogs.dart";
 import "format.dart";
 
@@ -127,6 +128,38 @@ List<MenuAction> playlistTrackActions(
   TrackDetails details,
 ) {
   final playlists = app.playlists;
+  // Favorites follows the favorite marks: a track leaves it by being
+  // unfavorited, and it lists the newest tracks first.
+  if (PlaylistsController.isFavorites(playlist.id)) {
+    return [
+      MenuAction(
+        "Play next",
+        Icons.queue_play_next_rounded,
+        () => app.playback.addNext(track.id),
+      ),
+      MenuAction(
+        "Add to queue",
+        Icons.add_to_queue_rounded,
+        () => app.playback.addLast(track.id),
+      ),
+      for (final target in otherPlaylists)
+        MenuAction(
+          "Add to ${target.name}",
+          Icons.playlist_add_rounded,
+          () => app.run(() => playlists.addTrack(target.id, track.id)),
+        ),
+      MenuAction(
+        "View details",
+        Icons.info_outline_rounded,
+        () => showTrackDetailsDialog(context, app, track),
+      ),
+      MenuAction(
+        "Remove from Favorites",
+        Icons.heart_broken_outlined,
+        () => app.toggleFavorite(track.id),
+      ),
+    ];
+  }
   return [
     MenuAction(
       "Move up",
@@ -263,16 +296,19 @@ List<MenuAction> playlistActions(
     Icons.ios_share_rounded,
     () => exportPlaylist(app, playlist),
   ),
-  MenuAction(
-    "Rename playlist",
-    Icons.edit_rounded,
-    () => showRenamePlaylistDialog(context, app, playlist),
-  ),
-  MenuAction(
-    "Delete playlist",
-    Icons.delete_outline_rounded,
-    () => showDeletePlaylistDialog(context, app, playlist),
-  ),
+  // Favorites belongs to the app; only its tracks' favorite marks change it.
+  if (!PlaylistsController.isFavorites(playlist.id)) ...[
+    MenuAction(
+      "Rename playlist",
+      Icons.edit_rounded,
+      () => showRenamePlaylistDialog(context, app, playlist),
+    ),
+    MenuAction(
+      "Delete playlist",
+      Icons.delete_outline_rounded,
+      () => showDeletePlaylistDialog(context, app, playlist),
+    ),
+  ],
 ];
 
 /// Retries every failed download and reports how many started.

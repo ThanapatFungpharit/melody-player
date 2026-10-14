@@ -161,7 +161,8 @@ class MoreButton extends StatelessWidget {
   );
 }
 
-/// A tappable row: artwork, title, credit, and a trailing control.
+/// A tappable row: an optional leading control, artwork, title, credit, and
+/// a trailing control.
 class TrackRow extends StatelessWidget {
   const TrackRow({
     super.key,
@@ -171,8 +172,10 @@ class TrackRow extends StatelessWidget {
     required this.artwork,
     required this.onTap,
     required this.trailing,
+    this.leading,
     this.selected = false,
     this.playlist = false,
+    this.favorite = false,
   });
 
   final MelodyApp app;
@@ -181,8 +184,12 @@ class TrackRow extends StatelessWidget {
   final String artwork;
   final VoidCallback onTap;
   final Widget trailing;
+  final Widget? leading;
   final bool selected;
   final bool playlist;
+
+  /// Marks the credit line with a heart.
+  final bool favorite;
 
   @override
   Widget build(BuildContext context) {
@@ -194,6 +201,7 @@ class TrackRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(Radii.medium),
       child: Row(
         children: [
+          ?leading,
           Expanded(
             child: Tooltip(
               message: "Play $title",
@@ -233,11 +241,25 @@ class TrackRow extends StatelessWidget {
                                 ),
                               ],
                             ),
-                            Text(
-                              credit,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: context.text.bodySmall,
+                            Row(
+                              spacing: 4,
+                              children: [
+                                if (favorite)
+                                  Icon(
+                                    Icons.favorite_rounded,
+                                    size: 14,
+                                    color: context.palette.favorite,
+                                    semanticLabel: "Favorite",
+                                  ),
+                                Expanded(
+                                  child: Text(
+                                    credit,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: context.text.bodySmall,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -296,13 +318,15 @@ ListView scrollPage(List<Widget> children) => ListView.separated(
 );
 
 /// A [scrollPage] whose keyed [items] can be dragged into a new order with a
-/// long press or a [reorderableTrailing] handle. [onReorder] gets the old
-/// index and the index after removal.
+/// long press or a [reorderHandle]. [onReorder] gets the old
+/// index and the index after removal. With [reorderable] false the rows
+/// stay in place.
 Widget reorderablePage({
   required List<Widget> header,
   required List<Widget> items,
   List<Widget> footer = const [],
   required void Function(int oldIndex, int newIndex) onReorder,
+  bool reorderable = true,
 }) {
   Widget section(List<Widget> children) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -325,33 +349,29 @@ Widget reorderablePage({
         ReorderableDelayedDragStartListener(
           key: item.key,
           index: index,
+          enabled: reorderable,
           child: Padding(padding: const EdgeInsets.only(top: 10), child: item),
         ),
     ],
   );
 }
 
-/// A row's trailing controls in a [reorderablePage]: a drag handle, which
-/// starts the drag at once, then [trailing].
-Widget reorderableTrailing(BuildContext context, int index, Widget trailing) =>
-    Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ReorderableDragStartListener(
-          index: index,
-          child: Tooltip(
-            message: "Drag to reorder",
-            child: SizedBox.square(
-              dimension: touchTarget,
-              child: Icon(
-                Icons.drag_handle_rounded,
-                color: context.colors.onSurfaceVariant,
-              ),
-            ),
+/// A row's leading drag handle in a [reorderablePage], which starts the drag
+/// at once.
+Widget reorderHandle(BuildContext context, int index) =>
+    ReorderableDragStartListener(
+      index: index,
+      child: Tooltip(
+        message: "Drag to reorder",
+        child: SizedBox(
+          width: 32,
+          height: touchTarget,
+          child: Icon(
+            Icons.drag_handle_rounded,
+            color: context.colors.onSurfaceVariant,
           ),
         ),
-        trailing,
-      ],
+      ),
     );
 
 Widget libraryTrackRow(
@@ -368,6 +388,7 @@ Widget libraryTrackRow(
     credit: info.credit,
     artwork: info.thumbnail,
     selected: app.playback.currentTrackId == track.id,
+    favorite: info.favorite,
     onTap: () => app.playback.playTrack(track.id),
     trailing: MoreButton(
       track.displayTitle,
@@ -391,6 +412,7 @@ Widget searchResultRow(
     credit: "${result.uploader} · $detail",
     artwork: result.thumbnail,
     playlist: result.isPlaylist,
+    favorite: !result.isPlaylist && app.search.isFavorite(result),
     onTap: () => app.search.playResult(result),
     trailing: MoreButton(
       result.title,

@@ -49,14 +49,12 @@ class _MobileQueueState extends State<MobileQueue> {
                   "${queueItemStatus(queue, index)} · ${details.uploader.isEmpty ? "Queued track" : details.uploader}",
               artwork: details.thumbnail,
               selected: index == queue.currentIndex,
+              favorite: details.favorite,
               onTap: () => app.playback.playQueueIndex(position),
-              trailing: reorderableTrailing(
-                context,
-                rows.length,
-                MoreButton(
-                  track.displayTitle,
-                  () => queueRowActions(app, position),
-                ),
+              leading: reorderHandle(context, rows.length),
+              trailing: MoreButton(
+                track.displayTitle,
+                () => queueRowActions(app, position),
               ),
             ),
           );

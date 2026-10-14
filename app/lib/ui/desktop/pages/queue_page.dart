@@ -155,6 +155,8 @@ class _QueuePanelState extends State<QueuePanel> {
                             status: status,
                             statusHighlight:
                                 current || status.startsWith("Up next"),
+                            favorite: details.favorite,
+                            onFavorite: () => app.toggleFavorite(trackId),
                             onPlay: () => app.playback.playQueueIndex(index),
                             playTooltip: "Play from here",
                             trailing: [
