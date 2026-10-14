@@ -1,7 +1,7 @@
 name: melody
 description: "Melody: a local music player with YouTube Music downloads."
 publish_to: 'none'
-version: 1.0.2+1000002
+version: 1.0.3+1000003
 
 environment:
   sdk: ^3.12.2
