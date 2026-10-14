@@ -188,7 +188,7 @@ class TrackRow extends StatelessWidget {
   final bool selected;
   final bool playlist;
 
-  /// Marks the credit line with a heart.
+  /// Marks the title with a heart.
   final bool favorite;
 
   @override
@@ -229,7 +229,9 @@ class TrackRow extends StatelessWidget {
                               spacing: 6,
                               children: [
                                 if (selected) const NowPlayingMark(size: 16),
-                                Expanded(
+                                // Flexible, so the heart sits right after
+                                // the title and stays visible when it is cut.
+                                Flexible(
                                   child: Text(
                                     title,
                                     maxLines: 1,
@@ -239,27 +241,20 @@ class TrackRow extends StatelessWidget {
                                     ),
                                   ),
                                 ),
-                              ],
-                            ),
-                            Row(
-                              spacing: 4,
-                              children: [
                                 if (favorite)
                                   Icon(
                                     Icons.favorite_rounded,
-                                    size: 14,
+                                    size: 16,
                                     color: context.palette.favorite,
                                     semanticLabel: "Favorite",
                                   ),
-                                Expanded(
-                                  child: Text(
-                                    credit,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: context.text.bodySmall,
-                                  ),
-                                ),
                               ],
+                            ),
+                            Text(
+                              credit,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: context.text.bodySmall,
                             ),
                           ],
                         ),
@@ -319,14 +314,12 @@ ListView scrollPage(List<Widget> children) => ListView.separated(
 
 /// A [scrollPage] whose keyed [items] can be dragged into a new order with a
 /// long press or a [reorderHandle]. [onReorder] gets the old
-/// index and the index after removal. With [reorderable] false the rows
-/// stay in place.
+/// index and the index after removal.
 Widget reorderablePage({
   required List<Widget> header,
   required List<Widget> items,
   List<Widget> footer = const [],
   required void Function(int oldIndex, int newIndex) onReorder,
-  bool reorderable = true,
 }) {
   Widget section(List<Widget> children) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -349,7 +342,6 @@ Widget reorderablePage({
         ReorderableDelayedDragStartListener(
           key: item.key,
           index: index,
-          enabled: reorderable,
           child: Padding(padding: const EdgeInsets.only(top: 10), child: item),
         ),
     ],
@@ -364,10 +356,11 @@ Widget reorderHandle(BuildContext context, int index) =>
       child: Tooltip(
         message: "Drag to reorder",
         child: SizedBox(
-          width: 32,
+          width: 24,
           height: touchTarget,
           child: Icon(
             Icons.drag_handle_rounded,
+            size: 18,
             color: context.colors.onSurfaceVariant,
           ),
         ),

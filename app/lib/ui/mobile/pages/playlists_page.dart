@@ -114,8 +114,6 @@ class _PlaylistDetail extends StatelessWidget {
         if (!didPop) app.playlists.closePlaylist();
       },
       child: reorderablePage(
-        // Favorites lists the newest tracks first.
-        reorderable: !favorites,
         // Rows map to the visible page; the controller takes the drop slot.
         onReorder: (oldIndex, newIndex) => app.run(
           () => app.playlists.reorder(
@@ -174,9 +172,7 @@ class _PlaylistDetail extends StatelessWidget {
             style: context.text.headlineMedium!.copyWith(fontSize: 28),
           ),
           Text(
-            favorites
-                ? "${plural(tracks.length, "track")} · Follows the tracks you favorite"
-                : "${plural(tracks.length, "track")} · Drag a track to reorder",
+            "${plural(tracks.length, "track")} · Drag a track to reorder",
             style: context.text.bodySmall,
           ),
           Row(
@@ -217,7 +213,7 @@ class _PlaylistDetail extends StatelessWidget {
               favorite: details[track.id]!.favorite,
               onTap: () =>
                   app.playback.playTracks(ids, startIndex: start + offset),
-              leading: favorites ? null : reorderHandle(context, offset),
+              leading: reorderHandle(context, offset),
               trailing: actions(track, start + offset),
             ),
         ],

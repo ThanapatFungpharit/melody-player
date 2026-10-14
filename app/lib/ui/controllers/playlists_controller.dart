@@ -80,8 +80,8 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Whether [playlistId] is the app-managed Favorites playlist, which the
-  /// user changes only by favoriting tracks.
+  /// Whether [playlistId] is the app-managed Favorites playlist, whose
+  /// tracks change only by favoriting them; its order can still be dragged.
   static bool isFavorites(String playlistId) =>
       playlistId == favoritesPlaylistId;
 
@@ -164,16 +164,17 @@ class PlaylistsController extends ChangeNotifier {
 
   /// Moves a row; [newIndex] is the drop slot, as reorderable lists report.
   void reorder(String playlistId, int oldIndex, int newIndex) {
-    _requireEditable(playlistId);
-    final ordered = List.of(
-      app.services.manager.getPlaylist(playlistId).trackIds,
-    );
+    final ordered = List.of(playlist(playlistId).trackIds);
     if (oldIndex < 0 || oldIndex >= ordered.length) return;
     final item = ordered.removeAt(oldIndex);
     final target = newIndex > oldIndex ? newIndex - 1 : newIndex;
     ordered.insert(target.clamp(0, ordered.length), item);
     try {
-      app.services.manager.reorderPlaylist(playlistId, ordered);
+      if (isFavorites(playlistId)) {
+        app.services.library.reorderFavorites(ordered);
+      } else {
+        app.services.manager.reorderPlaylist(playlistId, ordered);
+      }
     } finally {
       // Rebuild from the durable order, also after a failure.
       app.touchLibrary();

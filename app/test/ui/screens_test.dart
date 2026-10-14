@@ -782,7 +782,9 @@ void main() {
     ]);
   });
 
-  testWidgets("Favorites lists favorites and cannot be edited", (tester) async {
+  testWidgets("Favorites lists favorites and can only be reordered", (
+    tester,
+  ) async {
     final app = await pumpShell(
       tester,
       mobile: true,
@@ -805,7 +807,21 @@ void main() {
       third,
       first,
     ]);
-    expect(find.byTooltip("Drag to reorder"), findsNothing);
+    final handles = find.byTooltip("Drag to reorder");
+    expect(handles, findsNWidgets(2));
+    final gesture = await tester.startGesture(tester.getCenter(handles.first));
+    await tester.pump();
+    // Past the middle of the last row: the drop slot after it.
+    for (var step = 0; step < 8; step++) {
+      await gesture.moveBy(const Offset(0, 16));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(app.playlists.playlist(favoritesPlaylistId).trackIds, [
+      first,
+      third,
+    ]);
     expect(find.byIcon(Icons.favorite_rounded), findsNWidgets(2));
     expect(
       playlistActions(
@@ -828,6 +844,7 @@ void main() {
     await app.toggleFavorite(first);
     await tester.pumpAndSettle();
     expect(app.playlists.playlist(favoritesPlaylistId).trackIds, [third]);
+    expect(find.byTooltip("Drag to reorder"), findsOneWidget);
     expect(find.byIcon(Icons.favorite_rounded), findsOneWidget);
   });
 

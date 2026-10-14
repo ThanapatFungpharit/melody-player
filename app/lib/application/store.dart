@@ -235,6 +235,13 @@ class ApplicationStore {
         entry.key,
   };
 
+  /// The order the user dragged Favorites into. It may name tracks that are
+  /// no longer favorites and miss newer ones; readers reconcile it.
+  List<String> favoritesOrder() => _stringList("favorites_order");
+
+  void saveFavoritesOrder(List<String> trackIds) =>
+      _commit({"favorites_order": trackIds});
+
   void saveTrackDetails(String trackId, TrackDetails details) {
     _commit(const {}, trackDetails: {trackId: details.toJson()});
     _deletedTrackIds.remove(trackId);
@@ -274,6 +281,7 @@ class ApplicationStore {
       "track_details": <String, Object?>{},
       "recent_tracks": <Object?>[],
       "playback_history": <Object?>[],
+      "favorites_order": <Object?>[],
       "playback": cleared,
     });
     _deletedTrackIds.addAll(removed);

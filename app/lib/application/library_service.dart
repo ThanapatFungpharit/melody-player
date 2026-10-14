@@ -232,6 +232,14 @@ class LibraryService {
     final current = details(trackId);
     current.favorite = !current.favorite;
     store.saveTrackDetails(trackId, current);
+    // A track favorited again joins the end, not its old place.
+    final order = store.favoritesOrder();
+    if (!current.favorite && order.contains(trackId)) {
+      store.saveFavoritesOrder([
+        for (final id in order)
+          if (id != trackId) id,
+      ]);
+    }
     return current;
   }
 
@@ -440,12 +448,30 @@ class LibraryService {
 
   List<Playlist> playlists() => manager.listPlaylists();
 
-  /// Every favorite library track, newest first.
-  List<Track> favoriteTrackList() =>
-      manager.tracksByIds(store.favoriteTrackIds());
+  /// Every favorite library track in the order the user dragged them into.
+  /// Favorites that order does not list yet follow it, newest first.
+  List<Track> favoriteTrackList() {
+    final tracks = manager.tracksByIds(store.favoriteTrackIds());
+    final saved = store.favoritesOrder();
+    if (saved.isEmpty) return tracks;
+    final rank = {for (final (index, id) in saved.indexed) id: index};
+    final ordered = [
+      for (final track in tracks)
+        if (rank.containsKey(track.id)) track,
+    ]..sort((a, b) => rank[a.id]!.compareTo(rank[b.id]!));
+    return [
+      ...ordered,
+      for (final track in tracks)
+        if (!rank.containsKey(track.id)) track,
+    ];
+  }
+
+  /// Saves Favorites in [orderedTrackIds] order.
+  void reorderFavorites(List<String> orderedTrackIds) =>
+      store.saveFavoritesOrder(orderedTrackIds);
 
   /// The app-managed playlist of every favorite track. It follows the
-  /// favorites, so it is never stored, renamed, reordered, or deleted.
+  /// favorites, so it is never stored as a playlist, renamed, or deleted.
   Playlist favoritesPlaylist() => Playlist(
     id: favoritesPlaylistId,
     name: "Favorites",

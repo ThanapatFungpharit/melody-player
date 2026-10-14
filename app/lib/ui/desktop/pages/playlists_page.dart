@@ -258,7 +258,6 @@ class _PlaylistDetail extends StatelessWidget {
                   itemCount: visible.length,
                   // onReorderItem reports the index after removal; the
                   // controller takes the drop slot, as the queue does.
-                  // Favorites rows have no drag handles, so never reorder.
                   onReorderItem: (oldIndex, newIndex) => app.run(
                     () => app.playlists.reorder(
                       playlist.id,
@@ -274,26 +273,24 @@ class _PlaylistDetail extends StatelessWidget {
                       key: ValueKey("${playlist.id}:$position:${track.id}"),
                       app: app,
                       number: position + 1,
-                      leading: favorites
-                          ? const SizedBox(width: 28)
-                          : ReorderableDragStartListener(
-                              index: index,
-                              child: MouseRegion(
-                                cursor: SystemMouseCursors.grab,
-                                child: Tooltip(
-                                  message: "Drag to reorder",
-                                  child: SizedBox(
-                                    width: 28,
-                                    height: 40,
-                                    child: Icon(
-                                      Icons.drag_indicator_rounded,
-                                      size: 18,
-                                      color: scheme.outline,
-                                    ),
-                                  ),
-                                ),
+                      leading: ReorderableDragStartListener(
+                        index: index,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.grab,
+                          child: Tooltip(
+                            message: "Drag to reorder",
+                            child: SizedBox(
+                              width: 28,
+                              height: 40,
+                              child: Icon(
+                                Icons.drag_indicator_rounded,
+                                size: 18,
+                                color: scheme.outline,
                               ),
                             ),
+                          ),
+                        ),
+                      ),
                       title: track.displayTitle,
                       subtitle: info.credit,
                       artwork: info.thumbnail,

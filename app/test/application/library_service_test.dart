@@ -351,4 +351,31 @@ void main() {
     expect(m3u8, contains("#EXTINF:-1,first.mp3"));
     expect(m3u8, isNot(contains("second.mp3")));
   });
+
+  test("Favorites keeps a dragged order and appends new favorites", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    final third = await downloaded(
+      "third.mp3",
+      source: "https://music.youtube.com/watch?v=ccccccccccc",
+    );
+    library
+      ..toggleFavorite(first)
+      ..toggleFavorite(second);
+    expect(library.favoritesPlaylist().trackIds, [second, first]);
+
+    library.reorderFavorites([first, second]);
+    expect(library.favoritesPlaylist().trackIds, [first, second]);
+    // A new favorite follows the saved order.
+    library.toggleFavorite(third);
+    expect(library.favoritesPlaylist().trackIds, [first, second, third]);
+    // Unfavoriting drops a track; favoriting it again appends it.
+    library
+      ..toggleFavorite(first)
+      ..toggleFavorite(first);
+    expect(library.favoritesPlaylist().trackIds, [second, third, first]);
+  });
 }

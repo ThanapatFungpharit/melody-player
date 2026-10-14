@@ -84,9 +84,7 @@ class HomeController extends ChangeNotifier {
         if (recent.length == 6) break;
       }
     }
-    final favorites = manager.tracksByIds(
-      app.services.store.favoriteTrackIds(),
-    );
+    final favorites = app.services.library.favoriteTrackList();
     return (manager.counts().$1, recent, favorites);
   }
 

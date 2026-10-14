@@ -51,7 +51,9 @@ List<MenuAction> libraryTrackActions(
     ),
   MenuAction(
     details.favorite ? "Remove favorite" : "Favorite",
-    Icons.favorite_border_rounded,
+    details.favorite
+        ? Icons.heart_broken_outlined
+        : Icons.favorite_border_rounded,
     () => app.toggleFavorite(track.id),
   ),
   MenuAction(
@@ -100,7 +102,7 @@ List<MenuAction> searchResultActions(
     ),
     MenuAction(
       favorite ? "Remove favorite" : "Favorite",
-      Icons.favorite_border_rounded,
+      favorite ? Icons.heart_broken_outlined : Icons.favorite_border_rounded,
       () => search.actOnResult(result, TrackAction.favorite),
     ),
     for (final playlist in playlists)
@@ -128,10 +130,25 @@ List<MenuAction> playlistTrackActions(
   TrackDetails details,
 ) {
   final playlists = app.playlists;
+  final moves = [
+    MenuAction(
+      "Move up",
+      Icons.arrow_upward_rounded,
+      () => app.run(() => playlists.reorder(playlist.id, index, index - 1)),
+      enabled: index > 0,
+    ),
+    MenuAction(
+      "Move down",
+      Icons.arrow_downward_rounded,
+      () => app.run(() => playlists.reorder(playlist.id, index, index + 2)),
+      enabled: index < playlist.trackIds.length - 1,
+    ),
+  ];
   // Favorites follows the favorite marks: a track leaves it by being
-  // unfavorited, and it lists the newest tracks first.
+  // unfavorited.
   if (PlaylistsController.isFavorites(playlist.id)) {
     return [
+      ...moves,
       MenuAction(
         "Play next",
         Icons.queue_play_next_rounded,
@@ -161,18 +178,7 @@ List<MenuAction> playlistTrackActions(
     ];
   }
   return [
-    MenuAction(
-      "Move up",
-      Icons.arrow_upward_rounded,
-      () => app.run(() => playlists.reorder(playlist.id, index, index - 1)),
-      enabled: index > 0,
-    ),
-    MenuAction(
-      "Move down",
-      Icons.arrow_downward_rounded,
-      () => app.run(() => playlists.reorder(playlist.id, index, index + 2)),
-      enabled: index < playlist.trackIds.length - 1,
-    ),
+    ...moves,
     MenuAction(
       "Play next",
       Icons.queue_play_next_rounded,
@@ -185,7 +191,9 @@ List<MenuAction> playlistTrackActions(
     ),
     MenuAction(
       details.favorite ? "Remove favorite" : "Favorite",
-      Icons.favorite_border_rounded,
+      details.favorite
+          ? Icons.heart_broken_outlined
+          : Icons.favorite_border_rounded,
       () => app.toggleFavorite(track.id),
     ),
     MenuAction(
