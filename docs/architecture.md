@@ -215,13 +215,17 @@ background, lock-screen, and lifecycle behavior.
 Loudness normalization never changes files or the saved volume. Each row's
 gain is a linear amplitude factor. It reaches the target loudness while keeping
 the true peak at or below -1 dBTP, and it raises quiet tracks by at most
-`AudioEngine.maxBoostDb` (6 dB, or 0 where the decoder only attenuates). The
+`AudioEngine.maxBoostDb` (12 dB on Android, 6 dB on mpv, 0 where the decoder
+only attenuates). Where the engine limits a boost's peaks
+(`AudioEngine.limiterHeadroomDb`, 6 dB on Android), a boost may take them that
+far over the ceiling, so quiet tracks with near-full-scale peaks are still
+raised; cuts never rely on the limiter, which only runs while boosting. The
 engine turns volume × gain into a decoder level, because the decoders differ:
 
 | Platform | Decoder level | Boost |
 | --- | --- | --- |
-| Android (ExoPlayer) | Volume is linear amplitude, at most 1 | Above 1, full volume plus the same gain from an `AndroidLoudnessEnhancer` on the decoder's audio session; the effect is switched off whenever nothing is boosted |
-| Windows, Linux (media_kit) | mpv plays `(volume/100)^3`, so the gain's cube root scales the volume | Volumes up to mpv's 130%; +6 dB at full volume is 126% |
+| Android (ExoPlayer) | Volume is linear amplitude, at most 1 | Above 1, full volume plus the same gain from an `AndroidLoudnessEnhancer` on the decoder's audio session, whose compressor keeps the boosted peaks from clipping; the effect is switched off whenever nothing is boosted |
+| Windows, Linux (media_kit) | mpv plays `(volume/100)^3`, so the gain's cube root scales the volume | Volumes up to mpv's 130%; +6 dB at full volume is 126%. The bundled libmpv has no FFmpeg filters, so there is no limiter and a boost must fit under the track's peaks |
 | macOS (AVPlayer) | Linear amplitude, at most 1 | None: quieter tracks play unchanged |
 
 just_audio has no per-source volume, and the engine hears of a gapless

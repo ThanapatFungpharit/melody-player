@@ -492,7 +492,11 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                   (draft) => draft.loudnessTarget = int.parse(value),
                 )
               : null,
-          helper: app.services.loudness.maxBoostDb > 0
+          helper: app.services.loudness.limiterHeadroomDb > 0
+              ? "Quiet tracks are raised by up to "
+                    "${app.services.loudness.maxBoostDb.round()} dB, with a "
+                    "limiter keeping their peaks from clipping."
+              : app.services.loudness.maxBoostDb > 0
               ? "Quiet tracks are raised by up to "
                     "${app.services.loudness.maxBoostDb.round()} dB, as far "
                     "as their peaks allow."

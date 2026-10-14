@@ -8,6 +8,8 @@ on:
 
 env:
   FLUTTER_VERSION: "3.44.8"
+  # Authenticates the media tools' GitHub release lookups.
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   preflight:

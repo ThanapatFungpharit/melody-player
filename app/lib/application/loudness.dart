@@ -99,6 +99,7 @@ class LoudnessNormalizer {
     required this._enabled,
     required this._targetLufs,
     this.maxBoostDb = 0,
+    this.limiterHeadroomDb = 0,
     this._hasher,
     this.saveDelay = const Duration(seconds: 3),
     this.notifyDelay = const Duration(seconds: 1),
@@ -112,6 +113,7 @@ class LoudnessNormalizer {
     required bool enabled,
     required double targetLufs,
     double maxBoostDb = 0,
+    double limiterHeadroomDb = 0,
     AudioHasher? hasher,
     Duration saveDelay = const Duration(seconds: 3),
     Duration notifyDelay = const Duration(seconds: 1),
@@ -129,6 +131,7 @@ class LoudnessNormalizer {
       enabled: enabled,
       targetLufs: targetLufs,
       maxBoostDb: maxBoostDb,
+      limiterHeadroomDb: limiterHeadroomDb,
       hasher: hasher,
       saveDelay: saveDelay,
       notifyDelay: notifyDelay,
@@ -145,6 +148,10 @@ class LoudnessNormalizer {
 
   /// How far a quiet track may be raised (the audio engine's limit here).
   final double maxBoostDb;
+
+  /// How far a boost may take peaks over the ceiling, where the audio
+  /// engine limits them (0 where it has no limiter).
+  final double limiterHeadroomDb;
   final Map<String, _Entry> _entries = {};
 
   /// How long new measurements wait before the cache is written, so a
@@ -198,15 +205,16 @@ class LoudnessNormalizer {
     if (!_enabled) return 1;
     final measurement = _entries[trackId]?.measurement;
     return linearGain(
-      measurement == null
-          ? _typicalGain()
-          : normalizationGainDb(
-              measurement,
-              targetLufs: _targetLufs,
-              maxBoostDb: maxBoostDb,
-            ),
+      measurement == null ? _typicalGain() : _gainDb(measurement),
     );
   }
+
+  double _gainDb(LoudnessMeasurement measurement) => normalizationGainDb(
+    measurement,
+    targetLufs: _targetLufs,
+    maxBoostDb: maxBoostDb,
+    limiterHeadroomDb: limiterHeadroomDb,
+  );
 
   /// The factor for a track that is not measured, such as a stream.
   double get fallbackGain => _enabled ? linearGain(_typicalGain()) : 1;
@@ -217,11 +225,7 @@ class LoudnessNormalizer {
       for (final MapEntry(key: id, value: entry) in _entries.entries)
         if (entry.measurement case final measured?
             when !measured.silent && _manager.hasTrack(id))
-          normalizationGainDb(
-            measured,
-            targetLufs: _targetLufs,
-            maxBoostDb: maxBoostDb,
-          ),
+          _gainDb(measured),
     ]..sort();
     if (gains.isEmpty) return 0.0;
     final middle = gains.length ~/ 2;

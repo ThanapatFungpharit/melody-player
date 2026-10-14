@@ -162,6 +162,70 @@ void main() {
       );
     });
 
+    test("a limiter lets a boost take peaks over the ceiling", () {
+      // 3 dB short of the target, but peaking at -0.5 dBTP: without a
+      // limiter it may only be cut to keep its peaks clear.
+      expect(
+        normalizationGainDb(
+          _measured(-17, -0.5),
+          targetLufs: -14,
+          maxBoostDb: 12,
+        ),
+        closeTo(-0.5, 1e-9),
+      );
+      expect(
+        normalizationGainDb(
+          _measured(-17, -0.5),
+          targetLufs: -14,
+          maxBoostDb: 12,
+          limiterHeadroomDb: 6,
+        ),
+        closeTo(3, 1e-9),
+      );
+      // Far below the target: the limiter's headroom bounds the boost...
+      expect(
+        normalizationGainDb(
+          _measured(-30, -0.5),
+          targetLufs: -14,
+          maxBoostDb: 12,
+          limiterHeadroomDb: 6,
+        ),
+        closeTo(5.5, 1e-9),
+      );
+      // ...and with low peaks, the platform's limit does.
+      expect(
+        normalizationGainDb(
+          _measured(-30, -12),
+          targetLufs: -14,
+          maxBoostDb: 12,
+          limiterHeadroomDb: 6,
+        ),
+        12,
+      );
+    });
+
+    test("a limiter does not loosen cuts, which play without it", () {
+      // At the target, peaking over 0 dBTP: still cut under the ceiling.
+      expect(
+        normalizationGainDb(
+          _measured(-14, 0.5),
+          targetLufs: -14,
+          maxBoostDb: 12,
+          limiterHeadroomDb: 6,
+        ),
+        closeTo(truePeakCeilingDb - 0.5, 1e-9),
+      );
+      // Nor does it boost where the engine cannot.
+      expect(
+        normalizationGainDb(
+          _measured(-20, -0.5),
+          targetLufs: -14,
+          limiterHeadroomDb: 6,
+        ),
+        closeTo(-0.5, 1e-9),
+      );
+    });
+
     test("linear gains", () {
       expect(linearGain(0), 1);
       expect(linearGain(-6.0206), closeTo(0.5, 1e-4));

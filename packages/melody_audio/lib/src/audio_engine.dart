@@ -549,13 +549,22 @@ class AudioEngine {
   }
 
   /// How far normalization may raise a quiet track on this platform, in dB.
-  /// media_kit (mpv) plays volumes up to 130%, and Android adds gain with
-  /// its LoudnessEnhancer effect; AVPlayer on Apple platforms only
-  /// attenuates.
-  static double get maxBoostDb =>
-      !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || _mpvVolume)
+  /// Android adds gain with its LoudnessEnhancer effect; media_kit (mpv)
+  /// plays volumes up to 130%; AVPlayer on Apple platforms only attenuates.
+  static double get maxBoostDb => _android
+      ? 12
+      : _mpvVolume
       ? 6
       : 0;
+
+  /// How far, in dB, a boost may push peaks over full scale because the
+  /// engine limits them. LoudnessEnhancer compresses what its gain would
+  /// clip; mpv's volume has no limiter, so a boost there must fit under the
+  /// track's peaks.
+  static double get limiterHeadroomDb => _android ? 6 : 0;
+
+  static bool get _android =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   /// [maxBoostDb] as a linear amplitude factor.
   static double get maxGain => pow(10, maxBoostDb / 20).toDouble();
@@ -580,9 +589,7 @@ class AudioEngine {
   final _enhancers = Expando<AndroidLoudnessEnhancer>();
 
   AudioPlayer _newPlayer() {
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
-      return AudioPlayer();
-    }
+    if (!_android) return AudioPlayer();
     final enhancer = AndroidLoudnessEnhancer();
     final player = AudioPlayer(
       audioPipeline: AudioPipeline(androidAudioEffects: [enhancer]),

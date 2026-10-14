@@ -48,6 +48,7 @@ void main() {
     LoudnessMeter? using,
     bool enabled = true,
     double maxBoostDb = 0,
+    double limiterHeadroomDb = 0,
   }) => LoudnessNormalizer.open(
     manager,
     cache,
@@ -56,6 +57,7 @@ void main() {
     enabled: enabled,
     targetLufs: -14,
     maxBoostDb: maxBoostDb,
+    limiterHeadroomDb: limiterHeadroomDb,
     saveDelay: Duration.zero,
     notifyDelay: Duration.zero,
   );
@@ -134,6 +136,19 @@ void main() {
     // The fake peaks at -3 dBTP, leaving 2 dB below the ceiling.
     expect(normalizer.gainFor(quiet), closeTo(linearGain(2), 1e-9));
     expect(normalizer.gainFor(faint), closeTo(linearGain(2), 1e-9));
+    await normalizer.close();
+  });
+
+  test("a limiting engine raises quiet tracks past their peaks", () async {
+    final quiet = await track("quiet.mp3");
+    final faint = await track("faint.mp3");
+    loudness.addAll({"quiet.mp3": -18, "faint.mp3": -40});
+    final normalizer = await open(maxBoostDb: 12, limiterHeadroomDb: 6);
+    await normalizer.analyzeLibrary();
+    await normalizer.idle;
+    // To the target; the faint one by as much as 6 dB of limiting allows.
+    expect(normalizer.gainFor(quiet), closeTo(linearGain(4), 1e-9));
+    expect(normalizer.gainFor(faint), closeTo(linearGain(8), 1e-9));
     await normalizer.close();
   });
 

@@ -256,20 +256,28 @@ const minimumGainDb = -30.0;
 /// The playback gain, in dB, that brings [measurement] to [targetLufs].
 ///
 /// A quiet track is raised by at most [maxBoostDb], what the audio engine
-/// can add on this platform (0 where it can only attenuate). Either way the
-/// gain keeps the true peak at or below [truePeakCeilingDb], so a raised
-/// track or a hot master does not clip. A silent track is left alone.
+/// can add on this platform (0 where it can only attenuate). The gain keeps
+/// the true peak at or below [truePeakCeilingDb], so a hot master does not
+/// clip. Where the engine limits the peaks of a boost ([limiterHeadroomDb]
+/// above 0), a boost may take them that far over the ceiling instead, so a
+/// quiet track whose peaks are already high is still raised. A silent track
+/// is left alone.
 double normalizationGainDb(
   LoudnessMeasurement measurement, {
   required double targetLufs,
   double maxBoostDb = 0,
+  double limiterHeadroomDb = 0,
 }) {
   if (measurement.silent) return 0;
   final toTarget = targetLufs - measurement.integratedLufs;
   final peak = measurement.truePeakDb;
   final toCeiling = peak.isFinite ? truePeakCeilingDb - peak : 0.0;
   final ceiling = max(maxBoostDb, 0.0);
-  return min(min(toTarget, toCeiling), ceiling).clamp(minimumGainDb, ceiling);
+  var gain = min(toTarget, toCeiling);
+  // The limiter only runs while it boosts: a cut must keep the peaks clear.
+  final limited = min(toTarget, toCeiling + max(limiterHeadroomDb, 0.0));
+  if (ceiling > 0 && limited > 0) gain = limited;
+  return min(gain, ceiling).clamp(minimumGainDb, ceiling);
 }
 
 /// A gain in dB as the linear volume factor the decoder takes.

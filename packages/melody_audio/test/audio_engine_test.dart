@@ -427,8 +427,9 @@ void main() {
         "Android adds gain above full volume with LoudnessEnhancer",
         () async {
           debugDefaultTargetPlatformOverride = TargetPlatform.android;
-          expect(AudioEngine.maxBoostDb, 6);
-          final boost = AudioEngine.maxGain; // +6 dB
+          expect(AudioEngine.maxBoostDb, 12);
+          expect(AudioEngine.limiterHeadroomDb, 6);
+          final boost = AudioEngine.maxGain; // +12 dB
           await engine.setQueue(
             gained({"quiet": boost, "loud": 0.5}),
             currentIndex: 0,
@@ -439,7 +440,7 @@ void main() {
           await _settle();
           expect(player.hasEnhancer, isTrue);
           expect(player.volumes.last, 1);
-          expect(player.activeBoostDb, closeTo(6, 0.01));
+          expect(player.activeBoostDb, closeTo(12, 0.01));
 
           // A cut switches the effect off: the plain path, as before.
           player.autoAdvance(1);
@@ -458,6 +459,7 @@ void main() {
       test("mpv's cubic volume takes the cube root of a gain", () async {
         debugDefaultTargetPlatformOverride = TargetPlatform.windows;
         expect(AudioEngine.maxBoostDb, 6);
+        expect(AudioEngine.limiterHeadroomDb, 0);
         engine.setVolume(0.8);
         await engine.setQueue(
           gained({"quiet": AudioEngine.maxGain, "loud": 0.125}),

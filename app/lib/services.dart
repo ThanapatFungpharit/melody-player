@@ -15,7 +15,7 @@ import "application/storage_upgrade.dart";
 import "application/store.dart";
 import "application/thumbnails.dart";
 import "core/library/manager.dart";
-import "audio/audio_backend.dart" show audioMaxBoostDb;
+import "audio/audio_backend.dart" show audioLimiterHeadroomDb, audioMaxBoostDb;
 import "core/loudness.dart"
     show ffmpegAudioHasher, ffmpegExecutable, ffmpegLoudnessMeter;
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
@@ -178,6 +178,7 @@ class AppServices {
       enabled: store.settings.normalizeLoudness,
       targetLufs: store.settings.loudnessTarget.toDouble(),
       maxBoostDb: audioMaxBoostDb,
+      limiterHeadroomDb: audioLimiterHeadroomDb,
     );
     onStage?.call("Restoring your queue");
     final availableTrackIds = await _availableResumeTracks(manager, store);
