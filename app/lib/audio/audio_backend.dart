@@ -53,6 +53,10 @@ class BackendCallbacks {
 /// platform (0 where it can only attenuate).
 double get audioMaxBoostDb => AudioEngine.maxBoostDb;
 
+/// How far, in dB, a boost may take peaks over full scale because the audio
+/// engine limits them on this platform (0 where it has no limiter).
+double get audioLimiterHeadroomDb => AudioEngine.limiterHeadroomDb;
+
 AudioRepeatMode audioRepeatMode(RepeatMode mode) => switch (mode) {
   RepeatMode.off => AudioRepeatMode.off,
   RepeatMode.track => AudioRepeatMode.track,
