@@ -19,10 +19,268 @@ import "pages/settings_page.dart";
 import "player_bar.dart";
 
 class _Intent extends Intent {
-  const _Intent(this.action);
+  const _Intent(this.action, {this.whileTyping = true});
 
   final void Function() action;
+
+  /// False for keys a text field uses (arrows with modifiers), which then
+  /// reach the field instead.
+  final bool whileTyping;
 }
+
+class _ShortcutAction extends Action<_Intent> {
+  @override
+  bool isEnabled(_Intent intent) => intent.whileTyping || !_typing;
+
+  static bool get _typing =>
+      FocusManager.instance.primaryFocus?.context
+          ?.findAncestorWidgetOfExactType<EditableText>() !=
+      null;
+
+  @override
+  Object? invoke(_Intent intent) {
+    intent.action();
+    return null;
+  }
+}
+
+/// A key binding, as listed in the keyboard shortcuts dialog. A null
+/// [keys] label keeps the binding out of the list.
+typedef _Shortcut = ({
+  SingleActivator activator,
+  String? keys,
+  String label,
+  _Intent intent,
+});
+
+List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
+  final playback = app.playback;
+  bool hasMedia() =>
+      playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+  void seekBy(int deltaMs) {
+    if (hasMedia()) playback.seek(app.estimatedPositionMs() + deltaMs);
+  }
+
+  void navigate(int index) {
+    if (index == 3) app.playlists.closePlaylist();
+    app.navigate(index);
+  }
+
+  _Shortcut key(
+    LogicalKeyboardKey trigger,
+    String? keys,
+    String label,
+    void Function() action, {
+    bool control = false,
+    bool shift = false,
+    bool whileTyping = true,
+  }) => (
+    activator: SingleActivator(trigger, control: control, shift: shift),
+    keys: keys,
+    label: label,
+    intent: _Intent(action, whileTyping: whileTyping),
+  );
+
+  return [
+    key(
+      LogicalKeyboardKey.space,
+      "Ctrl+Space",
+      "Play or pause",
+      playback.toggle,
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.arrowRight,
+      "Ctrl+→",
+      "Next track",
+      () {
+        if (hasMedia()) playback.next();
+      },
+      control: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.arrowLeft,
+      "Ctrl+←",
+      "Previous track",
+      () {
+        if (hasMedia()) playback.previous();
+      },
+      control: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.arrowRight,
+      "Shift+→",
+      "Forward 10 seconds",
+      () => seekBy(10000),
+      shift: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.arrowLeft,
+      "Shift+←",
+      "Back 10 seconds",
+      () => seekBy(-10000),
+      shift: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.arrowUp,
+      "Ctrl+↑",
+      "Volume up",
+      () => playback.setVolume(playback.volume + 5),
+      control: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.arrowDown,
+      "Ctrl+↓",
+      "Volume down",
+      () => playback.setVolume(playback.volume - 5),
+      control: true,
+      whileTyping: false,
+    ),
+    key(
+      LogicalKeyboardKey.keyM,
+      "Ctrl+M",
+      "Mute or unmute",
+      playback.toggleMute,
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyS,
+      "Ctrl+S",
+      "Shuffle upcoming tracks",
+      () => playback.shuffleUpcoming(),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyR,
+      "Ctrl+R",
+      "Change repeat mode",
+      () => playback.cycleRepeat(),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyF,
+      "Ctrl+Shift+F",
+      "Favorite the playing track",
+      () {
+        final id = playback.currentTrackId;
+        if (id != null && playback.externalTitle.isEmpty) {
+          app.toggleFavorite(id);
+        }
+      },
+      control: true,
+      shift: true,
+    ),
+    for (final (index, destination) in navigationDestinations.indexed)
+      key(
+        LogicalKeyboardKey(LogicalKeyboardKey.digit1.keyId + index),
+        "Ctrl+${index + 1}",
+        "Go to ${destination.label}",
+        () => navigate(index),
+        control: true,
+      ),
+    for (final (trigger, keys) in [
+      (LogicalKeyboardKey.keyL, "Ctrl+L"),
+      (LogicalKeyboardKey.keyF, null),
+    ])
+      key(trigger, keys, "Search", () {
+        app.navigate(1);
+        // From another page, the field exists only after the next frame.
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => app.search.focusRequest.value++,
+        );
+        WidgetsBinding.instance.scheduleFrame();
+      }, control: true),
+    key(
+      LogicalKeyboardKey.keyQ,
+      "Ctrl+Q",
+      "Queue",
+      () => app.openPanel(AppPanel.queue),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyY,
+      "Ctrl+Y",
+      "Lyrics",
+      () => app.openPanel(AppPanel.lyrics),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyD,
+      "Ctrl+D",
+      "Downloads",
+      () => app.openPanel(AppPanel.downloads),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.comma,
+      "Ctrl+,",
+      "Settings",
+      () => app.openPanel(AppPanel.settings),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.escape,
+      "Esc",
+      "Close the open panel",
+      app.closePanel,
+    ),
+    key(
+      LogicalKeyboardKey.slash,
+      "Ctrl+/",
+      "Show keyboard shortcuts",
+      () => _showShortcuts(context, app),
+      control: true,
+    ),
+    key(LogicalKeyboardKey.mediaPlayPause, null, "", playback.toggle),
+    key(LogicalKeyboardKey.mediaTrackNext, null, "", playback.next),
+    key(LogicalKeyboardKey.mediaTrackPrevious, null, "", playback.previous),
+  ];
+}
+
+// The dialog's route sits above the shell's shortcuts, so Ctrl+/ cannot open
+// a second one.
+Future<void> _showShortcuts(BuildContext context, MelodyApp app) =>
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("Keyboard shortcuts"),
+        content: SizedBox(
+          width: 380,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final shortcut in _shortcuts(context, app))
+                if (shortcut.keys case final keys?)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text(shortcut.label)),
+                        Text(
+                          keys,
+                          style: dialogContext.text.labelLarge!.copyWith(
+                            color: dialogContext.colors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text("Close"),
+          ),
+        ],
+      ),
+    );
 
 /// Sidebar, workspace, utility panel, and player bar for pointer-first
 /// devices. Everything sits on the window canvas; the workspace and panels
@@ -34,48 +292,14 @@ class DesktopShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final shortcuts = <ShortcutActivator, Intent>{
-      const SingleActivator(LogicalKeyboardKey.escape): _Intent(app.closePanel),
-      const SingleActivator(LogicalKeyboardKey.keyL, control: true): _Intent(
-        () {
-          app.navigate(1);
-          app.search.focusRequest.value++;
-        },
-      ),
-      const SingleActivator(LogicalKeyboardKey.keyQ, control: true): _Intent(
-        () => app.openPanel(AppPanel.queue),
-      ),
-      const SingleActivator(LogicalKeyboardKey.keyY, control: true): _Intent(
-        () => app.openPanel(AppPanel.lyrics),
-      ),
-      const SingleActivator(LogicalKeyboardKey.keyD, control: true): _Intent(
-        () => app.openPanel(AppPanel.downloads),
-      ),
-      const SingleActivator(LogicalKeyboardKey.comma, control: true): _Intent(
-        () => app.openPanel(AppPanel.settings),
-      ),
-      const SingleActivator(LogicalKeyboardKey.space, control: true): _Intent(
-        app.playback.toggle,
-      ),
-      const SingleActivator(LogicalKeyboardKey.mediaPlayPause): _Intent(
-        app.playback.toggle,
-      ),
-      const SingleActivator(LogicalKeyboardKey.mediaTrackNext): _Intent(
-        app.playback.next,
-      ),
-      const SingleActivator(LogicalKeyboardKey.mediaTrackPrevious): _Intent(
-        app.playback.previous,
-      ),
-    };
     final extended = MediaQuery.sizeOf(context).width >= 1180;
     return Shortcuts(
-      shortcuts: shortcuts,
+      shortcuts: {
+        for (final shortcut in _shortcuts(context, app))
+          shortcut.activator: shortcut.intent,
+      },
       child: Actions(
-        actions: {
-          _Intent: CallbackAction<_Intent>(
-            onInvoke: (intent) => intent.action(),
-          ),
-        },
+        actions: {_Intent: _ShortcutAction()},
         child: Focus(
           autofocus: true,
           child: Scaffold(

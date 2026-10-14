@@ -21,10 +21,11 @@ interfaces for the same shared capabilities.
 - Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
 - Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, copy/move, and safe removal that does not delete audio files
 - Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and integrity-aware file paths
-- Persistent playback queue with play-next, append, reorder, remove, clear-upcoming, a visible one-time shuffle reorder, repeat-track, and repeat-queue
+- Persistent playback queue with play-next, append, reorder, remove and clear-upcoming (both undoable), a visible one-time shuffle reorder, repeat-track, and repeat-queue
+- Sleep timer that pauses playback after 15–90 minutes or when the playing track ends
 - Background playback while Melody is minimized, another app is active, or a mobile device is locked
 - Android lock-screen and notification-panel controls, plus Windows and macOS system-media controls (not on Linux), with synchronized artwork, title, artist, playback state, seeking, and previous/next actions; Pause keeps the session available and explicit Stop removes it
-- Desktop seek, precise volume, media keys, and keyboard shortcuts; mobile touch controls with mute/restore while the device provides media volume buttons
+- Desktop seek, precise volume, media keys, and keyboard shortcuts for playback, volume, seeking, and navigation (Ctrl+/ lists them); mobile touch controls with mute/restore while the device provides media volume buttons
 - Separate desktop (navigation rail, docked queue, hover states, menus, drag-to-reorder) and mobile (bottom navigation, full-screen panels, touch targets, bottom-sheet menus) presentations
 - Recent tracks, playback/search history, session queue state, light/dark/system themes, accent palettes, and YouTube Music/download settings
 

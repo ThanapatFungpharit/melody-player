@@ -92,7 +92,7 @@ class _QueuePanelState extends State<QueuePanel> {
                         label: "Clear",
                         onPressed: queue.items.length <= 1
                             ? null
-                            : app.playback.clearQueue,
+                            : app.clearQueue,
                       ),
                     ),
                   ],
@@ -109,10 +109,11 @@ class _QueuePanelState extends State<QueuePanel> {
                         onReorderItem: (oldIndex, newIndex) =>
                             app.playback.reorderQueue(
                               rows[oldIndex].$1,
-                              start +
-                                  (newIndex > oldIndex
-                                      ? newIndex + 1
-                                      : newIndex),
+                              queueDropSlot(
+                                [for (final row in rows) row.$1],
+                                oldIndex,
+                                newIndex,
+                              ),
                             ),
                         itemBuilder: (context, row) {
                           final (index, trackId) = rows[row];

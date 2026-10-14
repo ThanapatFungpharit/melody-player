@@ -1,4 +1,5 @@
 import "../support/temp.dart";
+import "dart:async";
 import "dart:io";
 import "dart:math";
 
@@ -8,6 +9,7 @@ import "package:melody/application/loudness.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/playback.dart";
 import "package:melody/application/queue.dart";
+import "package:melody/application/sleep_timer.dart";
 import "package:melody/application/store.dart";
 import "package:melody/audio/audio_backend.dart";
 import "package:melody/core/library/manager.dart";
@@ -633,6 +635,112 @@ void main() {
     expect(playback.mediaSessionActive, isFalse);
     expect(backend.discardedSources, 1);
     expect(saved()["queue"], isEmpty);
+  });
+
+  test("a cleared queue is restored while its track still plays", () async {
+    final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    final playback = controller()..playTracks(ids, startIndex: 1);
+    final snapshot = playback.snapshotQueue();
+    playback.clearQueue();
+    expect(playback.queue.items, [ids[1]]);
+    final loads = backend.queues.length;
+
+    expect(playback.restoreQueue(snapshot), isTrue);
+    expect(playback.queue.items, ids);
+    expect(playback.currentTrackId, ids[1]);
+    expect(playback.queue.currentIndex, 1);
+    expect(backend.queues, hasLength(loads), reason: "no reload");
+    expect(saved()["queue"], ids);
+  });
+
+  test(
+    "restoring drops deleted rows and refuses after the track changed",
+    () async {
+      final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+      final playback = controller()..playTracks(ids, startIndex: 1);
+      final snapshot = playback.snapshotQueue();
+      playback.removeQueueItem(0);
+      manager.deleteTrack(ids[2]);
+      expect(playback.restoreQueue(snapshot), isTrue);
+      expect(playback.queue.items, [ids[0], ids[1]]);
+      expect(playback.queue.currentIndex, 1);
+
+      final later = playback.snapshotQueue();
+      playback.previous();
+      expect(playback.currentTrackId, ids[0]);
+      expect(playback.restoreQueue(later), isFalse);
+    },
+  );
+
+  group("sleep timer", () {
+    late List<(Duration, void Function())> timers;
+    late DateTime now;
+
+    SleepTimer sleepTimer(PlaybackController playback) {
+      timers = [];
+      now = DateTime(2026);
+      return SleepTimer(
+        playback,
+        now: () => now,
+        createTimer: (delay, callback) {
+          timers.add((delay, callback));
+          return Timer(const Duration(days: 1), () {});
+        },
+      );
+    }
+
+    test("a timed timer pauses once and reports what is left", () async {
+      final ids = await tracks(["one.mp3"]);
+      final playback = controller()
+        ..playTracks(ids)
+        ..onLoaded();
+      final timer = sleepTimer(playback)..start(const Duration(minutes: 30));
+      expect(timer.active, isTrue);
+      now = now.add(const Duration(minutes: 10));
+      expect(timer.remaining, const Duration(minutes: 20));
+      expect(timers.single.$1, const Duration(minutes: 30));
+
+      timers.single.$2();
+      expect(playback.playing, isFalse);
+      expect(backend.pauseCount, 1);
+      expect(timer.active, isFalse);
+      timer.close();
+    });
+
+    test("end of track pauses just before the track ends", () async {
+      final ids = await tracks(["one.mp3", "two.mp3"]);
+      final playback = controller()
+        ..playTracks(ids)
+        ..onLoaded()
+        ..onDuration(200000)
+        ..onPosition(50000);
+      final timer = sleepTimer(playback)..stopAtEndOfTrack();
+      expect(timer.endOfTrack, isTrue);
+      expect(timers.last.$1, const Duration(milliseconds: 149750));
+
+      // A seek re-arms it from the new position.
+      playback.onPosition(190000);
+      await Future<void>.delayed(Duration.zero);
+      expect(timers.last.$1, const Duration(milliseconds: 9750));
+
+      timers.last.$2();
+      expect(playback.playing, isFalse);
+      expect(playback.currentTrackId, ids[0]);
+      expect(timer.active, isFalse);
+      timer.close();
+    });
+
+    test("end of track turns off when playback stops", () async {
+      final ids = await tracks(["one.mp3"]);
+      final playback = controller()
+        ..playTracks(ids)
+        ..onLoaded();
+      final timer = sleepTimer(playback)..stopAtEndOfTrack();
+      playback.stop();
+      await Future<void>.delayed(Duration.zero);
+      expect(timer.active, isFalse);
+      timer.close();
+    });
   });
 
   test("drag reordering persists and keeps the current track", () async {

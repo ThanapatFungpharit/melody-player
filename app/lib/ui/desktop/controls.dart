@@ -131,19 +131,24 @@ class Pill extends StatelessWidget {
   }
 }
 
-/// A "more" button listing [actions].
+/// A "more" button, or [icon], listing [actions].
 class ActionMenu extends StatelessWidget {
-  const ActionMenu(this.actions, {super.key, this.tooltip = "More actions"});
+  const ActionMenu(
+    this.actions, {
+    super.key,
+    this.tooltip = "More actions",
+    this.icon,
+  });
 
   final List<MenuAction> Function() actions;
   final String tooltip;
+  final Widget? icon;
 
   @override
   Widget build(BuildContext context) => PopupMenuButton<MenuAction>(
-    icon: Icon(
-      Icons.more_horiz_rounded,
-      color: context.colors.onSurfaceVariant,
-    ),
+    icon:
+        icon ??
+        Icon(Icons.more_horiz_rounded, color: context.colors.onSurfaceVariant),
     tooltip: tooltip,
     position: PopupMenuPosition.under,
     itemBuilder: (context) => [

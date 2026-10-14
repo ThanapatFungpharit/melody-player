@@ -2,9 +2,11 @@ import "package:flutter/material.dart" hide RepeatMode;
 
 import "../app_state.dart";
 import "../../application/models.dart";
+import "../shared/actions.dart";
 import "../shared/playback_widgets.dart";
 import "../shared/theme.dart";
 import "../shared/widgets.dart";
+import "controls.dart";
 
 /// Persistent transport and volume controls along the bottom of the window.
 class DesktopPlayerBar extends StatelessWidget {
@@ -169,54 +171,72 @@ class DesktopPlayerBar extends StatelessWidget {
                 const SizedBox(width: 20),
                 Expanded(
                   flex: 3,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      ValueListenableBuilder(
-                        valueListenable: app.activePanel,
-                        builder: (context, panel, _) => Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            for (final (target, tooltip, icon) in const [
-                              (
-                                AppPanel.lyrics,
-                                "Lyrics (Ctrl+Y)",
-                                Icons.lyrics_outlined,
-                              ),
-                              (
-                                AppPanel.queue,
-                                "Queue (Ctrl+Q)",
-                                Icons.queue_music_rounded,
-                              ),
-                            ])
-                              IconButton(
-                                onPressed: () => panel == target
-                                    ? app.closePanel()
-                                    : app.openPanel(target),
-                                tooltip: tooltip,
-                                isSelected: panel == target,
-                                iconSize: 20,
-                                icon: _ActiveDot(
-                                  active: panel == target,
-                                  child: Icon(
-                                    icon,
-                                    color: panel == target
-                                        ? scheme.primary
-                                        : null,
+                  child: IconButtonTheme(
+                    // Narrow windows pack the side controls like the transport.
+                    data: IconButtonThemeData(
+                      style: ButtonStyle(
+                        visualDensity: width < 1180
+                            ? VisualDensity.compact
+                            : null,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        ValueListenableBuilder(
+                          valueListenable: app.activePanel,
+                          builder: (context, panel, _) => Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final (target, tooltip, icon) in const [
+                                (
+                                  AppPanel.lyrics,
+                                  "Lyrics (Ctrl+Y)",
+                                  Icons.lyrics_outlined,
+                                ),
+                                (
+                                  AppPanel.queue,
+                                  "Queue (Ctrl+Q)",
+                                  Icons.queue_music_rounded,
+                                ),
+                              ])
+                                IconButton(
+                                  onPressed: () => panel == target
+                                      ? app.closePanel()
+                                      : app.openPanel(target),
+                                  tooltip: tooltip,
+                                  isSelected: panel == target,
+                                  iconSize: 20,
+                                  icon: _ActiveDot(
+                                    active: panel == target,
+                                    child: Icon(
+                                      icon,
+                                      color: panel == target
+                                          ? scheme.primary
+                                          : null,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        onPressed: hasMedia ? playback.stop : null,
-                        tooltip: "Stop playback and clear notification",
-                        iconSize: 20,
-                        icon: const Icon(Icons.stop_rounded),
-                      ),
-                      _VolumeControls(app, wide: width >= 1280),
-                    ],
+                        _SleepTimerButton(app),
+                        IconButton(
+                          onPressed: hasMedia ? playback.stop : null,
+                          tooltip: "Stop playback and clear notification",
+                          iconSize: 20,
+                          icon: const Icon(Icons.stop_rounded),
+                        ),
+                        _VolumeControls(
+                          app,
+                          sliderWidth: width >= 1280
+                              ? 132
+                              : width >= 1180
+                              ? 96
+                              : 88,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -257,11 +277,41 @@ class _ActiveDot extends StatelessWidget {
   );
 }
 
-class _VolumeControls extends StatelessWidget {
-  const _VolumeControls(this.app, {required this.wide});
+/// Opens the sleep timer's choices; lit while a timer runs.
+class _SleepTimerButton extends StatelessWidget {
+  const _SleepTimerButton(this.app);
 
   final MelodyApp app;
-  final bool wide;
+
+  @override
+  Widget build(BuildContext context) => Watch(
+    // Progress ticks keep the minutes in the tooltip current.
+    [app.sleepTimerState, app.playbackProgress],
+    builder: (context) {
+      final active = app.sleepTimer.active;
+      return ActionMenu(
+        () => sleepTimerActions(app),
+        tooltip: sleepTimerStatus(app.sleepTimer),
+        icon: _ActiveDot(
+          active: active,
+          child: Icon(
+            active ? Icons.bedtime_rounded : Icons.bedtime_outlined,
+            size: 20,
+            color: active
+                ? context.colors.primary
+                : context.colors.onSurfaceVariant,
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _VolumeControls extends StatelessWidget {
+  const _VolumeControls(this.app, {required this.sliderWidth});
+
+  final MelodyApp app;
+  final double sliderWidth;
 
   @override
   Widget build(BuildContext context) => Watch(
@@ -285,7 +335,7 @@ class _VolumeControls extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: wide ? 132 : 96,
+            width: sliderWidth,
             child: Tooltip(
               message: "Volume ${playback.volume}%",
               child: Slider(

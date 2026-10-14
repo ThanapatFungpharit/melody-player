@@ -32,14 +32,17 @@ class _MobileQueueState extends State<MobileQueue> {
         final (start, end) = pageBounds(queue.items.length, _offset!);
         _offset = start;
         final rows = <Widget>[];
+        final indexes = <int>[];
         for (var index = start; index < end; index++) {
           final trackId = queue.items[index];
           if (!app.services.manager.hasTrack(trackId)) continue;
           final track = app.services.manager.getTrack(trackId);
           final details = app.services.library.details(trackId);
           final position = index;
+          indexes.add(index);
           rows.add(
             TrackRow(
+              key: ValueKey("queue:$index:$trackId"),
               app: app,
               title: track.displayTitle,
               credit:
@@ -47,9 +50,13 @@ class _MobileQueueState extends State<MobileQueue> {
               artwork: details.thumbnail,
               selected: index == queue.currentIndex,
               onTap: () => app.playback.playQueueIndex(position),
-              trailing: MoreButton(
-                track.displayTitle,
-                () => queueRowActions(app, position),
+              trailing: reorderableTrailing(
+                context,
+                rows.length,
+                MoreButton(
+                  track.displayTitle,
+                  () => queueRowActions(app, position),
+                ),
               ),
             ),
           );
@@ -72,66 +79,74 @@ class _MobileQueueState extends State<MobileQueue> {
           icon: Icon(icon, size: 17),
           label: Text(label),
         );
-        return scrollPage([
-          MobileHeading(
-            "Queue",
-            subtitle: "${queue.items.length} tracks · ${mode.label}",
-            large: true,
-            actions: [
-              TouchIconButton(
-                Icons.arrow_back_rounded,
-                "Back",
-                () => Navigator.of(context).maybePop(),
-              ),
-            ],
+        return reorderablePage(
+          onReorder: (oldIndex, newIndex) => app.playback.reorderQueue(
+            indexes[oldIndex],
+            queueDropSlot(indexes, oldIndex, newIndex),
           ),
-          if (rows.isNotEmpty) ...[
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                chip(
-                  mode.icon,
-                  mode.label,
-                  app.playback.cycleRepeat,
-                  active: true,
-                ),
-                Tooltip(
-                  message: "Shuffle upcoming tracks",
-                  child: chip(
-                    Icons.shuffle_rounded,
-                    "Shuffle",
-                    queue.upcomingCount < 2
-                        ? null
-                        : app.playback.shuffleUpcoming,
-                  ),
-                ),
-                Tooltip(
-                  message: "Clear upcoming tracks",
-                  child: chip(
-                    Icons.clear_all_rounded,
-                    "Clear",
-                    queue.items.length <= 1 ? null : app.playback.clearQueue,
-                  ),
+          header: [
+            MobileHeading(
+              "Queue",
+              subtitle: "${queue.items.length} tracks · ${mode.label}",
+              large: true,
+              actions: [
+                TouchIconButton(
+                  Icons.arrow_back_rounded,
+                  "Back",
+                  () => Navigator.of(context).maybePop(),
                 ),
               ],
             ),
+            if (rows.isNotEmpty) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  chip(
+                    mode.icon,
+                    mode.label,
+                    app.playback.cycleRepeat,
+                    active: true,
+                  ),
+                  Tooltip(
+                    message: "Shuffle upcoming tracks",
+                    child: chip(
+                      Icons.shuffle_rounded,
+                      "Shuffle",
+                      queue.upcomingCount < 2
+                          ? null
+                          : app.playback.shuffleUpcoming,
+                    ),
+                  ),
+                  Tooltip(
+                    message: "Clear upcoming tracks",
+                    child: chip(
+                      Icons.clear_all_rounded,
+                      "Clear",
+                      queue.items.length <= 1 ? null : app.clearQueue,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
-          ...rows,
-          if (queue.items.length > 50)
-            PageNavigation(
-              total: queue.items.length,
-              start: start,
-              end: end,
-              onChange: (direction) =>
-                  setState(() => _offset = start + direction * 50),
-            ),
-          if (rows.isEmpty)
-            const EmptyState(
-              Icons.queue_music_rounded,
-              "Play music or add tracks to start your queue.",
-            ),
-        ]);
+          items: rows,
+          footer: [
+            if (queue.items.length > 50)
+              PageNavigation(
+                total: queue.items.length,
+                start: start,
+                end: end,
+                onChange: (direction) =>
+                    setState(() => _offset = start + direction * 50),
+              ),
+            if (rows.isEmpty)
+              const EmptyState(
+                Icons.queue_music_rounded,
+                "Play music or add tracks to start your queue.",
+              ),
+          ],
+        );
       },
     );
   }

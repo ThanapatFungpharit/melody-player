@@ -24,6 +24,7 @@ import "package:melody/ui/desktop/player_bar.dart";
 import "package:melody/ui/desktop/shell.dart";
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
+import "package:melody/ui/shared/actions.dart" show queueDropSlot;
 import "package:melody/ui/shared/theme.dart";
 import "package:melody/ui/startup.dart";
 import "package:melody/worker/worker_client.dart";
@@ -628,6 +629,97 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  testWidgets("desktop shortcuts control playback but leave typing alone", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1440, 900),
+    );
+    final playback = app.playback;
+    playback.setVolume(50);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(playback.volume, 55);
+
+    // In a text field, Ctrl+→ moves the caret instead of skipping.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyL);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(
+      FocusManager.instance.primaryFocus?.context
+          ?.findAncestorWidgetOfExactType<EditableText>(),
+      isNotNull,
+    );
+    final track = playback.currentTrackId;
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.sendKeyEvent(LogicalKeyboardKey.slash);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(playback.currentTrackId, track);
+    expect(find.text("Keyboard shortcuts"), findsOneWidget);
+    expect(find.text("Volume up"), findsOneWidget);
+    await tester.tap(find.text("Close"));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets("desktop sleep timer starts and turns off from its menu", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1440, 900),
+    );
+    await tester.tap(find.byTooltip("Sleep timer"));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("30 minutes"));
+    await tester.pumpAndSettle();
+    expect(app.sleepTimer.active, isTrue);
+    expect(find.byTooltip("Sleep timer: 30 min left"), findsOneWidget);
+
+    await tester.tap(find.byTooltip("Sleep timer: 30 min left"));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("Turn off"));
+    await tester.pumpAndSettle();
+    expect(app.sleepTimer.active, isFalse);
+  });
+
+  testWidgets("queue edits offer an undo", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1440, 900),
+    );
+    final messages = <AppMessage>[];
+    final subscription = app.messages.listen(messages.add);
+    addTearDown(subscription.cancel);
+    final queue = app.playback.queue;
+    final before = List.of(queue.items);
+    expect(before.length, greaterThan(2));
+
+    app.clearQueue();
+    await tester.pump();
+    expect(queue.items, [app.playback.currentTrackId]);
+    expect(
+      messages.last.text,
+      "Cleared ${before.length - 1} tracks from the queue.",
+    );
+    messages.last.action!.$2();
+    expect(queue.items, before);
+
+    final removed = queue.currentIndex == 0 ? 1 : 0;
+    app.removeFromQueue(removed);
+    await tester.pump();
+    expect(queue.items, hasLength(before.length - 1));
+    messages.last.action!.$2();
+    expect(queue.items, before);
+  });
+
   testWidgets("narrow desktop window collapses the rail", (tester) async {
     final app = await pumpShell(
       tester,
@@ -654,6 +746,46 @@ void main() {
     await tester.tap(find.byTooltip("Open Now Playing"));
     await tester.pumpAndSettle();
     await shoot(tester, "mobile_dark_now_playing");
+  });
+
+  testWidgets("mobile playlist tracks reorder by dragging", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(390, 844),
+    );
+    final playlist = app.services.manager.listPlaylists().single;
+    final [first, second, third] = playlist.trackIds;
+    app.navigate(3);
+    app.playlists.openPlaylist(playlist.id);
+    await tester.pumpAndSettle();
+
+    final handles = find.byTooltip("Drag to reorder");
+    expect(handles, findsNWidgets(3));
+    final gesture = await tester.startGesture(tester.getCenter(handles.first));
+    await tester.pump();
+    // Past the middle of the last row: the drop slot after it.
+    for (var step = 0; step < 10; step++) {
+      await gesture.moveBy(const Offset(0, 16));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(app.services.manager.getPlaylist(playlist.id).trackIds, [
+      second,
+      third,
+      first,
+    ]);
+  });
+
+  test("queue drops land between the visible rows", () {
+    // Rows 2 and 3 of the queue are hidden, e.g. deleted tracks.
+    const rows = [0, 1, 4, 5];
+    expect(queueDropSlot(rows, 0, 2), 5);
+    expect(queueDropSlot(rows, 0, 3), 6);
+    expect(queueDropSlot(rows, 3, 2), 4);
+    expect(queueDropSlot(rows, 3, 0), 0);
   });
 
   testWidgets("small phone fits Now Playing", (tester) async {
