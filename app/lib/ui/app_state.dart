@@ -8,6 +8,7 @@ import "../application/download_report.dart";
 import "../application/lyrics.dart";
 import "../application/models.dart";
 import "../application/playback.dart";
+import "../application/sleep_timer.dart";
 import "../audio/audio_backend.dart";
 import "../core/errors.dart";
 import "../services.dart";
@@ -17,7 +18,7 @@ import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
 import "shared/app_icon.dart";
-import "shared/format.dart" show downloadReportMessage;
+import "shared/format.dart" show downloadReportMessage, plural;
 
 /// A listenable that fires on demand.
 class Signal extends ChangeNotifier {
@@ -81,6 +82,7 @@ class MelodyApp {
       ..onError = playback.onBackendError
       ..onMediaAction = _mediaAction;
     _playbackSubscription = playback.changes.listen(_playbackChanged);
+    sleepTimer = SleepTimer(playback)..onChanged = sleepTimerState.emit;
     services.downloads.onRecord = _downloadChanged;
     home = HomeController(this);
     search = MusicSearchController(this);
@@ -122,6 +124,7 @@ class MelodyApp {
   late final PlaybackPersistence persistence;
   late final NativeAudioBackend backend;
   late final PlaybackController playback;
+  late final SleepTimer sleepTimer;
   late final HomeController home;
   late final MusicSearchController search;
   late final LibraryController library;
@@ -136,6 +139,9 @@ class MelodyApp {
   /// Position and duration ticks.
   final Signal playbackProgress = Signal();
   final Signal playbackVolume = Signal();
+
+  /// The sleep timer started, ended, or changed mode.
+  final Signal sleepTimerState = Signal();
 
   // The engine reports position about once a second; views that move
   // continuously extrapolate from the last report.
@@ -427,6 +433,59 @@ class MelodyApp {
     }
   }
 
+  // -- queue edits ---------------------------------------------------------
+
+  /// Removes a queue row, offering to put it back unless it was playing.
+  void removeFromQueue(int index) {
+    final snapshot = playback.snapshotQueue();
+    final wasCurrent = index == playback.queue.currentIndex;
+    final before = playback.queue.items.length;
+    playback.removeQueueItem(index);
+    if (wasCurrent || playback.queue.items.length == before) return;
+    _offerQueueUndo("Removed from the queue.", snapshot);
+  }
+
+  /// Clears every row but the playing one, offering to put them back.
+  void clearQueue() {
+    final snapshot = playback.snapshotQueue();
+    final removed = playback.queue.items.length - 1;
+    playback.clearQueue();
+    if (removed <= 0) return;
+    _offerQueueUndo(
+      "Cleared ${plural(removed, "track")} from the queue.",
+      snapshot,
+    );
+  }
+
+  void _offerQueueUndo(String text, QueueSnapshot snapshot) => showMessage(
+    text,
+    action: (
+      "Undo",
+      () {
+        if (!playback.restoreQueue(snapshot)) {
+          showMessage("The queue can’t be restored after the track changed.");
+        }
+      },
+    ),
+  );
+
+  // -- sleep timer ---------------------------------------------------------
+
+  void startSleepTimer(Duration duration) {
+    sleepTimer.start(duration);
+    showMessage("Playback will pause in ${duration.inMinutes} minutes.");
+  }
+
+  void sleepAtEndOfTrack() {
+    sleepTimer.stopAtEndOfTrack();
+    showMessage("Playback will pause when this track ends.");
+  }
+
+  void cancelSleepTimer() {
+    sleepTimer.cancel();
+    showMessage("Sleep timer turned off.");
+  }
+
   /// Toggles a favorite and refreshes every view that shows it.
   Future<void> toggleFavorite(String trackId) => run(() {
     services.library.toggleFavorite(trackId);
@@ -589,6 +648,7 @@ class MelodyApp {
     if (_closed) return;
     _closed = true;
     playlists.abandonImport();
+    sleepTimer.close();
     backend.close();
     playback.close();
     persistence.close();

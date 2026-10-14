@@ -4,6 +4,7 @@ import "package:flutter/material.dart";
 
 import "../app_state.dart";
 import "../../application/models.dart";
+import "../../application/sleep_timer.dart";
 import "../../core/library/models.dart";
 import "dialogs.dart";
 import "format.dart";
@@ -193,6 +194,45 @@ List<MenuAction> playlistTrackActions(
   ];
 }
 
+/// Converts a reorderable list's move between visible [rows] (queue indexes,
+/// ascending) into the queue drop slot that `reorderQueue` takes. [newRow] is the index after removal, as onReorderItem reports.
+int queueDropSlot(List<int> rows, int oldRow, int newRow) {
+  final slot = newRow > oldRow ? newRow + 1 : newRow;
+  return slot < rows.length ? rows[slot] : rows.last + 1;
+}
+
+/// What the sleep timer is doing, for its menu title and tooltip.
+String sleepTimerStatus(SleepTimer timer) {
+  if (timer.endOfTrack) return "Sleep timer: pauses after this track";
+  final remaining = timer.remaining;
+  if (remaining == null) return "Sleep timer";
+  // Round up, so the last minute reads "1 min", not "0 min".
+  final minutes = (remaining.inSeconds + 59) ~/ 60;
+  return "Sleep timer: $minutes min left";
+}
+
+List<MenuAction> sleepTimerActions(MelodyApp app) {
+  final playback = app.playback;
+  final hasMedia =
+      playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+  return [
+    for (final minutes in sleepTimerChoices)
+      MenuAction(
+        "$minutes minutes",
+        Icons.timer_outlined,
+        () => app.startSleepTimer(Duration(minutes: minutes)),
+      ),
+    MenuAction(
+      "End of this track",
+      Icons.music_note_outlined,
+      app.sleepAtEndOfTrack,
+      enabled: hasMedia && !app.sleepTimer.endOfTrack,
+    ),
+    if (app.sleepTimer.active)
+      MenuAction("Turn off", Icons.timer_off_outlined, app.cancelSleepTimer),
+  ];
+}
+
 List<MenuAction> queueRowActions(MelodyApp app, int index) => [
   MenuAction(
     "Move up",
@@ -209,7 +249,7 @@ List<MenuAction> queueRowActions(MelodyApp app, int index) => [
   MenuAction(
     "Remove from queue",
     Icons.remove_circle_outline_rounded,
-    () => app.playback.removeQueueItem(index),
+    () => app.removeFromQueue(index),
   ),
 ];
 

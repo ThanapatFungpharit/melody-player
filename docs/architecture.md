@@ -59,7 +59,7 @@ committed, as Flutter's templates expect, and so are the `pubspec.lock` and
 - `application/` owns use cases that cross capabilities: the application store
   and settings models, the YouTube Music catalog, saved lyrics, the download
   coordinator, the library service, the queue and playback controller, the
-  thumbnail cache, cookie validation, the ytmusicapi and yt-dlp runtime
+  sleep timer, the thumbnail cache, cookie validation, the ytmusicapi and yt-dlp runtime
   status, and upgrades of older storage layouts (`storage_upgrade.dart`).
   It never imports UI.
 - `services.dart` opens everything in order and exposes it as `AppServices`.

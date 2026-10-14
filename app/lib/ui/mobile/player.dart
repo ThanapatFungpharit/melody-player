@@ -5,6 +5,7 @@ import "package:flutter/material.dart" hide RepeatMode;
 
 import "../app_state.dart";
 import "../../application/models.dart";
+import "../shared/actions.dart";
 import "../shared/playback_widgets.dart";
 import "../shared/theme.dart";
 import "../shared/widgets.dart";
@@ -482,21 +483,52 @@ class NowPlaying extends StatelessWidget {
                                   muted ? "Restore sound" : "Mute",
                                   playback.toggleMute,
                                 ),
+                                Watch(
+                                  [app.sleepTimerState],
+                                  builder: (context) => TouchIconButton(
+                                    app.sleepTimer.active
+                                        ? Icons.bedtime_rounded
+                                        : Icons.bedtime_outlined,
+                                    sleepTimerStatus(app.sleepTimer),
+                                    () => showActionSheet(
+                                      context,
+                                      sleepTimerStatus(app.sleepTimer),
+                                      sleepTimerActions(app),
+                                    ),
+                                    color: app.sleepTimer.active
+                                        ? scheme.primary
+                                        : null,
+                                  ),
+                                ),
                                 TouchIconButton(
                                   Icons.stop_rounded,
                                   "Stop playback and clear notification",
                                   hasMedia ? playback.stop : null,
                                 ),
-                                TextButton.icon(
-                                  onPressed: () => pushPanel(
-                                    context,
-                                    app,
-                                    AppPanel.queue,
-                                    MobileQueue(app),
+                                // Five controls leave no room for the
+                                // label on the narrowest phones.
+                                if (constraints.maxWidth < 360)
+                                  TouchIconButton(
+                                    Icons.queue_music_rounded,
+                                    "Queue",
+                                    () => pushPanel(
+                                      context,
+                                      app,
+                                      AppPanel.queue,
+                                      MobileQueue(app),
+                                    ),
+                                  )
+                                else
+                                  TextButton.icon(
+                                    onPressed: () => pushPanel(
+                                      context,
+                                      app,
+                                      AppPanel.queue,
+                                      MobileQueue(app),
+                                    ),
+                                    icon: const Icon(Icons.queue_music_rounded),
+                                    label: const Text("Queue"),
                                   ),
-                                  icon: const Icon(Icons.queue_music_rounded),
-                                  label: const Text("Queue"),
-                                ),
                               ],
                             ),
                           ],

@@ -295,6 +295,65 @@ ListView scrollPage(List<Widget> children) => ListView.separated(
   itemBuilder: (context, index) => children[index],
 );
 
+/// A [scrollPage] whose keyed [items] can be dragged into a new order with a
+/// long press or a [reorderableTrailing] handle. [onReorder] gets the old
+/// index and the index after removal.
+Widget reorderablePage({
+  required List<Widget> header,
+  required List<Widget> items,
+  List<Widget> footer = const [],
+  required void Function(int oldIndex, int newIndex) onReorder,
+}) {
+  Widget section(List<Widget> children) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    spacing: 10,
+    children: children,
+  );
+  return ReorderableListView(
+    buildDefaultDragHandles: false,
+    padding: const EdgeInsets.only(bottom: 16),
+    header: section(header),
+    footer: footer.isEmpty
+        ? null
+        : Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: section(footer),
+          ),
+    onReorderItem: onReorder,
+    children: [
+      for (final (index, item) in items.indexed)
+        ReorderableDelayedDragStartListener(
+          key: item.key,
+          index: index,
+          child: Padding(padding: const EdgeInsets.only(top: 10), child: item),
+        ),
+    ],
+  );
+}
+
+/// A row's trailing controls in a [reorderablePage]: a drag handle, which
+/// starts the drag at once, then [trailing].
+Widget reorderableTrailing(BuildContext context, int index, Widget trailing) =>
+    Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ReorderableDragStartListener(
+          index: index,
+          child: Tooltip(
+            message: "Drag to reorder",
+            child: SizedBox.square(
+              dimension: touchTarget,
+              child: Icon(
+                Icons.drag_handle_rounded,
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+        trailing,
+      ],
+    );
+
 Widget libraryTrackRow(
   BuildContext context,
   MelodyApp app,

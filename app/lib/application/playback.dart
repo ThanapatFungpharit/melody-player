@@ -72,6 +72,9 @@ class PlaybackPersistence {
 
 /// What a [PlaybackController.changes] event invalidates, so widgets rebuild
 /// only for what they show.
+/// A copy of the queue's rows and selected row.
+typedef QueueSnapshot = ({List<String> items, int currentIndex});
+
 enum PlaybackChange {
   /// Transport state: playing, paused, stopped, or an error.
   state,
@@ -602,6 +605,37 @@ class PlaybackController {
   void clearQueue() {
     queue.clear(keepCurrent: true);
     _queueChanged();
+  }
+
+  /// The queue's rows and selection, so an edit can be undone.
+  QueueSnapshot snapshotQueue() =>
+      (items: List.of(queue.items), currentIndex: queue.currentIndex);
+
+  /// Puts back the rows of [snapshot] when the track it had selected is
+  /// still the current one, so undoing an edit never interrupts playback.
+  /// Rows whose track left the library meanwhile are dropped.
+  bool restoreQueue(QueueSnapshot snapshot) {
+    final selected = snapshot.currentIndex;
+    if (externalTitle.isNotEmpty ||
+        _loading ||
+        selected < 0 ||
+        selected >= snapshot.items.length ||
+        snapshot.items[selected] != currentTrackId) {
+      return false;
+    }
+    final items = <String>[];
+    var index = -1;
+    for (final (row, trackId) in snapshot.items.indexed) {
+      if (!manager.hasTrack(trackId)) continue;
+      if (row == selected) index = items.length;
+      items.add(trackId);
+    }
+    if (index < 0) return false;
+    queue
+      ..items = items
+      ..currentIndex = index;
+    _queueChanged();
+    return true;
   }
 
   /// Drops queued library tracks and stops a loaded library source.
