@@ -55,10 +55,8 @@ typedef _Shortcut = ({
 
 List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
   final playback = app.playback;
-  bool hasMedia() =>
-      playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
   void seekBy(int deltaMs) {
-    if (hasMedia()) playback.seek(app.estimatedPositionMs() + deltaMs);
+    if (playback.hasMedia) playback.seek(app.estimatedPositionMs() + deltaMs);
   }
 
   void navigate(int index) {
@@ -94,7 +92,7 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
       "Ctrl+→",
       "Next track",
       () {
-        if (hasMedia()) playback.next();
+        if (playback.hasMedia) playback.next();
       },
       control: true,
       whileTyping: false,
@@ -104,7 +102,7 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
       "Ctrl+←",
       "Previous track",
       () {
-        if (hasMedia()) playback.previous();
+        if (playback.hasMedia) playback.previous();
       },
       control: true,
       whileTyping: false,
@@ -167,10 +165,8 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
       "Ctrl+Shift+F",
       "Favorite the playing track",
       () {
-        final id = playback.currentTrackId;
-        if (id != null && playback.externalTitle.isEmpty) {
-          app.toggleFavorite(id);
-        }
+        final id = playback.currentLibraryTrackId;
+        if (id != null) app.toggleFavorite(id);
       },
       control: true,
       shift: true,

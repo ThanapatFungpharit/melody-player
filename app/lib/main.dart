@@ -13,8 +13,6 @@ import "ui/shared/safe_area.dart";
 import "ui/shared/theme.dart";
 import "ui/startup.dart";
 
-const _minimumLoading = Duration(seconds: 3);
-
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   ensureMelodyAudioInitialized();
@@ -67,7 +65,6 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
   }
 
   Future<void> _start() async {
-    final started = DateTime.now();
     try {
       final services = await AppServices.load(
         onStoreReady: (store) {
@@ -81,10 +78,6 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
         onStage: (stage) => _stage.value = stage,
       );
       _stage.value = "Almost ready";
-      if (!services.store.settings.skipLoadingDelay) {
-        final remaining = _minimumLoading - DateTime.now().difference(started);
-        if (remaining > Duration.zero) await Future<void>.delayed(remaining);
-      }
       if (!mounted) {
         // Disposed while loading: nothing would ever close an app built now,
         // so stop the downloads that MelodyApp.close() would have stopped.

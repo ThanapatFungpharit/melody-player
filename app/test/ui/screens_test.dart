@@ -563,7 +563,7 @@ void main() {
       );
       final search = app.search;
       for (final query in ["old tune", "lofi beats", "night drive"]) {
-        app.services.store.addRecent("search_history", query);
+        app.services.store.addSearch(query);
       }
       app.navigate(1);
       await tester.pumpAndSettle();

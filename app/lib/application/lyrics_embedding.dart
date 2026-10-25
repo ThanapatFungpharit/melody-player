@@ -104,6 +104,7 @@ class LyricsEmbedder {
   }
 
   /// Completes once the queue is empty.
+  @visibleForTesting
   Future<void> get idle => _draining?.future ?? Future.value();
 
   void close() => _closed = true;

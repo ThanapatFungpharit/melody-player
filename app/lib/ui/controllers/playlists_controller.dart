@@ -2,6 +2,7 @@ import "dart:async";
 import "dart:collection";
 
 import "package:flutter/foundation.dart";
+import "package:path/path.dart" as p;
 
 import "../app_state.dart";
 import "../../application/models.dart";
@@ -11,30 +12,53 @@ import "../../application/library_service.dart" show favoritesPlaylistId;
 import "../../core/downloader/downloader.dart";
 import "../../core/library/models.dart";
 import "../../core/media.dart";
+import "../shared/format.dart" show plural;
 import "../shared/widgets.dart" show pageBounds;
 import "library_controller.dart";
 
 class _ImportSession {
-  _ImportSession(this.playlistId, this.name, this.tracks)
-    : pending = Queue.of(tracks.keys);
+  _ImportSession(
+    this.playlistId,
+    this.name,
+    this.order,
+    this.tracks, {
+    Map<String, String> resolved = const {},
+    this.resolveMetadata = false,
+    this.skipped = 0,
+  }) : resolved = {...resolved},
+       pending = Queue.of(
+         tracks.keys.where((key) => !resolved.containsKey(key)),
+       ),
+       reused = resolved.length;
 
   final String playlistId;
   final String name;
 
-  /// Source key → result, in playlist order.
+  /// Every key, in playlist order.
+  final List<String> order;
+
+  /// Source key → result to request.
   final Map<String, SearchResult> tracks;
+
+  /// Whether results carry placeholder titles that yt-dlp replaces.
+  final bool resolveMetadata;
+
+  /// Entries of the source that matched nothing and cannot be downloaded.
+  final int skipped;
 
   /// Source keys not yet requested.
   final Queue<String> pending;
-  final Map<String, String> resolved = {};
+
+  /// Key → library track id.
+  final Map<String, String> resolved;
 
   /// Source key → (task, whether this session created the task).
   final Map<String, (String, bool)> activeDownloads = {};
-  int reused = 0;
+  int reused;
   int downloaded = 0;
   int failed = 0;
 
-  int get total => tracks.length;
+  int get total => order.length;
 }
 
 /// Playlist view state, management workflows, and remote playlist import.
@@ -197,6 +221,78 @@ class PlaylistsController extends ChangeNotifier {
     app.touchLibrary();
   }
 
+  // -- file import -----------------------------------------------------------
+
+  /// Creates a playlist from the tracks an M3U or M3U8 file lists, named
+  /// after the file unless it names itself. Linked tracks missing from the
+  /// library are downloaded.
+  Future<void> importFromFile(
+    List<int> bytes,
+    String fileName, {
+    String? directory,
+  }) async {
+    final library = app.services.library;
+    final match = await library.matchPlaylistM3u(
+      bytes,
+      fallbackName: p.basenameWithoutExtension(fileName),
+      baseDirectory: directory,
+    );
+    if (match.entries.any((entry) => entry.url != null)) {
+      final order = <String>[];
+      final tracks = <String, SearchResult>{};
+      final resolved = <String, String>{};
+      for (final entry in match.entries) {
+        final String key;
+        if (entry.trackId case final trackId?) {
+          key = "track:$trackId";
+          resolved[key] = trackId;
+        } else if (entry.url case final url?) {
+          key = sourceKey(url);
+          tracks.putIfAbsent(
+            key,
+            () => SearchResult(
+              id: "",
+              title: entry.title,
+              uploader: "",
+              duration: 0,
+              thumbnail: "",
+              url: url,
+              source: youtubeMusicName,
+            ),
+          );
+        } else {
+          continue;
+        }
+        if (!order.contains(key)) order.add(key);
+      }
+      await _run(
+        match.name,
+        order,
+        tracks,
+        _generation,
+        resolved: resolved,
+        resolveMetadata: true,
+        skipped: match.skipped,
+      );
+      return;
+    }
+    final result = await library.importPlaylistM3u(
+      bytes,
+      fallbackName: p.basenameWithoutExtension(fileName),
+      baseDirectory: directory,
+    );
+    selectedPlaylistId = result.playlistId;
+    pageOffset = 0;
+    app.touchLibrary();
+    app.navigate(3);
+    notifyListeners();
+    final skipped = result.skipped;
+    app.showMessage(
+      "Imported ${plural(result.added, "track")} into “${result.name}”."
+      "${skipped > 0 ? " Skipped ${plural(skipped, "track")} not in the library." : ""}",
+    );
+  }
+
   // -- remote import ---------------------------------------------------------
 
   /// Loads a remote playlist and imports it, reusing library tracks and
@@ -220,11 +316,7 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  Future<void> _import(RemotePlaylist remote, int generation) async {
-    if (_session != null) {
-      app.showError("A playlist import is already in progress.");
-      return;
-    }
+  Future<void> _import(RemotePlaylist remote, int generation) {
     final name = remote.title.trim().isNotEmpty
         ? remote.title.trim()
         : "Imported $youtubeMusicName playlist";
@@ -232,10 +324,41 @@ class PlaylistsController extends ChangeNotifier {
       for (final item in remote.tracks)
         if (item.url.isNotEmpty) sourceKey(item.url): item,
     };
+    return _run(name, unique.keys.toList(), unique, generation);
+  }
+
+  /// Creates a playlist of [order]: the [resolved] library tracks, and the
+  /// [tracks] reused from the library or downloaded.
+  Future<void> _run(
+    String name,
+    List<String> order,
+    Map<String, SearchResult> tracks,
+    int generation, {
+    Map<String, String> resolved = const {},
+    bool resolveMetadata = false,
+    int skipped = 0,
+  }) async {
+    if (_session != null) {
+      app.showError("A playlist import is already in progress.");
+      return;
+    }
     final playlistId = app.services.manager.createPlaylist(name);
+    if (resolved.isNotEmpty) {
+      app.services.manager.mergeTracksIntoPlaylist(playlistId, [
+        for (final key in order) ?resolved[key],
+      ]);
+    }
     app.touchLibrary();
     if (generation != _generation) return;
-    final session = _ImportSession(playlistId, name, unique);
+    final session = _ImportSession(
+      playlistId,
+      name,
+      order,
+      tracks,
+      resolved: resolved,
+      resolveMetadata: resolveMetadata,
+      skipped: skipped,
+    );
     _session = session;
     selectedPlaylistId = playlistId;
     notifyListeners();
@@ -254,6 +377,7 @@ class PlaylistsController extends ChangeNotifier {
           try {
             request = await app.services.downloads.request(
               session.tracks[key]!,
+              resolveMetadata: session.resolveMetadata,
             );
           } on WorkerQueueFull {
             queueFull = true;
@@ -311,7 +435,7 @@ class PlaylistsController extends ChangeNotifier {
         }
         if (changed) {
           app.services.manager.mergeTracksIntoPlaylist(playlistId, [
-            for (final key in session.tracks.keys) ?session.resolved[key],
+            for (final key in session.order) ?session.resolved[key],
           ]);
           app.touchLibrary();
         }
@@ -372,7 +496,8 @@ class PlaylistsController extends ChangeNotifier {
     final imported = session.total - session.failed;
     final summary =
         "Imported $imported of ${session.total} tracks into “${session.name}”: "
-        "reused ${session.reused}, downloaded ${session.downloaded}.";
+        "reused ${session.reused}, downloaded ${session.downloaded}."
+        "${session.skipped > 0 ? " Skipped ${plural(session.skipped, "track")} not in the library." : ""}";
     if (session.failed > 0) {
       app.showError("$summary ${session.failed} could not be downloaded.");
     } else {

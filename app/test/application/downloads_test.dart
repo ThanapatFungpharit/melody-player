@@ -131,6 +131,7 @@ void main() {
       final details = store.trackDetails(track.id);
       expect(details.uploader, "Uploader");
       expect(details.duration, 200);
+      expect(details.sourceName, "YouTube Music");
       // The cache is derived from the verified embedded cover.
       expect(thumbnails.cachedPath(_result().thumbnail), isNotNull);
       expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
@@ -652,6 +653,9 @@ void main() {
     expect(record.status, DownloadStatus.completed);
     expect(record.title, "Resolved title");
     expect(manager.getTrack(record.trackIds.single).title, "Resolved title");
+    // The song keeps its place in its batch.
+    expect(record.batchId, "55555555-5555-4555-8555-555555555555");
+    expect((record.batchPosition, record.batchSize), (1, 3));
   });
 
   test("a successful retry replaces the failed entry", () async {
@@ -660,6 +664,8 @@ void main() {
         id: "66666666-6666-4666-8666-666666666666",
         url: _url,
         title: "Song",
+        uploader: "Uploader",
+        source: "Imported source",
         status: DownloadStatus.failed,
       ),
     ]);
@@ -670,6 +676,12 @@ void main() {
     expect(coordinator.list().map((record) => record.id), [task]);
     final record = await terminal(coordinator, task);
     expect(record.status, DownloadStatus.completed);
+    // Outside a batch the entry's own details are kept.
+    expect((record.title, record.uploader), ("Song", "Uploader"));
+    expect(record.batchId, isEmpty);
+    final details = store.trackDetails(record.trackIds.single);
+    expect(details.uploader, "Uploader");
+    expect(details.sourceName, "Imported source");
     expect(coordinator.list().map((record) => record.id), [task]);
     expect(store.downloads().map((record) => record.id), [task]);
   });

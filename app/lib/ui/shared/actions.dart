@@ -6,6 +6,7 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/sleep_timer.dart";
 import "../../core/library/models.dart";
+import "../../core/media.dart" show youtubeMusicName;
 import "../controllers/playlists_controller.dart";
 import "dialogs.dart";
 import "format.dart";
@@ -25,6 +26,20 @@ class MenuAction {
   final FutureOr<void> Function() onSelected;
   final bool enabled;
 }
+
+/// Where a playlist can be imported from: an M3U file or a remote link.
+List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
+  MenuAction(
+    "From file (M3U)",
+    Icons.file_open_rounded,
+    () => importPlaylistFile(app),
+  ),
+  MenuAction(
+    "From $youtubeMusicName link",
+    Icons.link_rounded,
+    () => showImportPlaylistDialog(context, app),
+  ),
+];
 
 List<MenuAction> libraryTrackActions(
   BuildContext context,
@@ -254,8 +269,7 @@ String sleepTimerStatus(SleepTimer timer) {
 
 List<MenuAction> sleepTimerActions(MelodyApp app) {
   final playback = app.playback;
-  final hasMedia =
-      playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+  final hasMedia = playback.hasMedia;
   return [
     for (final minutes in sleepTimerChoices)
       MenuAction(

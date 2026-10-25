@@ -27,9 +27,7 @@ class DesktopPlayerBar extends StatelessWidget {
           builder: (context) {
             final playback = app.playback;
             final info = NowPlayingInfo.of(app);
-            final hasMedia =
-                playback.currentTrackId != null ||
-                playback.externalTitle.isNotEmpty;
+            final hasMedia = playback.hasMedia;
             final repeat = playback.queue.repeat;
             return Row(
               children: [

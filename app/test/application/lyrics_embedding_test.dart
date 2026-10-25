@@ -212,33 +212,29 @@ void main() {
     expect(Directory(music).listSync(), hasLength(2));
   });
 
-  test(
-    "other formats are copied by FFmpeg with a lyrics tag",
-    () async {
-      copier = (source, target, tags) async {
-        final result = await Process.run("ffmpeg", [
-          ...["-v", "error", "-nostdin", "-y", "-i", source],
-          ...["-map", "0", "-dn", "-c", "copy", "-map_metadata", "0"],
-          ...["-metadata", "lyrics=${tags["lyrics"]}", target],
-        ]);
-        if (result.exitCode != 0) throw Exception(result.stderr);
-      };
-      final id = await track(
-        "Song.m4a",
-        fixture: "test/fixtures/artwork/cover.m4a",
-      );
-      final path = manager.trackPath(id);
-      final artwork = await readEmbeddedArtwork(path);
+  test("other formats are copied by FFmpeg with a lyrics tag", () async {
+    copier = (source, target, tags) async {
+      final result = await Process.run("ffmpeg", [
+        ...["-v", "error", "-nostdin", "-y", "-i", source],
+        ...["-map", "0", "-dn", "-c", "copy", "-map_metadata", "0"],
+        ...["-metadata", "lyrics=${tags["lyrics"]}", target],
+      ]);
+      if (result.exitCode != 0) throw Exception(result.stderr);
+    };
+    final id = await track(
+      "Song.m4a",
+      fixture: "test/fixtures/artwork/cover.m4a",
+    );
+    final path = manager.trackPath(id);
+    final artwork = await readEmbeddedArtwork(path);
 
-      await (embedder()..embed([id])).idle;
+    await (embedder()..embed([id])).idle;
 
-      final embedded = Lyrics.parse(await readEmbeddedLyrics(path));
-      expect(embedded.lines.map((line) => line.startMs), [0, 900]);
-      expect(await readEmbeddedArtwork(path), artwork);
-      expect(await manager.checkTrackIntegrity(id), isNull);
-    },
-    skip: _hasFfmpeg() ? false : "needs FFmpeg on PATH",
-  );
+    final embedded = Lyrics.parse(await readEmbeddedLyrics(path));
+    expect(embedded.lines.map((line) => line.startMs), [0, 900]);
+    expect(await readEmbeddedArtwork(path), artwork);
+    expect(await manager.checkTrackIntegrity(id), isNull);
+  }, skip: _hasFfmpeg() ? false : "needs FFmpeg on PATH");
 }
 
 bool _hasFfmpeg() {

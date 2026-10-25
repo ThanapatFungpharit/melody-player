@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: "3.44.8"
+  FLUTTER_VERSION: "3.47.7"
 
 # Every job runs `melody-check` (tools/checks/check.py), the same checks
 # `uv run melody-check` runs locally.

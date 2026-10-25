@@ -28,8 +28,7 @@ class _TrackSwipe extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final playback = app.playback;
-    final hasMedia =
-        playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+    final hasMedia = playback.hasMedia;
     return GestureDetector(
       onHorizontalDragEnd: hasMedia
           ? (details) {
@@ -121,9 +120,7 @@ class MiniPlayer extends StatelessWidget {
           builder: (context) {
             final playback = app.playback;
             final info = NowPlayingInfo.of(app);
-            final hasMedia =
-                playback.currentTrackId != null ||
-                playback.externalTitle.isNotEmpty;
+            final hasMedia = playback.hasMedia;
             return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -231,8 +228,7 @@ class NowPlaying extends StatelessWidget {
       final dark = Theme.of(context).brightness == Brightness.dark;
       final playback = app.playback;
       final info = NowPlayingInfo.of(app);
-      final hasMedia =
-          playback.currentTrackId != null || playback.externalTitle.isNotEmpty;
+      final hasMedia = playback.hasMedia;
       final repeat = playback.queue.repeat;
       final muted = playback.muted || playback.volume == 0;
       // The backdrop takes the same hue as the cover placeholder, so a

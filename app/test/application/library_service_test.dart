@@ -1,4 +1,5 @@
 import "../support/temp.dart";
+import "dart:convert";
 import "dart:io";
 import "dart:typed_data";
 
@@ -377,5 +378,137 @@ void main() {
       ..toggleFavorite(first)
       ..toggleFavorite(first);
     expect(library.favoritesPlaylist().trackIds, [second, third, first]);
+  });
+
+  test("an exported playlist imports back in order", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    final source = manager.createPlaylist("Road trip");
+    manager.addTracksToPlaylist(source, [second, first]);
+
+    final result = await library.importPlaylistM3u(
+      library.exportPlaylistM3u8(source),
+      fallbackName: "Road trip",
+    );
+    expect(result.name, "Road trip");
+    expect(result.added, 2);
+    expect(result.skipped, 0);
+    expect(manager.getPlaylist(result.playlistId).trackIds, [second, first]);
+  });
+
+  test("playlist files match by relative path, URL, and file name", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    final third = await downloaded(
+      "third.mp3",
+      source: "https://music.youtube.com/watch?v=ccccccccccc",
+    );
+    final m3u = [
+      "\uFEFF#EXTM3U",
+      "#PLAYLIST:Mixed",
+      "#EXTINF:-1,Third",
+      r"C:\Users\someone\Music\THIRD.mp3",
+      "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+      "first.mp3",
+      "first.mp3",
+      "missing.mp3",
+      "https://example.com/stream.mp3",
+    ].join("\r\n");
+
+    final result = await library.importPlaylistM3u(
+      utf8.encode(m3u),
+      fallbackName: "ignored",
+      baseDirectory: music,
+    );
+    expect(result.name, "Mixed");
+    expect(result.added, 3);
+    expect(result.skipped, 2);
+    expect(manager.getPlaylist(result.playlistId).trackIds, [
+      third,
+      second,
+      first,
+    ]);
+  });
+
+  test("an exported playlist lists links, or files without one", () async {
+    final linked = await downloaded("linked.mp3");
+    final localPath = p.join(music, "local.mp3");
+    await File(localPath).writeAsString("local");
+    final local = await manager.addTrack(localPath, title: "local.mp3");
+    final source = manager.createPlaylist("Mixed");
+    manager.addTracksToPlaylist(source, [linked, local]);
+
+    final m3u8 = utf8.decode(library.exportPlaylistM3u8(source));
+    expect(m3u8.split("\n"), [
+      "#EXTM3U",
+      "#EXTINF:-1,linked.mp3",
+      _source,
+      "#EXTINF:-1,local.mp3",
+      Uri.file(manager.trackPath(local)).toString(),
+      "",
+    ]);
+  });
+
+  test("linked tracks missing from the library are left to download", () async {
+    final first = await downloaded("first.mp3");
+    final m3u = [
+      "#EXTM3U",
+      "#EXTINF:-1,First",
+      _source,
+      "#EXTINF:123,Artist - Missing song",
+      "https://music.youtube.com/watch?v=zzzzzzzzzzz",
+      "https://example.com/stream.mp3",
+    ].join("\n");
+
+    final match = await library.matchPlaylistM3u(
+      utf8.encode(m3u),
+      fallbackName: "Linked",
+    );
+    expect(match.name, "Linked");
+    expect(match.trackIds, [first]);
+    expect(match.skipped, 1);
+    final download = match.entries[1];
+    expect(download.url, "https://music.youtube.com/watch?v=zzzzzzzzzzz");
+    expect(download.title, "Artist - Missing song");
+
+    // Without downloading, only the library track is imported.
+    final result = await library.importPlaylistM3u(
+      utf8.encode(m3u),
+      fallbackName: "Linked",
+    );
+    expect(result.added, 1);
+    expect(result.skipped, 2);
+  });
+
+  test("a playlist file of only missing links still matches", () async {
+    final match = await library.matchPlaylistM3u(
+      utf8.encode("#EXTM3U\nhttps://youtu.be/zzzzzzzzzzz\n"),
+      fallbackName: "New",
+    );
+    expect(match.trackIds, isEmpty);
+    expect(match.entries.single.url, "https://youtu.be/zzzzzzzzzzz");
+    expect(match.entries.single.title, "https://youtu.be/zzzzzzzzzzz");
+  });
+
+  test("a playlist file with no library tracks creates no playlist", () async {
+    await downloaded("first.mp3");
+    await expectLater(
+      library.importPlaylistM3u(
+        utf8.encode("#EXTM3U\n/nowhere/else.mp3\n"),
+        fallbackName: "Nothing",
+      ),
+      throwsFormatException,
+    );
+    await expectLater(
+      library.importPlaylistM3u(utf8.encode("#EXTM3U\n"), fallbackName: "x"),
+      throwsFormatException,
+    );
+    expect(manager.listPlaylists(), isEmpty);
   });
 }

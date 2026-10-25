@@ -40,6 +40,17 @@ final _lineBreak = RegExp(r"\r\n?|\n");
 List<String> _lines(String text) =>
     (text.startsWith("﻿") ? text.substring(1) : text).split(_lineBreak);
 
+/// [items] sorted by [compare], with items that compare equal kept in their
+/// order (List.sort is not stable).
+List<T> _stableSorted<T>(Iterable<T> items, int Function(T a, T b) compare) {
+  final indexed = items.indexed.toList()
+    ..sort((a, b) {
+      final order = compare(a.$2, b.$2);
+      return order != 0 ? order : a.$1.compareTo(b.$1);
+    });
+  return [for (final (_, item) in indexed) item];
+}
+
 /// A timestamp from a YouTube Music reply or a saved file; -1 when missing
 /// or not a usable number.
 int _milliseconds(Object? value) => switch (value) {
@@ -105,24 +116,17 @@ class Lyrics {
         for (final line in plain) LyricLine(line),
       ], source: source);
     }
-    // List.sort is not stable, and lines sharing a timestamp (such as a line
-    // and its translation) must keep their file order.
-    final ordered = timed.indexed.toList()
-      ..sort((a, b) {
-        final byTime = a.$2.$1.compareTo(b.$2.$1);
-        return byTime != 0 ? byTime : a.$1.compareTo(b.$1);
-      });
-    timed
-      ..clear()
-      ..addAll([for (final (_, line) in ordered) line]);
+    // Lines sharing a timestamp (such as a line and its translation) keep
+    // their file order.
+    final ordered = _stableSorted(timed, (a, b) => a.$1.compareTo(b.$1));
     // A positive offset shows lyrics sooner.
     return Lyrics([
-      for (final (index, (start, words)) in timed.indexed)
+      for (final (index, (start, words)) in ordered.indexed)
         LyricLine(
           words,
           startMs: (start - offset).clamp(0, 1 << 31),
-          endMs: index + 1 < timed.length
-              ? (timed[index + 1].$1 - offset).clamp(0, 1 << 31)
+          endMs: index + 1 < ordered.length
+              ? (ordered[index + 1].$1 - offset).clamp(0, 1 << 31)
               : -1,
         ),
     ], source: source);
@@ -143,19 +147,14 @@ class Lyrics {
               endMs: _milliseconds(value["end_time"]),
             ),
       ];
-      // lineAt searches by start time, so timed lines must be in order.
-      // List.sort is not stable; equal starts keep their reply order.
-      if (lines.every((line) => line.timed)) {
-        final ordered = lines.indexed.toList()
-          ..sort((a, b) {
-            final byTime = a.$2.startMs.compareTo(b.$2.startMs);
-            return byTime != 0 ? byTime : a.$1.compareTo(b.$1);
-          });
-        lines
-          ..clear()
-          ..addAll([for (final (_, line) in ordered) line]);
-      }
-      lyrics = Lyrics(lines, source: source);
+      // lineAt searches by start time, so timed lines must be in order;
+      // equal starts keep their reply order.
+      lyrics = Lyrics(
+        lines.every((line) => line.timed)
+            ? _stableSorted(lines, (a, b) => a.startMs.compareTo(b.startMs))
+            : lines,
+        source: source,
+      );
     } else if (body is String) {
       lyrics = Lyrics.plain(body, source: source);
     } else {
@@ -486,23 +485,30 @@ class LyricsLibrary {
   }
 
   /// Completes once every queued prefetch has finished.
+  @visibleForTesting
   Future<void> get idle => _prefetchQueue;
 
   bool _shouldRecheck(SavedLyrics saved) =>
       saved.lyrics == null &&
       unixSeconds() - saved.checkedAt > recheckAfter.inSeconds;
 
-  Future<Lyrics?> _download(MediaIdentity identity) =>
-      _loading[identity.key] ??= () async {
-        try {
-          final lyrics = await _fetch(identity.mediaId);
-          await _write(identity, lyrics);
-          return lyrics;
-        } finally {
-          // Later requests fetch again (or read what was just saved).
-          _loading.remove(identity.key);
-        }
-      }();
+  /// Joins a fetch already running for [identity]. Once it settles, later
+  /// requests fetch again (or read what was just saved).
+  Future<Lyrics?> _download(MediaIdentity identity) {
+    final key = identity.key;
+    // Removed only after it was stored, so a fetch that fails before it
+    // returns cannot leave its failure here for good. A block body: an
+    // arrow would hand whenComplete this very future to wait for.
+    return _loading[key] ??= _fetchAndSave(identity).whenComplete(() {
+      _loading.remove(key);
+    });
+  }
+
+  Future<Lyrics?> _fetchAndSave(MediaIdentity identity) async {
+    final lyrics = await _fetch(identity.mediaId);
+    await _write(identity, lyrics);
+    return lyrics;
+  }
 
   Future<void> _write(MediaIdentity identity, Lyrics? lyrics) async {
     try {

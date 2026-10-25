@@ -285,6 +285,7 @@ class LoudnessNormalizer {
   ]);
 
   /// Completes once nothing is queued.
+  @visibleForTesting
   Future<void> get idle => _draining?.future ?? Future.value();
 
   /// Stops measuring (killing a running FFmpeg) and writes the cache.

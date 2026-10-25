@@ -157,7 +157,7 @@ class DownloadCoordinator extends ChangeNotifier {
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
-  static const maxRetainedRecords = 250;
+  static const maxRetainedRecords = ApplicationStore.maxDownloadRecords;
 
   final MusicManager manager;
   final ApplicationStore store;
@@ -310,20 +310,20 @@ class DownloadCoordinator extends ChangeNotifier {
   }
 
   /// Reuses an intact library track or an active job before scheduling new
-  /// work.
-  Future<DownloadRequest> request(SearchResult result) {
+  /// work. With [resolveMetadata], the result's title is a placeholder until
+  /// yt-dlp reports the song's own details.
+  Future<DownloadRequest> request(
+    SearchResult result, {
+    bool resolveMetadata = false,
+  }) {
     if (result.url.isEmpty) {
       throw ArgumentError("This result does not provide a downloadable URL.");
     }
-    return _request({
-      "url": result.url,
-      "title": result.title,
-      "uploader": result.uploader,
-      "thumbnail": result.thumbnail,
-      "source": result.source,
-      "kind": result.kind,
-      "duration": result.duration,
-    });
+    return _request(
+      resolveMetadata
+          ? _DownloadMetadata.url(result.url, title: result.title)
+          : _DownloadMetadata.fromResult(result),
+    );
   }
 
   /// Schedules several URLs as one batch; each song remains an independent
@@ -355,13 +355,14 @@ class DownloadCoordinator extends ChangeNotifier {
     var existing = 0;
     var failed = 0;
     for (final (index, source) in unique.indexed) {
-      final metadata = <String, Object?>{
-        ..._urlMetadata(source, title: "Song ${index + 1} of ${unique.length}"),
-        "batch_id": batchId,
-        "batch_position": index + 1,
-        "batch_size": unique.length,
-        "created_at": createdAt,
-      };
+      final metadata = _DownloadMetadata.url(
+        source,
+        title: "Song ${index + 1} of ${unique.length}",
+        createdAt: createdAt,
+        batchId: batchId,
+        batchPosition: index + 1,
+        batchSize: unique.length,
+      );
       try {
         final request = await _request(metadata);
         if (request.task case final task?) {
@@ -387,15 +388,15 @@ class DownloadCoordinator extends ChangeNotifier {
     );
   }
 
-  Future<DownloadRequest> _request(Map<String, Object?> metadata) async {
-    final url = "${metadata["url"] ?? ""}";
+  Future<DownloadRequest> _request(_DownloadMetadata metadata) async {
+    final url = metadata.url;
     if (url.isEmpty) {
       throw ArgumentError("A $youtubeMusicName URL is required.");
     }
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
-    if (metadata["kind"] != "playlist") {
+    if (metadata.kind != "playlist") {
       if (await availableTrack(url) case final track?) {
         return DownloadRequest.existing(track);
       }
@@ -405,8 +406,8 @@ class DownloadCoordinator extends ChangeNotifier {
     return DownloadRequest.task(_start(metadata), started: true);
   }
 
-  String _start(Map<String, Object?> metadata) {
-    final url = "${metadata["url"]}";
+  String _start(_DownloadMetadata metadata) {
+    final url = metadata.url;
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
@@ -479,24 +480,7 @@ class DownloadCoordinator extends ChangeNotifier {
     if (original.status.isActive) {
       throw ArgumentError("This download is still in progress.");
     }
-    final task = _start({
-      "url": original.url,
-      "title": original.title,
-      "uploader": original.uploader,
-      "thumbnail": original.thumbnail,
-      "source": original.source,
-      "kind": original.kind,
-      "duration": 0.0,
-      // URL batches start with placeholder titles that yt-dlp replaces.
-      "resolve_metadata": original.batchId.isNotEmpty,
-      // A batch song keeps its place and count in its batch.
-      if (original.batchId.isNotEmpty) ...{
-        "batch_id": original.batchId,
-        "batch_position": original.batchPosition,
-        "batch_size": original.batchSize,
-        "created_at": original.createdAt,
-      },
-    });
+    final task = _start(_DownloadMetadata.retrying(original));
     notifyListeners();
     return task;
   }
@@ -510,8 +494,7 @@ class DownloadCoordinator extends ChangeNotifier {
     Object? firstError;
     for (final record in list()) {
       if (record.status != DownloadStatus.failed) continue;
-      final key = sourceKey(record.url);
-      if (!songs.add(key.isEmpty ? record.url : key)) continue;
+      if (!songs.add(_songKey(record.url))) continue;
       if (_activeRecordForSource(record.url) != null) continue;
       try {
         await retry(record.id);
@@ -533,10 +516,7 @@ class DownloadCoordinator extends ChangeNotifier {
 
   void shutdown() => _downloader.shutdown(cancelPending: true);
 
-  void _handleProgress(
-    DownloadProgress progress,
-    Map<String, Object?> metadata,
-  ) {
+  void _handleProgress(DownloadProgress progress, _DownloadMetadata metadata) {
     final record = _ensureRecord(progress.task, metadata);
     final previous = record.status;
     record
@@ -550,7 +530,7 @@ class DownloadCoordinator extends ChangeNotifier {
       ..downloadedBytes = progress.downloadedBytes
       ..totalBytes = progress.totalBytes
       ..error = friendlyDownloadError(progress.error);
-    if (metadata["resolve_metadata"] == true) {
+    if (metadata.resolveMetadata) {
       if (progress.mediaTitle.isNotEmpty) record.title = progress.mediaTitle;
       if (progress.uploader.isNotEmpty) record.uploader = progress.uploader;
       if (progress.thumbnail.isNotEmpty) record.thumbnail = progress.thumbnail;
@@ -568,7 +548,7 @@ class DownloadCoordinator extends ChangeNotifier {
 
   Future<void> _handleComplete(
     DownloadResult result,
-    Map<String, Object?> metadata,
+    _DownloadMetadata metadata,
   ) async {
     final record = _ensureRecord(result.task, metadata);
     var status = result.status;
@@ -680,7 +660,7 @@ class DownloadCoordinator extends ChangeNotifier {
       }
       try {
         final existing = _records[receipt.taskId];
-        final metadata = _urlMetadata(
+        final metadata = _DownloadMetadata.url(
           receipt.url,
           title:
               existing?.title ??
@@ -691,7 +671,7 @@ class DownloadCoordinator extends ChangeNotifier {
           final (trackId, _) = await _importDownloadedFile(
             await _intoMusicFolder(path),
             metadata,
-            title: "${metadata["title"]}",
+            title: metadata.title,
             uploader: existing?.uploader ?? "",
             thumbnail: existing?.thumbnail ?? "",
           );
@@ -735,20 +715,17 @@ class DownloadCoordinator extends ChangeNotifier {
   /// Registers audio or reuses its library identity, keeping existing metadata.
   Future<(String, String)> _importDownloadedFile(
     String path,
-    Map<String, Object?> metadata, {
+    _DownloadMetadata metadata, {
     required String title,
     required String uploader,
     required String thumbnail,
   }) => manager.mutation.run(() async {
-    final source = "${metadata["url"]}";
+    final source = metadata.url;
     final details = TrackDetails(
       uploader: uploader,
-      duration: switch (metadata["duration"]) {
-        num value => value.toDouble(),
-        _ => 0,
-      },
+      duration: metadata.duration,
       thumbnail: thumbnail,
-      sourceName: "${metadata["source"] ?? youtubeMusicName}",
+      sourceName: metadata.source,
     );
     final existing =
         manager.findTrackBySource(source) ??
@@ -800,12 +777,9 @@ class DownloadCoordinator extends ChangeNotifier {
     return stored;
   }
 
-  DownloadRecord _ensureRecord(String task, Map<String, Object?> metadata) {
+  DownloadRecord _ensureRecord(String task, _DownloadMetadata metadata) {
     final created = !_records.containsKey(task);
-    final record = _records.putIfAbsent(
-      task,
-      () => _recordFromMetadata(task, metadata),
-    );
+    final record = _records.putIfAbsent(task, () => metadata.toRecord(task));
     if (created) _replaceEarlier(record);
     _prune();
     final identity = sourceKey(record.url);
@@ -815,8 +789,8 @@ class DownloadCoordinator extends ChangeNotifier {
     return record;
   }
 
-  void _recordStartFailure(Map<String, Object?> metadata, Object error) {
-    final record = _recordFromMetadata(const Uuid().v4(), metadata)
+  void _recordStartFailure(_DownloadMetadata metadata, Object error) {
+    final record = metadata.toRecord(const Uuid().v4())
       ..status = DownloadStatus.failed
       ..error = friendlyDownloadError("$error")
       ..completedAt = unixSeconds();
@@ -843,8 +817,7 @@ class DownloadCoordinator extends ChangeNotifier {
   bool _removeDuplicates() {
     final newest = <String, DownloadRecord>{};
     for (final record in _records.values) {
-      final key = sourceKey(record.url);
-      final song = key.isEmpty ? record.url : key;
+      final song = _songKey(record.url);
       if (song.isEmpty) continue;
       final kept = newest[song];
       if (kept == null || record.createdAt > kept.createdAt) {
@@ -853,8 +826,7 @@ class DownloadCoordinator extends ChangeNotifier {
     }
     final before = _records.length;
     _records.removeWhere((id, record) {
-      final key = sourceKey(record.url);
-      final song = key.isEmpty ? record.url : key;
+      final song = _songKey(record.url);
       return song.isNotEmpty && newest[song]!.id != id;
     });
     return _records.length != before;
@@ -922,37 +894,114 @@ bool _sameSource(String a, String b) {
   return key.isEmpty ? a == b : key == sourceKey(b);
 }
 
-Map<String, Object?> _urlMetadata(String url, {required String title}) => {
-  "url": url,
-  "title": title,
-  "uploader": "",
-  "thumbnail": "",
-  "source": youtubeMusicName,
-  "kind": "track",
-  "duration": 0.0,
-  "resolve_metadata": true,
-};
+/// The song a history entry is for: its media identity, or the URL itself
+/// when the URL has none.
+String _songKey(String url) {
+  final key = sourceKey(url);
+  return key.isEmpty ? url : key;
+}
 
-DownloadRecord _recordFromMetadata(String id, Map<String, Object?> metadata) =>
-    DownloadRecord(
-      id: id,
-      url: "${metadata["url"]}",
-      title: "${metadata["title"]}",
-      uploader: "${metadata["uploader"] ?? ""}",
-      thumbnail: "${metadata["thumbnail"] ?? ""}",
-      source: "${metadata["source"] ?? youtubeMusicName}",
-      kind: "${metadata["kind"] ?? "track"}",
-      createdAt: switch (metadata["created_at"]) {
-        num value => value.toDouble(),
-        _ => null,
-      },
-      batchId: "${metadata["batch_id"] ?? ""}",
-      batchPosition: switch (metadata["batch_position"]) {
-        int value => value,
-        _ => 0,
-      },
-      batchSize: switch (metadata["batch_size"]) {
-        int value => value,
-        _ => 0,
-      },
+/// What a download was requested with: the details its history entry and
+/// its library track start from.
+class _DownloadMetadata {
+  const _DownloadMetadata({
+    required this.url,
+    required this.title,
+    this.uploader = "",
+    this.thumbnail = "",
+    this.source = youtubeMusicName,
+    this.kind = "track",
+    this.duration = 0,
+    this.resolveMetadata = false,
+    this.createdAt,
+    this.batchId = "",
+    this.batchPosition = 0,
+    this.batchSize = 0,
+  });
+
+  /// A search result, with the details YouTube Music listed for it.
+  factory _DownloadMetadata.fromResult(SearchResult result) =>
+      _DownloadMetadata(
+        url: result.url,
+        title: result.title,
+        uploader: result.uploader,
+        thumbnail: result.thumbnail,
+        source: result.source,
+        kind: result.kind,
+        duration: result.duration,
+      );
+
+  /// A bare URL, under a placeholder [title] until yt-dlp reports the
+  /// song's own details.
+  const _DownloadMetadata.url(
+    String url, {
+    required String title,
+    double? createdAt,
+    String batchId = "",
+    int batchPosition = 0,
+    int batchSize = 0,
+  }) : this(
+         url: url,
+         title: title,
+         resolveMetadata: true,
+         createdAt: createdAt,
+         batchId: batchId,
+         batchPosition: batchPosition,
+         batchSize: batchSize,
+       );
+
+  /// A new attempt at [original], with the details it already has.
+  factory _DownloadMetadata.retrying(DownloadRecord original) {
+    final batched = original.batchId.isNotEmpty;
+    return _DownloadMetadata(
+      url: original.url,
+      title: original.title,
+      uploader: original.uploader,
+      thumbnail: original.thumbnail,
+      source: original.source,
+      kind: original.kind,
+      // URL batches start with placeholder titles that yt-dlp replaces.
+      resolveMetadata: batched,
+      // A batch song keeps its place and count in its batch.
+      createdAt: batched ? original.createdAt : null,
+      batchId: original.batchId,
+      batchPosition: batched ? original.batchPosition : 0,
+      batchSize: batched ? original.batchSize : 0,
     );
+  }
+
+  final String url;
+  final String title;
+  final String uploader;
+  final String thumbnail;
+
+  /// The service shown as the track's source.
+  final String source;
+  final String kind;
+
+  /// In seconds; 0 when unknown.
+  final double duration;
+
+  /// Whether the title, uploader, and artwork yt-dlp reports replace these.
+  final bool resolveMetadata;
+
+  /// Seconds since the Unix epoch; null for now.
+  final double? createdAt;
+  final String batchId;
+  final int batchPosition;
+  final int batchSize;
+
+  DownloadRecord toRecord(String id) => DownloadRecord(
+    id: id,
+    url: url,
+    title: title,
+    uploader: uploader,
+    thumbnail: thumbnail,
+    source: source,
+    kind: kind,
+    createdAt: createdAt,
+    batchId: batchId,
+    batchPosition: batchPosition,
+    batchSize: batchSize,
+  );
+}

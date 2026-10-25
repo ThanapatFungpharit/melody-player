@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Build, development, and test tooling for the Melody Flutter app"
 requires-python = ">=3.14"
 dependencies = [
-    "yt-dlp>=2026.8.19",
+    "yt-dlp>=2026.10.21",
     "ytmusicapi>=1.12.3",
 ]
 
@@ -25,14 +25,14 @@ melody-integration = "tools.checks.integration:main"
 [dependency-groups]
 dev = [
     "melody-worker",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "pytest>=8",
-    "ruff>=0.16.3",
-    "ty>=0.0.84",
+    "ruff>=0.17.2",
+    "ty>=0.0.91",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13"]
+requires = ["uv_build>=0.13.5,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]

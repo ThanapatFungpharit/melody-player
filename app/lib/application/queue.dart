@@ -49,8 +49,6 @@ class PlaybackQueue {
     return current;
   }
 
-  void addNext(String trackId) => addNextAll([trackId]);
-
   /// Inserts [trackIds] after the current track, in their given order. An
   /// empty queue starts with the first of them.
   void addNextAll(Iterable<String> trackIds) {
@@ -118,12 +116,6 @@ class PlaybackQueue {
         : upcoming;
     items.replaceRange(start, items.length, reordered);
     return true;
-  }
-
-  /// The next visible item without advancing.
-  String? peekNext({bool automatic = false}) {
-    final index = nextIndex(automatic: automatic);
-    return index != null ? items[index] : null;
   }
 
   /// The exact next row, including automatic repeat behavior.

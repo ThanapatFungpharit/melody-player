@@ -75,14 +75,11 @@ class HomeController extends ChangeNotifier {
   /// Track count, up to six recent tracks, and every favorite.
   (int, List<Track>, List<Track>) collections() {
     final manager = app.services.manager;
-    final recentIds = app.services.store.get("recent_tracks", const []);
     final recent = <Track>[];
-    if (recentIds is List) {
-      for (final id in recentIds.whereType<String>()) {
-        if (!manager.hasTrack(id)) continue;
-        recent.add(manager.getTrack(id));
-        if (recent.length == 6) break;
-      }
+    for (final id in app.services.store.recentTrackIds()) {
+      if (!manager.hasTrack(id)) continue;
+      recent.add(manager.getTrack(id));
+      if (recent.length == 6) break;
     }
     final favorites = app.services.library.favoriteTrackList();
     return (manager.counts().$1, recent, favorites);
@@ -146,10 +143,8 @@ class HomeController extends ChangeNotifier {
   List<String> _candidates() {
     final ids = <String>[
       ?app.playback.currentTrackId,
-      if (app.services.store.get("recent_tracks")
-          case final List<Object?> recent)
-        ...recent.whereType<String>(),
-      ...(app.services.store.favoriteTrackIds().toList()..sort()),
+      ...app.services.store.recentTrackIds(),
+      for (final track in app.services.library.favoriteTrackList()) track.id,
     ];
     final seen = <String>{};
     final sources = <String>[];

@@ -10,15 +10,15 @@ dependencies = [
     # yt-dlp embeds cover art in Opus, Ogg Vorbis, and FLAC through mutagen.
     "mutagen==1.48.1",
     "packaging>=24.0",
-    "yt-dlp==2026.8.19",
+    "yt-dlp==2026.10.21",
     "ytmusicapi==1.12.3",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "ruff>=0.16.3",
-    "ty>=0.0.84",
+    "ruff>=0.17.2",
+    "ty>=0.0.91",
 ]
 
 [build-system]

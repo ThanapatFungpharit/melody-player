@@ -29,14 +29,14 @@ installs upgrade in place and keep their data directory. Do not change it.
 
 | Component | Pinned in | Tested baseline |
 | --- | --- | --- |
-| Flutter / Dart | CI `FLUTTER_VERSION` | 3.44.8 / 3.12 |
-| serious_python | `app/pubspec.yaml` | 4.5.1 (platform packages 4.7.2) |
+| Flutter / Dart | CI `FLUTTER_VERSION` | 3.47.7 / 3.13 |
+| serious_python | `app/pubspec.yaml` | 6.0.0 |
 | Embedded CPython | `tools/build/app.py` `PYTHON_VERSION` | 3.14 |
-| Bundled yt-dlp | `worker/pyproject.toml` + `worker/uv.lock` | 2026.8.19, exact |
+| Bundled yt-dlp | `worker/pyproject.toml` + `worker/uv.lock` | 2026.10.21, exact |
 | Bundled ytmusicapi (and its `requests` stack) | `worker/pyproject.toml` + `worker/uv.lock` | 1.12.3, exact |
 | just_audio / audio_session / just_audio_media_kit | `packages/melody_audio/pubspec.yaml` | 0.10.6 / 0.2.4 / 2.1.0, exact |
 | media_kit Windows audio / Linux libraries | `packages/melody_audio/pubspec.yaml` | 1.0.9 / 1.2.1, exact |
-| flutter_media_session | `packages/melody_audio/pubspec.yaml` | 3.0.3, exact |
+| flutter_media_session | `packages/melody_audio/pubspec.yaml` | 3.0.9, exact |
 | FFmpeg | `tools/build/media.py` | provider SHA-256 verified on every fetch |
 
 The worker is packaged with exactly the requirements in `worker/uv.lock`

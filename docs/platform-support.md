@@ -13,7 +13,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Feature | Windows | macOS | Linux | Android |
 | --- | --- | --- | --- | --- |
 | System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | No | Yes |
-| Auto focal point for notification artwork | Yes | Yes | Disabled | Yes (model) |
+| Center notification artwork on its subject | Yes | Yes | Disabled | Yes (model) |
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
 | Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |

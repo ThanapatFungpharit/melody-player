@@ -134,8 +134,8 @@ void main() {
     expect(details.playCount, 1);
     expect(details.lastPlayed, 1700000000.25);
     expect(store.favoriteTrackIds(), {ids["alpha"]});
-    expect(store.get("recent_tracks"), [ids["beta"], ids["alpha"]]);
-    expect(store.get("search_history"), ["lofi"]);
+    expect(store.recentTrackIds(), [ids["beta"], ids["alpha"]]);
+    expect(store.searchHistory(), ["lofi"]);
     expect(store.get("playback"), {
       "queue": [ids["beta"], ids["alpha"]],
       "current_index": 1,
@@ -158,9 +158,9 @@ void main() {
       {
         "volume": {"volume": 10, "previous_volume": 10, "muted": false},
       },
-      {ids["beta"]!: 2},
+      // Oldest to newest.
+      {ids["beta"]!: 2, ids["gamma"]!: 1},
     );
-    store.recordPlay(ids["gamma"]!, playedAt: 1.5);
     store.close();
 
     final reopened = ApplicationStore.open(
@@ -171,7 +171,7 @@ void main() {
     expect(reopened.settings.volume, 10);
     expect(reopened.settings.accentColor, "ocean");
     expect(reopened.trackDetails(ids["beta"]!).playCount, 3);
-    expect(reopened.get("recent_tracks"), [
+    expect(reopened.recentTrackIds(), [
       ids["gamma"],
       ids["beta"],
       ids["alpha"],
@@ -222,13 +222,11 @@ void main() {
       "previous_volume": 0,
       "concurrent_downloads": 20,
       "notification_action_pair": "bogus",
-      "skip_loading_delay": "yes",
     }, defaultDownloadDirectory: "/m");
     expect(settings.volume, 100);
     expect(settings.previousVolume, 1);
     expect(settings.concurrentDownloads, 8);
     expect(settings.notificationActionPair, "shuffle_favorite");
-    expect(settings.skipLoadingDelay, isFalse);
     expect(settings.downloadDirectory, "/m");
   });
 

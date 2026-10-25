@@ -122,7 +122,7 @@ Offset calculateFocalPoint(Uint8List rgba, int width, int height) {
     total += weight * (x1 - x0) * (y1 - y0);
   }
   if (!total.isFinite || total <= 0) return centerFocalPoint;
-  return _focalPoint(rows, columns, width, height);
+  return _focalPointWithin(rows, columns, width, height, content);
 }
 
 /// Artwork content without letterbox bars as (left, top, right, bottom), or
@@ -183,12 +183,36 @@ Offset focalPointFromSaliency(
   for (var y = top; y < bottom; y++) {
     rows[y] = mapRows[_mapIndex(y - top, bottom - top, size)];
   }
-  return _focalPoint(rows, columns, width, height);
+  return _focalPointWithin(rows, columns, width, height, content);
 }
 
 /// Map cell under the center of pixel [i] of [length] stretched to [size].
 int _mapIndex(int i, int length, int size) =>
     math.min(((i + 0.5) * size / length).floor(), size - 1);
+
+/// Focal point of a [width] by [height] image whose crop stays inside the
+/// [content] rectangle, so letterbox bars never fill part of the square.
+Offset _focalPointWithin(
+  List<double> rows,
+  List<double> columns,
+  int width,
+  int height,
+  (int, int, int, int) content,
+) {
+  final (left, top, right, bottom) = content;
+  final w = right - left;
+  final h = bottom - top;
+  final local = _focalPoint(
+    rows.sublist(top, bottom),
+    columns.sublist(left, right),
+    w,
+    h,
+  );
+  return Offset(
+    clampFocal((left + local.dx * w) / width),
+    clampFocal((top + local.dy * h) / height),
+  );
+}
 
 Offset _focalPoint(
   List<double> rows,
@@ -699,16 +723,23 @@ double _difference(Uint8List rgba, int first, int second) {
 }
 
 /// Source rectangle for an aspect-preserving square cover crop.
-Rect focalCropRect(int width, int height, Offset focalPoint) {
+///
+/// The square stays inside [content], the picture without letterbox bars in
+/// image pixels, or inside the whole image when it is null.
+Rect focalCropRect(int width, int height, Offset focalPoint, {Rect? content}) {
   if (width <= 0 || height <= 0) return Rect.zero;
-  final side = math.min(width, height).toDouble();
+  final image = Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble());
+  final bounds = content == null || content.isEmpty
+      ? image
+      : content.intersect(image);
+  final side = math.min(bounds.width, bounds.height);
   // The focal point identifies a point in the original image. Keep it at the
-  // center of the crop whenever the image bounds allow it.
+  // center of the crop whenever the bounds allow it.
   final left = (clampFocal(focalPoint.dx) * width - side / 2)
-      .clamp(0.0, width - side)
+      .clamp(bounds.left, bounds.right - side)
       .toDouble();
   final top = (clampFocal(focalPoint.dy) * height - side / 2)
-      .clamp(0.0, height - side)
+      .clamp(bounds.top, bounds.bottom - side)
       .toDouble();
   return Rect.fromLTWH(left, top, side, side);
 }

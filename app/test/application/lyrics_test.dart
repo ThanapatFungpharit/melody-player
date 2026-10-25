@@ -64,6 +64,18 @@ void main() {
       await expectLater(library().load(_source), throwsA(isA<ProviderError>()));
     });
 
+    test("are fetched again after a fetch that failed at once", () async {
+      var calls = 0;
+      final lyrics = LyricsLibrary(p.join(root.path, "lyrics"), (videoId) {
+        // Fails before returning a future, as a non-async fetcher can.
+        if (calls++ == 0) throw ProviderError("offline");
+        return Future.value(Lyrics.plain("Hello"));
+      });
+      await expectLater(lyrics.load(_source), throwsA(isA<ProviderError>()));
+      expect((await lyrics.load(_source))!.lines.single.text, "Hello");
+      expect(calls, 2);
+    });
+
     test("remember tracks without lyrics, then check again", () async {
       reply = () => null;
       expect(await library().load(_source), isNull);

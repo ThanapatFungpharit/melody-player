@@ -336,7 +336,7 @@ class _Recommendations extends StatelessWidget {
     } else {
       body = const EmptyState(
         Icons.auto_awesome_rounded,
-        "Play a downloaded YouTube Music track to get recommendations.",
+        "Recommendations come from tracks downloaded from YouTube Music; imported files are not used.",
       );
     }
     final total = home.recommendations.length;
@@ -348,7 +348,7 @@ class _Recommendations extends StatelessWidget {
       children: [
         SectionTitle(
           "Recommended for you",
-          caption: "A mix based on your recent and favorite tracks",
+          caption: "Based on your recent and favorite YouTube Music tracks",
           trailing: [
             IconButton(
               onPressed: home.recommendationsLoading ? null : home.reload,

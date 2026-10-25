@@ -331,10 +331,10 @@ packages:
     dependency: transitive
     description:
       name: matcher
-      sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
+      sha256: "31bd099b47c10cd1aeb55146a2d46ce0277630ecef3f7dae54ad7873f36696cd"
       url: "https://pub.dev"
     source: hosted
-    version: "0.12.19"
+    version: "0.12.20"
   material_color_utilities:
     dependency: transitive
     description:
@@ -378,10 +378,10 @@ packages:
     dependency: transitive
     description:
       name: meta
-      sha256: "1741988757a65eb6b36abe716829688cf01910bbf91c34354ff7ec1c3de2b349"
+      sha256: "307249ce4ff29d58a18e97f6345f539382eb9c9c29ecda628900f31de0443dd9"
       url: "https://pub.dev"
     source: hosted
-    version: "1.18.0"
+    version: "1.19.0"
   native_toolchain_c:
     dependency: transitive
     description:
@@ -538,50 +538,50 @@ packages:
     dependency: "direct main"
     description:
       name: serious_python
-      sha256: "5fbf40b2da00ec488bd7ed819baa726af7e71dbb783f1a93aa319bf4e9e78564"
+      sha256: "79843ee277d8fda3a941111ef37831efde24f8c02c66616e70b538a6206a0e2b"
       url: "https://pub.dev"
     source: hosted
-    version: "4.5.1"
+    version: "6.0.0"
   serious_python_android:
     dependency: transitive
     description:
       name: serious_python_android
-      sha256: a83ced6712e0315076cd2cfc67eecee33439e9302de5dace12d0a4a3d0826daf
+      sha256: "35e0f4256a62931fad53e98f82e3fbc3ec0715384ca375ee4eff4498539b71c8"
       url: "https://pub.dev"
     source: hosted
-    version: "4.7.2"
+    version: "6.0.0"
   serious_python_darwin:
     dependency: transitive
     description:
       name: serious_python_darwin
-      sha256: aa6e842ad129b612a28397bc37c2c2a258d312114a18765462816b1bd015cfc6
+      sha256: "07c4a5fb6a3b2a059a7c3723a80712117e08390895cf7121a2f41d58bd44b7f2"
       url: "https://pub.dev"
     source: hosted
-    version: "4.7.2"
+    version: "6.0.0"
   serious_python_linux:
     dependency: transitive
     description:
       name: serious_python_linux
-      sha256: a582f210dc1acd85615a3df8f019f585906eef468023e5689a42dbb8a48a7aa9
+      sha256: "41d921c67641fa62e677f8e33dbfce5e6ad41754fcf8ea17856f56e2cc1e67f6"
       url: "https://pub.dev"
     source: hosted
-    version: "4.7.2"
+    version: "6.0.0"
   serious_python_platform_interface:
     dependency: transitive
     description:
       name: serious_python_platform_interface
-      sha256: "1d436ab77f7f472f5e4dc783ed677efc196e3c60059c07321331d5aa8d260987"
+      sha256: bc2be6ae4e5d9b2ac3cbd158524aba17ba06a8add0d84503666a9bc7cade7514
       url: "https://pub.dev"
     source: hosted
-    version: "4.7.2"
+    version: "6.0.0"
   serious_python_windows:
     dependency: transitive
     description:
       name: serious_python_windows
-      sha256: "482ed3705f0f3348857bc5ad343593cf1ceee29eaf58a2e03b2bbcbfda9f3e63"
+      sha256: "958e8b2d339ae564876784f5db2b9d9a79eb201a8f2921e300111b1bc0dcf54e"
       url: "https://pub.dev"
     source: hosted
-    version: "4.7.2"
+    version: "6.0.0"
   shelf:
     dependency: transitive
     description:
@@ -663,10 +663,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "949a932224383300f01be9221c39180316445ecb8e7547f70a41a35bf421fb9e"
+      sha256: "2a122cbe059f8b610d3a5415f42e255b6c17b1f21eee1d960f31080237fb4f11"
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.11"
+    version: "0.7.12"
   toml:
     dependency: transitive
     description:
@@ -711,10 +711,10 @@ packages:
     dependency: transitive
     description:
       name: vector_math
-      sha256: d530bd74fea330e6e364cda7a85019c434070188383e1cd8d9777ee586914c5b
+      sha256: "92b9910f66ed1057fd4da7b040ae7c74cafacf885bdc81be496928d5049b032d"
       url: "https://pub.dev"
     source: hosted
-    version: "2.2.0"
+    version: "2.4.3"
   vm_service:
     dependency: transitive
     description:

@@ -87,10 +87,7 @@ class SleepTimer {
   void _playbackChanged(PlaybackChange change) {
     if (!_endOfTrack || change == PlaybackChange.volume) return;
     // The queue ran out or was stopped: there is nothing left to pause.
-    if (!playback.playing &&
-        !playback.loading &&
-        playback.currentTrackId == null &&
-        playback.externalTitle.isEmpty) {
+    if (!playback.playing && !playback.loading && !playback.hasMedia) {
       cancel();
       return;
     }

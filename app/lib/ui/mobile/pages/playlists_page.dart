@@ -37,9 +37,13 @@ class MobilePlaylists extends StatelessWidget {
               "Playlist actions",
               () => [
                 MenuAction(
-                  "Import $youtubeMusicName playlist",
+                  "Import playlist",
                   Icons.playlist_add_rounded,
-                  () => showImportPlaylistDialog(context, app),
+                  () => showActionSheet(
+                    context,
+                    "Import playlist",
+                    importPlaylistActions(context, app),
+                  ),
                 ),
               ],
             ),

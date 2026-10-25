@@ -101,6 +101,7 @@ void main() {
   late MusicManager manager;
   late ApplicationStore store;
   late FakeBackend backend;
+  late PlaybackPersistence persistence;
 
   setUp(() async {
     root = await createTestDirectory("melody-playback");
@@ -111,6 +112,7 @@ void main() {
       defaultDownloadDirectory: music,
     );
     backend = FakeBackend();
+    persistence = PlaybackPersistence(store, (_) {});
   });
 
   tearDown(() async {
@@ -134,11 +136,18 @@ void main() {
         LibraryService(manager, store),
         store,
         backend,
+        persistence: persistence,
         onError: onError,
       );
 
+  /// The store once the controller's coalesced writes have landed.
+  ApplicationStore flushed() {
+    persistence.flush();
+    return store;
+  }
+
   Map<String, Object?> saved() =>
-      (store.get("playback") as Map).cast<String, Object?>();
+      (flushed().get("playback") as Map).cast<String, Object?>();
 
   test(
     "the native queue owns completion and the controller mirrors track changes",
@@ -847,9 +856,9 @@ void main() {
     final saved = store.settings.volume;
     playback.changes.listen(changes.add);
     playback.setVolume(35, persist: false);
-    expect(store.settings.volume, saved);
+    expect(flushed().settings.volume, saved);
     playback.setVolume(35);
-    expect(store.settings.volume, 35);
+    expect(flushed().settings.volume, 35);
     expect(changes, [PlaybackChange.volume, PlaybackChange.volume]);
   });
 
@@ -862,7 +871,7 @@ void main() {
     expect(playback.playing, isFalse);
     expect(playback.mediaSessionActive, isFalse);
     expect(errors, ["native load failed"]);
-    expect(store.trackDetails(id).playCount, 0);
+    expect(flushed().trackDetails(id).playCount, 0);
     expect(backend.discardedSources, 1);
     expect(playback.loading, isFalse);
     playback.toggle();
@@ -870,7 +879,7 @@ void main() {
     playback
       ..onLoaded()
       ..onPlaying(true);
-    expect(store.trackDetails(id).playCount, 1);
+    expect(flushed().trackDetails(id).playCount, 1);
   });
 
   test("a failed stream clears its unresumable selection", () {
@@ -896,7 +905,6 @@ void main() {
     "coalesced persistence records repeated plays at their latest position",
     () async {
       final ids = await tracks(["one.mp3", "two.mp3"]);
-      final persistence = PlaybackPersistence(store, (_) {});
       persistence.save(
         playback: {
           "queue": ids,
@@ -911,7 +919,7 @@ void main() {
         ..recordPlay(ids[0])
         ..flush();
       expect(store.trackDetails(ids[0]).playCount, 2);
-      expect(store.get("recent_tracks"), [ids[0], ids[1]]);
+      expect(store.recentTrackIds(), [ids[0], ids[1]]);
     },
   );
 
@@ -943,6 +951,7 @@ void main() {
       LibraryService(manager, store),
       store,
       backend,
+      persistence: persistence,
       loudness: loudness,
     );
 

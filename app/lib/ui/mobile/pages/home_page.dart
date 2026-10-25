@@ -100,7 +100,7 @@ class _MobileHomeState extends State<MobileHome> {
           ],
           MobileHeading(
             "Recommended for you",
-            subtitle: "A mix based on your recent and favorite tracks",
+            subtitle: "Based on your recent and favorite YouTube Music tracks",
             actions: [
               TouchIconButton(
                 Icons.refresh_rounded,
@@ -129,7 +129,7 @@ class _MobileHomeState extends State<MobileHome> {
           ] else
             const EmptyState(
               Icons.auto_awesome_rounded,
-              "Play a downloaded YouTube Music track to get recommendations.",
+              "Recommendations come from tracks downloaded from YouTube Music; imported files are not used.",
             ),
         ]);
       },

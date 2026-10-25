@@ -35,10 +35,8 @@ class NowPlayingInfo {
     var thumbnail = playback.externalThumbnail;
     var favorite = false;
     var canFavorite = false;
-    final id = playback.currentTrackId;
-    if (id != null &&
-        playback.externalTitle.isEmpty &&
-        app.services.manager.hasTrack(id)) {
+    final id = playback.currentLibraryTrackId;
+    if (id != null && app.services.manager.hasTrack(id)) {
       final track = app.services.manager.getTrack(id);
       final details = app.services.library.details(id);
       title = track.displayTitle;
@@ -57,12 +55,8 @@ class NowPlayingInfo {
 int knownDurationMs(MelodyApp app) {
   final playback = app.playback;
   if (playback.durationMs > 0) return playback.durationMs;
-  final id = playback.currentTrackId;
-  if (id == null ||
-      playback.externalTitle.isNotEmpty ||
-      !app.services.manager.hasTrack(id)) {
-    return 0;
-  }
+  final id = playback.currentLibraryTrackId;
+  if (id == null || !app.services.manager.hasTrack(id)) return 0;
   return (app.services.library.details(id).duration * 1000).round();
 }
 

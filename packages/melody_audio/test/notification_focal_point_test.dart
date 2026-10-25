@@ -159,6 +159,32 @@ void main() {
     expect(crop.right, greaterThanOrEqualTo(45));
   });
 
+  test("the crop never includes letterbox bars", () {
+    // A 4:3 thumbnail with black bars above and below a wide picture whose
+    // subject sits right of center. A full-height square would show the bars.
+    final art = pixelsWhere(64, 48, (x, y) {
+      if (y < 6 || y >= 42) return 0;
+      if ((x - 50).abs() <= 2 && (y - 24).abs() <= 3) return 250;
+      return 120;
+    });
+    final (left, top, right, bottom) = artworkContent(art, 64, 48)!;
+    expect((top, bottom), (6, 42));
+    final crop = focalCropRect(
+      64,
+      48,
+      calculateFocalPoint(art, 64, 48),
+      content: ui.Rect.fromLTRB(
+        left.toDouble(),
+        top.toDouble(),
+        right.toDouble(),
+        bottom.toDouble(),
+      ),
+    );
+    expect(crop.top, greaterThanOrEqualTo(6));
+    expect(crop.bottom, lessThanOrEqualTo(42));
+    expect(crop.left <= 48 && crop.right >= 52, isTrue);
+  });
+
   test("a distinct subject outweighs low-contrast texture", () {
     final art = pixelsWhere(20, 60, (x, y) {
       if (y < 20) return (x + y).isEven ? 110 : 140;
@@ -270,8 +296,9 @@ void main() {
   });
 
   test("model saliency maps back through letterbox content", () {
-    // The map covers only x 40..128; its salient first quarter is x 40..62,
-    // so the crop centers on x 51.
+    // The map covers only x 40..128; its salient first quarter is x 40..62.
+    // A square centered there would reach into the bar, so the crop starts
+    // where the picture does and centers on x 76.
     final focal = focalPointFromSaliency(
       columnMap((x) => x < saliencyModelSize ~/ 4),
       saliencyModelSize,
@@ -279,7 +306,7 @@ void main() {
       72,
       (40, 0, 128, 72),
     );
-    expect(focalCropRect(128, 72, focal).center.dx, closeTo(51, 2));
+    expect(focalCropRect(128, 72, focal).center.dx, closeTo(76, 1));
   });
 
   test("flat or malformed model saliency uses center", () {

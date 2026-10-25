@@ -63,8 +63,8 @@ class _LyricsViewState extends State<LyricsView> {
 
   /// The current library track; null for streams and nothing.
   LyricsTrack? _currentTrack() {
-    final id = app.playback.currentTrackId;
-    if (app.playback.externalTitle.isNotEmpty || id == null) return null;
+    final id = app.playback.currentLibraryTrackId;
+    if (id == null) return null;
     return app.lyricsTrack(id);
   }
 

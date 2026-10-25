@@ -70,11 +70,11 @@ class PlaybackPersistence {
   }
 }
 
-/// What a [PlaybackController.changes] event invalidates, so widgets rebuild
-/// only for what they show.
 /// A copy of the queue's rows and selected row.
 typedef QueueSnapshot = ({List<String> items, int currentIndex});
 
+/// What a [PlaybackController.changes] event invalidates, so widgets rebuild
+/// only for what they show.
 enum PlaybackChange {
   /// Transport state: playing, paused, stopped, or an error.
   state,
@@ -98,7 +98,7 @@ class PlaybackController {
     this.library,
     this.store,
     this.backend, {
-    this.persistence,
+    required this.persistence,
     this.loudness,
     Set<String>? availableTrackIds,
     String Function(String source)? artworkUri,
@@ -148,7 +148,7 @@ class PlaybackController {
     volume = settings.volume;
     muted = settings.muted;
     previousVolume = settings.previousVolume;
-    backend.setVolume(muted ? 0 : volume / 100);
+    _applyVolume();
     if (!listEquals(queue.items, originalItems)) _persist();
     _loudnessSubscription = loudness?.changes.listen(_loudnessChanged);
   }
@@ -157,7 +157,7 @@ class PlaybackController {
   final LibraryService library;
   final ApplicationStore store;
   final TrackPlayerBackend backend;
-  final PlaybackPersistence? persistence;
+  final PlaybackPersistence persistence;
 
   /// Per-track loudness gains; without it every track plays unscaled.
   final LoudnessNormalizer? loudness;
@@ -204,16 +204,20 @@ class PlaybackController {
   String? get currentTrackId => queue.current;
   bool get mediaSessionActive => _mediaSessionActive;
 
+  /// Whether anything is selected: a queue row, a stream, or a selection
+  /// still resolving.
+  bool get hasMedia => currentTrackId != null || externalTitle.isNotEmpty;
+
+  /// The current library track, or null while a stream or a selection
+  /// still resolving takes its place.
+  String? get currentLibraryTrackId =>
+      externalTitle.isEmpty ? currentTrackId : null;
+
   /// Mirrors a decoder that outlived the previous widget tree.
   void onNativeReattach(AudioEngineSnapshot state) {
     final trackId = state.trackId;
     if (trackId != null && queue.items.contains(trackId)) {
-      final row = state.queueIndex;
-      queue.select(
-        row >= 0 && row < queue.items.length && queue.items[row] == trackId
-            ? row
-            : queue.items.indexOf(trackId),
-      );
+      queue.select(_rowOf(trackId, state.queueIndex));
       _clearExternal();
     } else {
       final source = state.source ?? "";
@@ -333,7 +337,7 @@ class PlaybackController {
   }
 
   void toggle() {
-    if (currentTrackId == null && externalTitle.isEmpty) {
+    if (!hasMedia) {
       final tracks = manager.listTracks();
       if (tracks.isNotEmpty) {
         queue.replace([for (final track in tracks) track.id]);
@@ -433,14 +437,17 @@ class PlaybackController {
   /// Releases the decoder and system controls while keeping the queue.
   void _release() {
     _cancelPendingLoad(discardSource: true);
+    _resetSource();
+  }
+
+  /// Forgets the loaded source, its position, and any stream's details.
+  void _resetSource() {
     _sourceLoaded = false;
     _playing = false;
     _mediaSessionActive = false;
     positionMs = 0;
     durationMs = 0;
-    externalTitle = "";
-    externalUploader = "";
-    externalThumbnail = "";
+    _forgetStream();
   }
 
   void _unload() {
@@ -475,7 +482,7 @@ class PlaybackController {
       seek(position);
       return;
     }
-    if (currentTrackId == null && externalTitle.isEmpty) return;
+    if (!hasMedia) return;
     if (_loading || _playerLoading || !_sourceLoaded) {
       // Toggle carries the new position into the pending or reloaded source.
       seek(position);
@@ -507,6 +514,13 @@ class PlaybackController {
       return "";
     }
   }
+
+  /// [row] while it still holds [trackId], else the track's first row; -1
+  /// when it is not queued.
+  int _rowOf(String trackId, int row) =>
+      row >= 0 && row < queue.items.length && queue.items[row] == trackId
+      ? row
+      : queue.items.indexOf(trackId);
 
   int _clampPosition(int position) => position.clamp(
     0,
@@ -688,7 +702,7 @@ class PlaybackController {
     } else {
       muted = true;
     }
-    backend.setVolume(muted ? 0 : volume / 100);
+    _applyVolume();
     if (persist) _saveVolume();
     _notify(PlaybackChange.volume);
   }
@@ -701,7 +715,7 @@ class PlaybackController {
       if (volume > 0) previousVolume = volume;
       muted = true;
     }
-    backend.setVolume(muted ? 0 : volume / 100);
+    _applyVolume();
     _saveVolume();
     _notify(PlaybackChange.volume);
   }
@@ -711,7 +725,7 @@ class PlaybackController {
     volume = settings.volume;
     previousVolume = settings.previousVolume;
     muted = settings.muted;
-    backend.setVolume(muted ? 0 : volume / 100);
+    _applyVolume();
     _notify(PlaybackChange.volume);
   }
 
@@ -751,18 +765,7 @@ class PlaybackController {
     final trackId = currentTrackId;
     if (playing && trackId != null && trackId == _pendingPlayRecordId) {
       _pendingPlayRecordId = null;
-      final persistence = this.persistence;
-      if (persistence != null) {
-        persistence.recordPlay(trackId);
-      } else {
-        library.recordPlay(
-          trackId,
-          playback: queue.toJson(
-            positionMs: positionMs,
-            durationMs: durationMs,
-          ),
-        );
-      }
+      persistence.recordPlay(trackId);
     }
     _notify();
   }
@@ -782,12 +785,7 @@ class PlaybackController {
     if (_closed) return;
     // The row may have moved, or the queue shrunk, since the engine chose
     // it; fall back to the track's first row.
-    final selected =
-        index >= 0 &&
-            index < queue.items.length &&
-            queue.items[index] == trackId
-        ? index
-        : queue.items.indexOf(trackId);
+    final selected = _rowOf(trackId, index);
     if (selected < 0) return;
     queue.select(selected);
     // The engine already applied the gain it was given for this row.
@@ -798,9 +796,7 @@ class PlaybackController {
         ? _engineItems[index]
         : _engineItems.where((item) => item.trackId == trackId).firstOrNull;
     _heldGain = sent == null ? null : (trackId: trackId, gain: sent.gain);
-    externalTitle = "";
-    externalUploader = "";
-    externalThumbnail = "";
+    _forgetStream();
     _sourceLoaded = true;
     _playerLoading = true;
     _loading = false;
@@ -822,14 +818,7 @@ class PlaybackController {
     _loading = false;
     _playerLoading = false;
     _pendingPlayRecordId = null;
-    _sourceLoaded = false;
-    _playing = false;
-    _mediaSessionActive = false;
-    positionMs = 0;
-    durationMs = 0;
-    externalTitle = "";
-    externalUploader = "";
-    externalThumbnail = "";
+    _resetSource();
     _unload();
   }
 
@@ -845,9 +834,7 @@ class PlaybackController {
     _mediaSessionActive = false;
     _pendingPlayRecordId = null;
     if (externalTitle.isNotEmpty) {
-      externalTitle = "";
-      externalUploader = "";
-      externalThumbnail = "";
+      _forgetStream();
       positionMs = 0;
       durationMs = 0;
     }
@@ -997,26 +984,22 @@ class PlaybackController {
     backend.updateQueue(items, queue.currentIndex, repeat: queue.repeat);
   }
 
-  void _saveVolume() {
-    final values = {
+  void _applyVolume() => backend.setVolume(muted ? 0 : volume / 100);
+
+  void _saveVolume() => persistence.save(
+    volume: {
       "volume": volume,
       "previous_volume": previousVolume,
       "muted": muted,
-    };
-    final persistence = this.persistence;
-    if (persistence != null) {
-      persistence.save(volume: values);
-      return;
-    }
-    final settings = store.settings
-      ..volume = volume
-      ..previousVolume = previousVolume
-      ..muted = muted;
-    store.saveSettings(settings);
-  }
+    },
+  );
 
   void _clearExternal() {
     _cancelPendingLoad();
+    _forgetStream();
+  }
+
+  void _forgetStream() {
     externalTitle = "";
     externalUploader = "";
     externalThumbnail = "";
@@ -1036,15 +1019,9 @@ class PlaybackController {
     }
   }
 
-  void _persist() {
-    final state = queue.toJson(positionMs: positionMs, durationMs: durationMs);
-    final persistence = this.persistence;
-    if (persistence != null) {
-      persistence.save(playback: state);
-    } else {
-      store.set("playback", state);
-    }
-  }
+  void _persist() => persistence.save(
+    playback: queue.toJson(positionMs: positionMs, durationMs: durationMs),
+  );
 
   void close() {
     _persist();

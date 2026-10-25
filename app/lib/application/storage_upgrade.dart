@@ -15,7 +15,7 @@ import "../core/downloader/receipts.dart";
 import "../core/library/manager.dart";
 import "../core/storage.dart";
 import "../platform/paths.dart";
-import "../worker/transport.dart" show ytDlpPackage, ytMusicPackage;
+import "../worker/worker_client.dart" show ytDlpPackage, ytMusicPackage;
 import "store.dart";
 
 /// Names of files and folders in earlier layouts.

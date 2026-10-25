@@ -147,7 +147,6 @@ class AppSettings {
     // jobs keep downloads responsive without overwhelming low-core devices.
     this.concurrentDownloads = 2,
     this.resumeSession = true,
-    this.skipLoadingDelay = false,
     this.notifications = true,
     this.notificationActionPair = "shuffle_favorite",
     this.autoFocalPointLiveNotifications = false,
@@ -166,7 +165,6 @@ class AppSettings {
   String audioQuality;
   int concurrentDownloads;
   bool resumeSession;
-  bool skipLoadingDelay;
   bool notifications;
   String notificationActionPair;
   bool autoFocalPointLiveNotifications;
@@ -212,7 +210,6 @@ class AppSettings {
         defaults.concurrentDownloads,
       ).clamp(1, 8),
       resumeSession: _bool(data["resume_session"], defaults.resumeSession),
-      skipLoadingDelay: data["skip_loading_delay"] == true,
       notifications: _bool(data["notifications"], defaults.notifications),
       notificationActionPair: notificationActionPairs.contains(pair)
           ? pair
@@ -245,7 +242,6 @@ class AppSettings {
     "audio_quality": audioQuality,
     "concurrent_downloads": concurrentDownloads,
     "resume_session": resumeSession,
-    "skip_loading_delay": skipLoadingDelay,
     "notifications": notifications,
     "notification_action_pair": notificationActionPair,
     "auto_focal_point_live_notifications": autoFocalPointLiveNotifications,

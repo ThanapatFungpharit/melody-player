@@ -177,9 +177,18 @@ class MelodyApp {
     bool error = false,
     (String, VoidCallback)? action,
   }) {
-    if (!_messages.isClosed) {
+    // only show when inside the app else drop
+    if (!_messages.isClosed && _inForeground) {
       _messages.add(AppMessage(message, error: error, action: action));
     }
+  }
+
+  /// Whether the app's window is on screen.
+  static bool get _inForeground {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null ||
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
   }
 
   void showError(String message) =>
@@ -224,11 +233,12 @@ class MelodyApp {
     if (change != PlaybackChange.volume) {
       _positionAnchorMs = playback.positionMs;
       _positionAnchorAt = _positionClock.elapsedMilliseconds;
-    }
-    // The engine publishes the timeline to system controls itself, so the
-    // once-a-second progress reports need no session sync of their own.
-    if (change != PlaybackChange.volume && change != PlaybackChange.progress) {
-      syncSystemMedia(refreshMetadata: change == PlaybackChange.track);
+
+      // The engine publishes the timeline to system controls itself, so the
+      // once-a-second progress reports need no session sync of their own.
+      if (change != PlaybackChange.progress) {
+        syncSystemMedia(refreshMetadata: change == PlaybackChange.track);
+      }
     }
     if (change == PlaybackChange.track) {
       // Files skipped while they played can take their lyrics now.
@@ -316,10 +326,7 @@ class MelodyApp {
     }
     final (title, artist, album, artworkUri) = _systemMediaMetadata;
     final hasMedia = title.isNotEmpty && playback.mediaSessionActive;
-    final libraryTrack =
-        hasMedia &&
-        playback.currentTrackId != null &&
-        playback.externalTitle.isEmpty;
+    final libraryTrack = hasMedia && playback.currentLibraryTrackId != null;
     backend.syncMediaSession(
       MediaSessionState(
         title: hasMedia ? title : "",
@@ -402,9 +409,7 @@ class MelodyApp {
   /// A command from system media controls the native engine left to the app.
   void _mediaAction(MediaCommand command, int? seekPositionMs) {
     final libraryCurrent =
-        playback.mediaSessionActive &&
-        playback.externalTitle.isEmpty &&
-        playback.currentTrackId != null;
+        playback.mediaSessionActive && playback.currentLibraryTrackId != null;
     switch (command) {
       case MediaCommand.play:
         if (!playback.playing) playback.toggle();
@@ -491,7 +496,7 @@ class MelodyApp {
     services.library.toggleFavorite(trackId);
     touchLibrary();
     playbackState.emit();
-    if (trackId == playback.currentTrackId && playback.externalTitle.isEmpty) {
+    if (trackId == playback.currentLibraryTrackId) {
       syncSystemMedia(refreshMetadata: true);
     }
   });
@@ -593,9 +598,13 @@ class MelodyApp {
       case TrackAction.favorite:
         unawaited(
           run(() {
-            services.library.favoriteTracks(available);
+            final added = services.library.favoriteTracks(available);
             touchLibrary();
-            showMessage("Added to favorites.");
+            showMessage(switch (added) {
+              0 => "Already in favorites.",
+              1 => "Added 1 track to favorites.",
+              _ => "Added $added tracks to favorites.",
+            });
           }),
         );
       case TrackAction.play:

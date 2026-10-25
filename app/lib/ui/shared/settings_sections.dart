@@ -180,6 +180,33 @@ Widget _dropdown(
         },
 );
 
+/// A settings text field. It is rebuilt when [value] changes from outside,
+/// and the top padding leaves room for its floating label.
+Widget _textFormField(
+  String label,
+  String value,
+  ValueChanged<String>? onChanged, {
+  String? helper,
+  Widget? prefixIcon,
+  Widget? suffixIcon,
+  bool readOnly = false,
+}) => Padding(
+  padding: const EdgeInsets.only(top: 8),
+  child: TextFormField(
+    key: ValueKey("$label:$value"),
+    initialValue: value,
+    readOnly: readOnly,
+    decoration: InputDecoration(
+      labelText: label,
+      prefixIcon: prefixIcon,
+      suffixIcon: suffixIcon,
+      helperText: helper,
+      helperMaxLines: 3,
+    ),
+    onChanged: onChanged,
+  ),
+);
+
 SettingsSection downloadSettings(
   BuildContext context,
   MelodyApp app, {
@@ -188,7 +215,6 @@ SettingsSection downloadSettings(
   final settings = app.settingsDraft;
   final draft = settings.draft;
   final android = Platform.isAndroid;
-  final folder = draft.downloadDirectory;
   return SettingsSection(
     icon: Icons.download_for_offline_rounded,
     title: "Download defaults",
@@ -200,37 +226,33 @@ SettingsSection downloadSettings(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
-        TextFormField(
-          key: ValueKey("folder:$folder"),
-          initialValue: folder,
+        _textFormField(
+          "Music & download folder",
+          draft.downloadDirectory,
+          (value) => draft.downloadDirectory = value,
           readOnly: android || mobile,
-          decoration: InputDecoration(
-            labelText: "Music & download folder",
-            prefixIcon: const Icon(Icons.folder_rounded),
-            helperText: android
-                ? "Choose any folder inside Music. Changes apply when you save."
-                : mobile
-                ? "Choose a folder. Changes apply when you save."
-                : "Type a path or choose a folder. Changes apply when you save.",
-            helperMaxLines: 3,
-            suffixIcon: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: "Choose folder",
-                  onPressed: () => pickMusicFolder(app),
-                  icon: const Icon(Icons.drive_folder_upload_rounded),
-                ),
-                IconButton(
-                  tooltip: android ? "Open in Files" : "Open in file manager",
-                  onPressed: () => _openMusicFolder(app),
-                  icon: const Icon(Icons.open_in_new_rounded),
-                ),
-                const SizedBox(width: 4),
-              ],
-            ),
+          prefixIcon: const Icon(Icons.folder_rounded),
+          helper: android
+              ? "Choose any folder inside Music. Changes apply when you save."
+              : mobile
+              ? "Choose a folder. Changes apply when you save."
+              : "Type a path or choose a folder. Changes apply when you save.",
+          suffixIcon: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: "Choose folder",
+                onPressed: () => pickMusicFolder(app),
+                icon: const Icon(Icons.drive_folder_upload_rounded),
+              ),
+              IconButton(
+                tooltip: android ? "Open in Files" : "Open in file manager",
+                onPressed: () => _openMusicFolder(app),
+                icon: const Icon(Icons.open_in_new_rounded),
+              ),
+              const SizedBox(width: 4),
+            ],
           ),
-          onChanged: (value) => draft.downloadDirectory = value,
         ),
         Wrap(
           spacing: 12,
@@ -452,16 +474,6 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           contentPadding: EdgeInsets.zero,
         ),
         SwitchListTile(
-          value: draft.skipLoadingDelay,
-          onChanged: (value) =>
-              settings.update((draft) => draft.skipLoadingDelay = value),
-          title: const Text("Open as soon as the library is ready"),
-          subtitle: const Text(
-            "Skip the three-second minimum loading screen on your next launch.",
-          ),
-          contentPadding: EdgeInsets.zero,
-        ),
-        SwitchListTile(
           value: draft.normalizeLoudness,
           onChanged: (value) =>
               settings.update((draft) => draft.normalizeLoudness = value),
@@ -510,7 +522,10 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           value: draft.notifications,
           onChanged: (value) =>
               settings.update((draft) => draft.notifications = value),
-          title: const Text("Notify when tracks change"),
+          title: const Text("Show a message when the track changes"),
+          subtitle: const Text(
+            "A brief \"Now playing\" message inside Melody.",
+          ),
           contentPadding: EdgeInsets.zero,
         ),
         SwitchListTile(
@@ -520,9 +535,12 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                   (draft) => draft.autoFocalPointLiveNotifications = value,
                 )
               : null,
-          title: const Text("Auto Focal Point for Live Notifications"),
+          title: const Text("Center notification artwork on its subject"),
           subtitle: PlatformFeatures.systemMediaControls
-              ? null
+              ? const Text(
+                  "Crop cover art around its main subject instead of the "
+                  "middle.",
+                )
               : const Text(
                   "Not available: Linux has no system media controls.",
                 ),

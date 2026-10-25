@@ -53,6 +53,20 @@ class ApplicationStore {
   /// changed in place, which keeps these current.
   final Map<String, String> _written = {};
 
+  /// The most download history entries kept.
+  static const maxDownloadRecords = 250;
+
+  /// The played-track histories, newest first, and how many each keeps.
+  static const _playHistories = [
+    ("recent_tracks", 20),
+    ("playback_history", 100),
+  ];
+
+  static const _searchHistoryKey = "search_history";
+
+  /// How many earlier searches the search history keeps.
+  static const _searchHistoryLimit = 20;
+
   /// Pending play batches may arrive after a track is removed. Keep their IDs
   /// for this process lifetime so those writes cannot recreate it.
   final Set<String> _deletedTrackIds = {};
@@ -249,7 +263,7 @@ class ApplicationStore {
 
   void removeTrackDetails(String trackId) {
     final histories = {
-      for (final name in const ["recent_tracks", "playback_history"])
+      for (final (name, _) in _playHistories)
         name: _stringList(name).where((item) => item != trackId).toList(),
     };
     _commit(histories, trackDetails: {trackId: _missing});
@@ -292,32 +306,25 @@ class ApplicationStore {
 
   void set(String key, Object? value) => _commit({key: _clone(value)});
 
-  void addRecent(String key, String value, {int limit = 50}) =>
-      _commit({key: _recentItems(key, value, limit: limit)});
+  /// Library tracks played lately, newest first. It may name tracks the
+  /// library no longer has; readers skip them.
+  List<String> recentTrackIds() => _stringList("recent_tracks");
 
-  /// Updates play metadata, histories, and optional session state atomically.
-  void recordPlay(
-    String trackId, {
-    required double playedAt,
-    Map<String, Object?>? playback,
-  }) {
-    if (_deletedTrackIds.contains(trackId)) return;
-    final details = trackDetails(trackId)
-      ..playCount += 1
-      ..lastPlayed = playedAt;
-    _commit(
-      {
-        "recent_tracks": _recentItems("recent_tracks", trackId, limit: 20),
-        "playback_history": _recentItems(
-          "playback_history",
-          trackId,
-          limit: 100,
-        ),
-        if (playback != null) "playback": _clone(playback),
-      },
-      trackDetails: {trackId: details.toJson()},
-    );
-  }
+  /// Earlier search queries, newest first.
+  List<String> searchHistory() => _stringList(_searchHistoryKey);
+
+  /// Puts [query] first in the search history, dropping its earlier place.
+  void addSearch(String query) => _commit({
+    _searchHistoryKey: _recentItems(
+      _searchHistoryKey,
+      query,
+      limit: _searchHistoryLimit,
+    ),
+  });
+
+  /// Replaces the search history with [queries], newest first.
+  void saveSearchHistory(List<String> queries) =>
+      _commit({_searchHistoryKey: List.of(queries)});
 
   List<DownloadRecord> downloads() => [
     if (_data["downloads"] case final List<Object?> records)
@@ -328,7 +335,9 @@ class ApplicationStore {
 
   void saveDownloads(Iterable<DownloadRecord> records) {
     final list = records.toList();
-    final retained = list.length > 250 ? list.sublist(list.length - 250) : list;
+    final retained = list.length > maxDownloadRecords
+        ? list.sublist(list.length - maxDownloadRecords)
+        : list;
     _commit({
       "downloads": [for (final record in retained) record.toJson()],
     });
@@ -356,7 +365,7 @@ class ApplicationStore {
     };
     final staleHistory = <String>{};
     final histories = <String, Object?>{};
-    for (final name in const ["recent_tracks", "playback_history"]) {
+    for (final (name, _) in _playHistories) {
       final items = _stringList(name);
       staleHistory.addAll(items.where((item) => !validIds.contains(item)));
       histories[name] = items.where(validIds.contains).toList();
@@ -409,10 +418,7 @@ class ApplicationStore {
       }
       // [plays] is oldest-to-newest; recents are newest first.
       final newest = accepted.keys.toList().reversed;
-      for (final (name, limit) in const [
-        ("recent_tracks", 20),
-        ("playback_history", 100),
-      ]) {
+      for (final (name, limit) in _playHistories) {
         updates[name] = {...newest, ..._stringList(name)}.take(limit).toList();
       }
     }

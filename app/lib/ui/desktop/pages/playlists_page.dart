@@ -1,3 +1,5 @@
+import "dart:async";
+
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
@@ -43,10 +45,22 @@ class PlaylistsPage extends StatelessWidget {
                   "A collection for every mood and moment.",
                 ),
               ),
-              OutlinedButton.icon(
-                onPressed: () => showImportPlaylistDialog(context, app),
-                icon: const Icon(Icons.playlist_add_rounded, size: 20),
-                label: const Text("Import playlist"),
+              MenuAnchor(
+                alignmentOffset: const Offset(0, 4),
+                menuChildren: [
+                  for (final action in importPlaylistActions(context, app))
+                    MenuItemButton(
+                      leadingIcon: Icon(action.icon, size: 19),
+                      onPressed: () =>
+                          unawaited(Future.sync(action.onSelected)),
+                      child: Text(action.label),
+                    ),
+                ],
+                builder: (context, menu, _) => OutlinedButton.icon(
+                  onPressed: () => menu.isOpen ? menu.close() : menu.open(),
+                  icon: const Icon(Icons.playlist_add_rounded, size: 20),
+                  label: const Text("Import playlist"),
+                ),
               ),
               PrimaryButton(
                 "New playlist",

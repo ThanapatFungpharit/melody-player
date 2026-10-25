@@ -7,7 +7,7 @@ on:
       - "v*"
 
 env:
-  FLUTTER_VERSION: "3.44.8"
+  FLUTTER_VERSION: "3.47.7"
   # Authenticates the media tools' GitHub release lookups.
   GITHUB_TOKEN: ${{ github.token }}
 

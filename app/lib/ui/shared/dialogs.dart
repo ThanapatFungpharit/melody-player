@@ -655,6 +655,33 @@ Future<void> exportPlaylist(MelodyApp app, Playlist playlist) => app.run(() {
   );
 });
 
+/// Picks an M3U or M3U8 file and makes a playlist of its library tracks.
+Future<void> importPlaylistFile(MelodyApp app) => app.run(() async {
+  final result = await FilePicker.pickFiles(
+    dialogTitle: "Import playlist file",
+    type: FileType.custom,
+    allowedExtensions: const ["m3u8", "m3u"],
+    withData: true,
+  );
+  final file = result?.files.firstOrNull;
+  if (file == null) return;
+  final bytes =
+      file.bytes ??
+      (file.path != null ? await File(file.path!).readAsBytes() : null);
+  if (bytes == null) {
+    throw const FormatException("The selected playlist file could not be read");
+  }
+  await app.playlists.importFromFile(
+    bytes,
+    file.name,
+    // Relative entries are relative to the file; a picker's cached copy
+    // (Android) has no such folder, so those match by name.
+    directory: file.path != null && !Platform.isAndroid
+        ? p.dirname(file.path!)
+        : null,
+  );
+});
+
 Future<void> pickCookieFile(MelodyApp app) async {
   final FilePickerResult? result;
   try {

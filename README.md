@@ -52,7 +52,7 @@ for versions and runtime ytmusicapi/yt-dlp updates.
 
 ## Run from source
 
-Requirements: Flutter 3.44.8, [uv](https://docs.astral.sh/uv/), and on Windows
+Requirements: Flutter 3.47.7, [uv](https://docs.astral.sh/uv/), and on Windows
 Visual Studio with the C++ desktop workload.
 
 During development the worker runs in a normal Python interpreter instead of

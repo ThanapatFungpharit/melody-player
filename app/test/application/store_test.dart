@@ -31,17 +31,20 @@ void main() {
   });
 
   test("references to removed tracks are dropped and stay gone", () async {
-    for (final id in ["kept", "gone"]) {
-      store.recordPlay(id, playedAt: 1);
-    }
+    store.savePlaybackUpdates(
+      {
+        "playback": _session(["kept", "gone"]),
+      },
+      {"kept": 1, "gone": 1},
+    );
     store.saveTrackDetails("orphan", TrackDetails(favorite: true));
 
     // "gone" has details and history; "orphan" only details.
     expect(store.reconcileTrackReferences({"kept"}), 2);
 
-    store.recordPlay("gone", playedAt: 2);
+    store.savePlaybackUpdates(const {}, {"gone": 1});
     final reopened = await reopen();
-    expect(reopened.get("recent_tracks"), ["kept"]);
+    expect(reopened.recentTrackIds(), ["kept"]);
     expect(reopened.get("playback_history"), ["kept"]);
     expect(reopened.hasTrackDetails("gone"), isFalse);
     expect(reopened.favoriteTrackIds(), isEmpty);
@@ -50,16 +53,17 @@ void main() {
   test("clearing library data keeps settings and search history", () async {
     store
       ..saveSettings(store.settings..theme = "dark")
-      ..addRecent("search_history", "query")
-      ..recordPlay(
-        "track",
-        playedAt: 1,
-        playback: {
-          "queue": ["track"],
-          "current_index": 0,
-          "position_ms": 1200,
-          "repeat": "playlist",
+      ..addSearch("query")
+      ..savePlaybackUpdates(
+        {
+          "playback": {
+            "queue": ["track"],
+            "current_index": 0,
+            "position_ms": 1200,
+            "repeat": "playlist",
+          },
         },
+        {"track": 1},
       );
 
     store.clearLibraryData();
@@ -68,8 +72,8 @@ void main() {
 
     final reopened = await reopen();
     expect(reopened.settings.theme, "dark");
-    expect(reopened.get("search_history"), ["query"]);
-    expect(reopened.get("recent_tracks"), isEmpty);
+    expect(reopened.searchHistory(), ["query"]);
+    expect(reopened.recentTrackIds(), isEmpty);
     expect(reopened.hasTrackDetails("track"), isFalse);
     expect(reopened.get("playback"), {
       "queue": <Object?>[],
@@ -106,7 +110,7 @@ void main() {
     final reopened = await reopen();
     expect(reopened.trackDetails("a").playCount, 2);
     expect(reopened.trackDetails("b").playCount, 1);
-    expect(reopened.get("recent_tracks"), ["b", "a"]);
+    expect(reopened.recentTrackIds(), ["b", "a"]);
   });
 
   test("download history keeps only the newest records", () async {
@@ -143,13 +147,13 @@ void main() {
 
   test("a value written back to an earlier state is saved", () async {
     store
-      ..set("search_history", ["a"])
-      ..set("search_history", ["b"])
-      ..set("search_history", ["a"]);
-    expect((await reopen()).get("search_history"), ["a"]);
+      ..saveSearchHistory(["a"])
+      ..saveSearchHistory(["b"])
+      ..saveSearchHistory(["a"]);
+    expect((await reopen()).searchHistory(), ["a"]);
     // Writing what is stored changes nothing.
-    store.set("search_history", ["a"]);
-    expect((await reopen()).get("search_history"), ["a"]);
+    store.saveSearchHistory(["a"]);
+    expect((await reopen()).searchHistory(), ["a"]);
   });
 
   test("clearing library data again removes details added since", () async {
@@ -163,3 +167,10 @@ void main() {
     expect(reopened.hasTrackDetails("second"), isFalse);
   });
 }
+
+Map<String, Object?> _session(List<String> queue) => {
+  "queue": queue,
+  "current_index": 0,
+  "position_ms": 0,
+  "repeat": "off",
+};

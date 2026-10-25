@@ -61,9 +61,7 @@ class MobileLyrics extends StatelessWidget {
         builder: (context) {
           final playback = app.playback;
           final info = NowPlayingInfo.of(app);
-          final hasMedia =
-              playback.currentTrackId != null ||
-              playback.externalTitle.isNotEmpty;
+          final hasMedia = playback.hasMedia;
           final muted = playback.muted || playback.volume == 0;
           return Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,

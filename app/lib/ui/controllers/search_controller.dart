@@ -152,19 +152,16 @@ class MusicSearchController extends ChangeNotifier {
   /// results that were found.
   void _rememberQuery(String query) {
     try {
-      app.services.store.addRecent(_historyKey, query, limit: 20);
+      app.services.store.addSearch(query);
     } on Object catch (error) {
       debugPrint("Search history was not saved: $error");
     }
   }
 
-  static const _historyKey = "search_history";
-
   /// Earlier queries, newest first, offered while the search is empty.
   List<String> get recentSearches => [
-    if (app.services.store.get(_historyKey) case final List<Object?> items)
-      for (final item in items)
-        if (item is String && item.trim().isNotEmpty) item,
+    for (final item in app.services.store.searchHistory())
+      if (item.trim().isNotEmpty) item,
   ];
 
   /// Runs [query] again, as if it had been typed and submitted.
@@ -180,7 +177,7 @@ class MusicSearchController extends ChangeNotifier {
 
   void _saveHistory(List<String> items) {
     try {
-      app.services.store.set(_historyKey, items);
+      app.services.store.saveSearchHistory(items);
     } on Object catch (failure) {
       app.reportFailure(failure);
     }

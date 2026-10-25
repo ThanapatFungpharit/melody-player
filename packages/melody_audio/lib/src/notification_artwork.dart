@@ -16,7 +16,7 @@ void useNotificationArtworkDirectory(String path) =>
 
 // Names the automatic crop algorithm in cache keys. Change it whenever crops
 // change so artwork prepared by an earlier version is not reused.
-const _automaticMode = "auto-u2netp256-int8-composition-2";
+const _automaticMode = "auto-u2netp256-int8-composition-3";
 
 /// Prepares square media-session art in Flutter before the OS renders its panel.
 class NotificationArtwork {
@@ -78,10 +78,15 @@ class NotificationArtwork {
       if (descriptor.width < 1 || descriptor.height < 1) return source;
       renderCodec = await _codec(descriptor, 512);
       full = (await renderCodec.getNextFrame()).image;
-      final (focalPoint, reusable) = automatic
+      final (focalPoint, content, reusable) = automatic
           ? await _focalPoint(descriptor, full)
-          : (centerFocalPoint, true);
-      final rectangle = focalCropRect(full.width, full.height, focalPoint);
+          : (centerFocalPoint, null, true);
+      final rectangle = focalCropRect(
+        full.width,
+        full.height,
+        focalPoint,
+        content: content,
+      );
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(recorder);
       canvas.drawImageRect(
@@ -114,9 +119,11 @@ class NotificationArtwork {
     }
   }
 
-  /// Normalized focal point of the artwork decoded as [full], and whether it
-  /// is the final answer rather than a fallback worth retrying later.
-  Future<(ui.Offset, bool)> _focalPoint(
+  /// Normalized focal point of the artwork decoded as [full], its picture
+  /// without letterbox bars in [full]'s pixels (null for the whole image),
+  /// and whether it is the final answer rather than a fallback worth retrying
+  /// later.
+  Future<(ui.Offset, ui.Rect?, bool)> _focalPoint(
     ui.ImageDescriptor descriptor,
     ui.Image full,
   ) async {
@@ -129,10 +136,18 @@ class NotificationArtwork {
       final pixels = await sample.toByteData(
         format: ui.ImageByteFormat.rawRgba,
       );
-      if (pixels == null) return (centerFocalPoint, false);
+      if (pixels == null) return (centerFocalPoint, null, false);
       final rgba = pixels.buffer.asUint8List();
       final content = artworkContent(rgba, sample.width, sample.height);
-      if (content == null) return (centerFocalPoint, true);
+      if (content == null) return (centerFocalPoint, null, true);
+      final scaleX = full.width / sample.width;
+      final scaleY = full.height / sample.height;
+      final picture = ui.Rect.fromLTRB(
+        content.$1 * scaleX,
+        content.$2 * scaleY,
+        content.$3 * scaleX,
+        content.$4 * scaleY,
+      );
       final saliency = await _modelSaliency(full, sample, content);
       if (saliency != null) {
         final focal = focalPointFromSaliency(
@@ -142,7 +157,7 @@ class NotificationArtwork {
           sample.height,
           content,
         );
-        return (focal, true);
+        return (focal, picture, true);
       }
       // Pure Dart analysis runs off the UI isolate so it cannot drop frames
       // on slow phones. On the web, compute runs it inline.
@@ -151,7 +166,7 @@ class NotificationArtwork {
         sample.width,
         sample.height,
       ));
-      return (focal, false);
+      return (focal, picture, false);
     } finally {
       sample?.dispose();
       sampleCodec?.dispose();

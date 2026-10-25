@@ -10,7 +10,7 @@ void main() {
   test("play next and append are distinct", () {
     final queue = PlaybackQueue()..replace(["a", "b"]);
     queue
-      ..addNext("next")
+      ..addNextAll(["next"])
       ..addLast("last");
     expect(queue.items, ["a", "next", "b", "last"]);
   });
@@ -115,7 +115,7 @@ void main() {
       ..replace(["a", "b", "c", "d"]);
     queue
       ..shuffleUpcoming()
-      ..addNext("n");
-    expect(queue.peekNext(), "n");
+      ..addNextAll(["n"]);
+    expect(queue.items[queue.nextIndex()!], "n");
   });
 }
