@@ -242,6 +242,11 @@ class AudioEngine {
   /// The decoder [_continueQueue] is moving on, so it runs once for it.
   AudioPlayer? _continuing;
 
+  /// The listener has been told the queue finished. Edits wait for the next
+  /// Play or Next: appending to a finished media_kit decoder starts the new
+  /// row by itself and leaves it unable to advance or report completion.
+  bool _queueFinished = false;
+
   void attach(AudioEngineListener listener, {double volume = 1}) {
     _listener = listener;
     setVolume(volume);
@@ -369,7 +374,7 @@ class AudioEngine {
   /// cannot insert within a playlist.
   Future<void> _applyRows() async {
     final player = _player;
-    if (!_rowsStale || player == null) return;
+    if (!_rowsStale || player == null || _queueFinished) return;
     _rowsStale = false;
     final wanted = _upcoming();
     final first = _playlistIndex + 1;
@@ -430,6 +435,7 @@ class AudioEngine {
     _rows = const [];
     _rowSync = Future.value();
     _rowsStale = false;
+    _queueFinished = false;
     _detachedSuccessor = -1;
     _queueIndex = -1;
     _playlistIndex = -1;
@@ -756,6 +762,13 @@ class AudioEngine {
         return true;
       case MediaCommand.skipToNext:
         if (player == null || _queue.isEmpty) return false;
+        if (player.processingState == ProcessingState.completed &&
+            _upcoming().isNotEmpty) {
+          _playbackWanted = true;
+          _retainPlayback();
+          await _continueQueue(player);
+          return true;
+        }
         final next = _playlistIndex + 1;
         if (next < _rows.length) {
           await player.seek(Duration.zero, index: next);
@@ -886,6 +899,7 @@ class AudioEngine {
       // Whatever the old decoder is doing, even hung, is no longer relevant.
       _rowSync = Future.value();
       _rowsStale = false;
+      _queueFinished = false;
       _playlistIndex = 0;
       _queueIndex = active.queueIndex;
       _detachedSuccessor = -1;
@@ -964,6 +978,12 @@ class AudioEngine {
             state.processingState == ProcessingState.idle) {
           return;
         }
+        final completed = state.processingState == ProcessingState.completed;
+        if (_queueFinished && !completed) {
+          // Playing again: edits held since the queue finished can land.
+          _queueFinished = false;
+          if (_rowsStale) _syncRowsInBackground(player);
+        }
         _onIndex(player, player.currentIndex);
         // Playing, pausing, buffering, and completing move the boundary.
         _planBoundary();
@@ -987,12 +1007,14 @@ class AudioEngine {
         }
         // The decoder ran out of rows while the queue has more: this isolate
         // fell behind, or an edit removed the row it had just moved to.
-        if (state.processingState == ProcessingState.completed &&
-            _upcoming().isNotEmpty) {
-          unawaited(_continueQueue(player));
-          return;
+        if (completed && !_queueFinished) {
+          if (_upcoming().isNotEmpty) {
+            unawaited(_continueQueue(player));
+            return;
+          }
+          _queueFinished = true;
         }
-        final phase = state.processingState == ProcessingState.completed
+        final phase = completed
             ? AudioPlaybackState.completed
             : state.playing
             ? AudioPlaybackState.playing
@@ -1059,13 +1081,16 @@ class AudioEngine {
   Future<void> _continueQueue(AudioPlayer player) async {
     if (identical(_continuing, player)) return;
     _continuing = player;
+    _queueFinished = false;
     try {
+      // A completed decoder drops play() until a pause clears it.
+      await player.pause();
+      // Released first, so the new rows reach the reload rather than a
+      // finished media_kit decoder.
+      if (_completionOutlivesSeek) await player.stop();
       await _syncRows();
       final next = _playlistIndex + 1;
       if (player != _player || next >= _rows.length) return;
-      // A completed decoder drops play() until a pause clears it.
-      await player.pause();
-      if (_completionOutlivesSeek) await player.stop();
       await player.seek(Duration.zero, index: next);
       if (_playbackWanted) _startPlaying(player);
     } catch (error) {
@@ -1102,6 +1127,14 @@ class AudioEngine {
   /// Starts the active decoder. just_audio ignores play() on a completed
   /// source, so a Play press after completion restarts it like a new request.
   Future<void> _resume(AudioPlayer player, {Duration? position}) async {
+    // Rows added since the queue finished come next, unless the caller asked
+    // for a place in the finished track.
+    if (player.processingState == ProcessingState.completed &&
+        (position == null || position <= Duration.zero) &&
+        _upcoming().isNotEmpty) {
+      await _continueQueue(player);
+      return;
+    }
     if (player.processingState == ProcessingState.completed && player.playing) {
       // just_audio keeps `playing` true after completion and drops play()
       // until a pause clears it; media_kit also stays at the end after a seek.

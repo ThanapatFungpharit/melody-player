@@ -232,6 +232,10 @@ The decoder's playlist is linear and changes only after the playing row:
 - **A decoder that runs out of rows** while the queue has more (this isolate
   fell behind, or an edit removed the row it had just moved to) continues with
   the next row rather than reporting completion.
+- **A finished queue** stays stopped when rows are added. The edit waits, since
+  appending to a finished media_kit decoder would start the row and leave it
+  unable to advance or report completion. Play or Next moves on to the new row,
+  releasing that decoder first on desktop.
 
 The controller must not independently advance a native completion. Pause keeps
 the media session; only Stop releases the decoder, keep-alive resources, and system

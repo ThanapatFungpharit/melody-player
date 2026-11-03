@@ -577,13 +577,89 @@ void main() {
       player.complete();
       await _settle();
       final seeks = player.seeks.length;
+      final edits = player.edits;
 
       await updateQueue(["a", "b"], 0);
       await _settle();
-      expect(_rowIds(player), ["a", "b"]);
+      // Appending would make a finished media_kit decoder start the row.
+      expect(player.edits, edits);
+      expect(_rowIds(player), ["a"]);
       expect(player.index, 0);
       expect(player.seeks, hasLength(seeks));
       expect(playbackState().trackId, "a");
+    });
+
+    group("on a finished queue", () {
+      late FakeAudioPlayer player;
+      late List<AudioEngineEvent> events;
+
+      setUp(() async {
+        await setQueue(["a"], 0, autoplay: true);
+        player = audio.last;
+        await _settle();
+        player.complete();
+        await _settle();
+        await updateQueue(["a", "b", "c"], 0);
+        await _settle();
+        events = [];
+        void listener(AudioEngineEvent event) => events.add(event);
+        engine.attach(listener);
+        addTearDown(() => engine.detach(listener));
+      });
+
+      Future<void> expectPlayingNewRow() async {
+        expect(_rowIds(player), ["a", "b", "c"]);
+        expect(player.index, 1);
+        expect(player.playing, isTrue);
+        expect(playbackState().trackId, "b");
+        expect(events.whereType<AudioTrackChanged>().map((e) => e.trackId), [
+          "b",
+        ]);
+        // It carries on through the rows and finishes again.
+        player.autoAdvance(2);
+        await _settle();
+        expect(playbackState().trackId, "c");
+        player.complete();
+        await _settle();
+        expect(
+          events.whereType<AudioStateChanged>().map((e) => e.state),
+          contains(AudioPlaybackState.completed),
+        );
+      }
+
+      test("Play moves on to the new row", () async {
+        await engine.play();
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("Resume moves on to the new row", () async {
+        await engine.resume();
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("system Play moves on to the new row", () async {
+        await engine.handleMediaAction(MediaCommand.play);
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("system Next moves on to the new row", () async {
+        await engine.handleMediaAction(MediaCommand.skipToNext);
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("Play at a position stays in the finished track", () async {
+        await engine.play(position: const Duration(seconds: 30));
+        await _settle();
+        expect(player.index, 0);
+        expect(playbackState().trackId, "a");
+        expect(player.playing, isTrue);
+        // Back in the track, the held edit reaches the decoder.
+        expect(_rowIds(player), ["a", "b", "c"]);
+      });
     });
 
     test("edits arriving together end at the last one", () async {
