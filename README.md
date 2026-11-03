@@ -121,7 +121,7 @@ Downloaded audio defaults to `~/Music/Melody` on desktop. On Android (11 or newe
 downloads are saved straight to the public `Music/Melody` folder, or another
 folder inside `Music` chosen in Settings, without any storage permission. The
 music folder only ever receives finished audio: each download stages in the app
-data folder (partial streams, thumbnails, receipts), and that staging is
+data folder (partial streams and thumbnails), and that staging is
 removed when the download ends. On desktop, Settings shows the app data folder
 with buttons to open it or copy its path. Its `cache` folder is safe to delete
 while Melody is closed.

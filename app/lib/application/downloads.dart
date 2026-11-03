@@ -1,5 +1,4 @@
 import "dart:async";
-import "dart:io";
 import "dart:math";
 
 import "package:flutter/foundation.dart";
@@ -7,7 +6,6 @@ import "package:path/path.dart" as p;
 import "package:uuid/uuid.dart";
 
 import "../core/downloader/downloader.dart";
-import "../core/downloader/receipts.dart";
 import "../core/errors.dart";
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
@@ -209,7 +207,6 @@ class DownloadCoordinator extends ChangeNotifier {
     LyricsLibrary? lyrics,
     Map<String, Object?> Function() sharedOptions = _noSharedOptions,
     required String stagingDirectory,
-    required String receiptDirectory,
   }) async {
     final coordinator = DownloadCoordinator._(
       manager,
@@ -223,7 +220,6 @@ class DownloadCoordinator extends ChangeNotifier {
         audioExtensions: {settings.downloadFormat.extension},
         options: downloadOptions(settings, sharedOptions()),
         stagingDirectory: stagingDirectory,
-        receiptDirectory: receiptDirectory,
       ),
       lyrics,
       sharedOptions,
@@ -241,7 +237,6 @@ class DownloadCoordinator extends ChangeNotifier {
     if (abandoned > 0) {
       debugPrint("Removed $abandoned abandoned download staging folder(s)");
     }
-    await _recoverHandoffs();
     final lost = await _lostTrackIds();
     var recovered = false;
     for (final record in _records.values) {
@@ -277,15 +272,28 @@ class DownloadCoordinator extends ChangeNotifier {
     if (recovered) _persist();
   }
 
-  /// Starts over what the last run was still downloading. Call it once
-  /// [onRecord] is listening. One that cannot start stays failed, to retry by
-  /// hand.
+  /// Starts over what the last run was still downloading, unless it reached
+  /// the library just before the end. Call it once [onRecord] is listening.
+  /// One that cannot start stays failed, to retry by hand.
   Future<void> resumeInterrupted() async {
     final interrupted = List.of(_interrupted);
     _interrupted.clear();
     for (final id in interrupted) {
       try {
-        if (_records.containsKey(id)) await retry(id);
+        final record = _records[id];
+        if (record == null) continue;
+        if (await availableTrack(record.url) case final track?) {
+          record
+            ..status = DownloadStatus.completed
+            ..progress = 1.0
+            ..error = ""
+            ..trackIds = [track.id]
+            ..completedAt = unixSeconds();
+          _persist();
+          _publish(record);
+        } else {
+          await retry(id);
+        }
       } catch (error) {
         debugPrint("Could not resume download $id: $error");
       }
@@ -655,6 +663,10 @@ class DownloadCoordinator extends ChangeNotifier {
         status = DownloadStatus.failed;
         error = "Downloaded, but could not add to the library: $failure";
         imported = null;
+        // Retrying downloads it again, so this attempt leaves no stray file.
+        for (final path in result.files) {
+          if (!manager.isPathReferenced(path)) await deleteQuietly(path);
+        }
       }
     }
     record
@@ -676,11 +688,6 @@ class DownloadCoordinator extends ChangeNotifier {
     _expire();
     _prune();
     _persist();
-    if (record.status == DownloadStatus.completed) {
-      await deleteQuietly(
-        receiptPath(_downloader.receiptDirectory, result.task),
-      );
-    }
     _publish(record);
   }
 
@@ -691,98 +698,6 @@ class DownloadCoordinator extends ChangeNotifier {
       await thumbnails?.store(trackId, artwork);
     }
   }
-
-  /// Finishes downloads whose bytes survived but whose registration was
-  /// interrupted, then retires each receipt. Only files that still match
-  /// their checksums are adopted; missing or changed ones are left as they
-  /// are, and unrelated files in the music folder are never touched. A
-  /// receipt is kept only when importing fails, to retry next launch.
-  Future<void> _recoverHandoffs() async {
-    final directory = Directory(_downloader.receiptDirectory);
-    if (!await directory.exists()) return;
-    final receipts = [
-      await for (final entity in directory.list(followLinks: false))
-        if (entity is File &&
-            p.extension(entity.path) == ".json" &&
-            !isTemporaryFile(p.basename(entity.path)))
-          entity,
-    ];
-    for (final file in receipts) {
-      final Receipt receipt;
-      try {
-        receipt = await readReceipt(file.path);
-      } on FormatException catch (error) {
-        // It can vouch for no file, so it goes; the files it names stay.
-        debugPrint("Discarding unreadable receipt ${file.path}: $error");
-        await deleteQuietly(file.path);
-        continue;
-      } on Object catch (error) {
-        debugPrint("Could not read download receipt ${file.path}: $error");
-        continue;
-      }
-      if (receipt.unverified > 0) {
-        debugPrint(
-          "${receipt.unverified} file(s) of download ${receipt.taskId} are "
-          "missing or changed; they are left as they are",
-        );
-      }
-      if (receipt.files.isEmpty) {
-        await deleteQuietly(file.path);
-        continue;
-      }
-      try {
-        final existing = _records[receipt.taskId];
-        final metadata = _DownloadMetadata.url(
-          receipt.url,
-          title:
-              existing?.title ??
-              p.basenameWithoutExtension(receipt.files.first),
-        );
-        final trackIds = <String>[];
-        for (final path in receipt.files) {
-          final (trackId, _) = await _importDownloadedFile(
-            await _intoMusicFolder(path),
-            metadata,
-            title: metadata.title,
-            uploader: existing?.uploader ?? "",
-            thumbnail: existing?.thumbnail ?? "",
-          );
-          trackIds.add(trackId);
-        }
-        final record = _ensureRecord(receipt.taskId, metadata);
-        record
-          ..status = DownloadStatus.completed
-          ..progress = 1.0
-          ..error = ""
-          ..errorKind = ""
-          ..recovery = ""
-          ..trackIds = trackIds
-          ..completedAt = unixSeconds()
-          ..filename = p.basename(manager.trackPath(trackIds.first));
-        _activeBySource.remove(sourceKey(receipt.url));
-        _persist();
-      } on ArgumentError catch (error) {
-        // Can never succeed: retired, and the files stay where they are.
-        debugPrint("Retiring download receipt ${file.path}: $error");
-      } on Object catch (error) {
-        // Such as a disk error: the next launch tries again.
-        debugPrint("Could not reconcile download receipt ${file.path}: $error");
-        continue;
-      }
-      await deleteQuietly(file.path);
-    }
-  }
-
-  /// [path], moved into the music folder first when it is elsewhere: the
-  /// music folder changed after the download finished but before its file
-  /// was registered.
-  Future<String> _intoMusicFolder(String path) =>
-      manager.mutation.run(() async {
-        if (samePath(p.dirname(path), manager.musicFolder)) return path;
-        final target = availablePath(manager.musicFolder, p.basename(path));
-        await moveFile(path, target);
-        return target;
-      });
 
   /// Registers audio or reuses its library identity, keeping existing metadata.
   Future<(String, String)> _importDownloadedFile(

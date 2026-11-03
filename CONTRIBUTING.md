@@ -62,7 +62,7 @@ opens your real data.
 For stateful changes, test failure boundaries: persistence failing after bytes
 are written, a callback from an obsolete decoder generation, simultaneous
 commands, cancellation just before completion, and restart with an interrupted
-receipt. Include native-device checks for background audio changes; headless
+download. Include native-device checks for background audio changes; headless
 tests cannot validate OS audio focus, process recreation, or lock-screen
 controls.
 

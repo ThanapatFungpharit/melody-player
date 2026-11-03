@@ -173,7 +173,7 @@ them to the playback controller.
 | Track UUIDs, file references, hashes, playlists | `MusicManager` (`library.db`) | Services coordinate registration and deletion through `mutation` |
 | Settings, track details, history, session queue, download history | `ApplicationStore` (`state.db`) | Writes commit atomically; failure restores in-memory values |
 | Staged download files, cancellation, terminal outcome | `Downloader` | The worker writes only inside the staging directory it is given (and yt-dlp's cache folder, also chosen by the app) |
-| Download reuse, registration, retry, receipt replay | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once, byte progress never (a download active at startup is reported as interrupted) |
+| Download reuse, registration, retry, resuming after a restart | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once, byte progress never (a download active at startup starts over) |
 | Embedded cover artwork | The downloaded media container | The downloader reads it back before committing the file |
 | Cover art for the UI, one file per track ID | `ThumbnailCache` | Read from the track's own file: when a download is registered or a file imported, else by the background pass after launch (`LibraryService.readMissingMetadata`), which covers earlier imports and a deleted cache. An empty entry records a file without art, so it is not read again. Entries of removed tracks go with them and at launch (`LibraryService.removeUnusedCaches`) |
 | Runtime ytmusicapi and yt-dlp selection | `worker/src/melody_worker/updater/`, once per launch before import | `PackageRuntime` (one per package) schedules updates and reports status |
@@ -329,14 +329,12 @@ downloader reads the cover back from every audio file with `core/artwork.dart`
 still kept, and plays with a placeholder. Only verified bytes reach the
 thumbnail cache.
 
-Before completed files are promoted, a checksum receipt
-(`downloads/receipts/<task>.json`) records their names, hashes, folder,
-source, and task.
-Registration acknowledges it. At startup each receipt is resolved: files that
-still match their checksums are registered, missing or changed files are left
-as they are (a changed file is no longer provably the download's), and the
-receipt is deleted, as is one that cannot be read. A receipt survives only
-when registering its files fails, so the next launch retries. Cancellation is
+Promotion and registration are the last two steps, one right after the other.
+If registering fails, the promoted file is removed and the download can be
+retried. If the process ends between them, the download starts over at the next
+launch and the promoted file stays, listed by Maintenance as not in the library.
+A download registered just before the process ended is recognized by its source
+and not repeated. Cancellation is
 cooperative and decided once: cancellation accepted before completion wins and
 cleans owned outputs.
 
@@ -354,7 +352,6 @@ installs upgrade in place; inside it:
 | `music-move.json` | The files of a music folder move in progress | `MusicManager` |
 | `lyrics/` | Saved lyrics, `<provider>_<id>.json` | `LyricsLibrary` |
 | `downloads/staging/` | One locked `job-*` folder per running download | `Downloader` |
-| `downloads/receipts/` | `<task>.json` for completed, unregistered downloads | `Downloader` writes, `DownloadCoordinator` acknowledges |
 | `runtime/yt-dlp/`, `runtime/ytmusicapi/` | Runtime package updates, separate from the bundled copies | The worker's updater |
 | `cache/artwork/` | Artwork copied out of audio files, `<track id>.thumb` | `ThumbnailCache` |
 | `cache/yt-dlp/` | yt-dlp's player and signature cache (`cachedir`) | yt-dlp; pruned by `pruneYtDlpCache` |
@@ -366,7 +363,7 @@ Rules that keep it predictable:
 - **Persistent, runtime, and cache data are separate.** Everything under
   `cache/` can be deleted while Melody is closed; it is rebuilt or fetched
   again. Deleting `runtime/` falls back to the bundled packages.
-- **The music folder holds audio only.** Downloads stage and keep receipts in
+- **The music folder holds audio only.** Downloads stage in
   `downloads/` on every platform, and only finished audio is moved to the
   music folder (copied when it is on another volume). Melody's only other
   files there are `.melody-tmp-*` copies renamed into place.
@@ -375,17 +372,16 @@ Rules that keep it predictable:
   for Android's `Music`), and `removeStaleTemporaries` recognizes exactly
   those names (plus the Python releases' `mkstemp` names).
 - **Stored paths are relative where Melody owns the folder.** Library
-  filenames are relative to the music folder; receipt entries are bare names
-  inside the receipt's recorded folder. Both are validated against traversal
+  filenames are relative to the music folder, and are validated against traversal
   before use. Absolute paths remain only for the user-chosen music folder,
   imported originals, and Android tracks inside the public `Music` root.
 - **Earlier layouts are upgraded in one place.** `storage_upgrade.dart` holds
   every legacy name: it moves `thumbnails/`, `yt-dlp-runtime/`,
   `ytmusicapi-runtime/`, and `yt-dlp-cache/` into the layout above before
   anything opens them, drops the `cookie_file` setting (an empty one removes
-  `cookies.txt`), moves `.melody-download-*.json` receipts from the music
-  folder into `downloads/receipts/`, sweeps abandoned `.melody-download-*`
-  staging beside the music, and moves Android's private `Music/` tracks to
+  `cookies.txt`), deletes the `.melody-download-*.json` receipts and the
+  `downloads/receipts/` folder of earlier releases, sweeps abandoned
+  `.melody-download-*` staging beside the music, and moves Android's private `Music/` tracks to
   the public music folder. Pre-SQLite `state.json` and `library.mmdb` are
   imported by their stores and kept with a `.migrated` suffix until a later
   launch has opened the databases. The old `download-staging/` folder and
@@ -413,14 +409,9 @@ outcome and again at the next launch if the process ended first:
   is gone. Imported copies are kept unless the full reset asks otherwise.
   The artwork and saved lyrics of a removed track go with its last entry,
   and at launch if anything was missed.
-- **Receipts.** Acknowledged when their files are registered, deleted when
-  their download fails or is cancelled, and resolved at launch otherwise. A
-  receipt whose files are in an earlier music folder moves them into the
-  current one first; one that can never be registered is retired, leaving
-  its audio as an unregistered file that Maintenance lists.
 - **Temporary files** (`.melody-tmp-*`, including the ID3 lyrics writer's)
-  untouched for an hour are removed at launch from the data, lyrics,
-  receipt, and artwork folders and from every folder holding library tracks
+  untouched for an hour are removed at launch from the data, lyrics, and
+  artwork folders and from every folder holding library tracks
   (`removeStaleTemporaries`). Nothing else matches those names.
 - **Music folder moves.** `MusicManager.moveMusicFolder` records its files
   in `music-move.json` first. If the process ends before the new folder is
@@ -442,8 +433,8 @@ outcome and again at the next launch if the process ended first:
   free pages exceed a quarter of a file of 4 MB or more is compacted
   (`VACUUM`) when it opens.
 
-Cleanup never follows names alone into user data. Unregistered audio
-without a receipt, a user's `.lrc`, and imported originals are never deleted.
+Cleanup never follows names alone into user data. Unregistered audio,
+a user's `.lrc`, and imported originals are never deleted.
 
 ## Track identity and files
 
@@ -466,7 +457,7 @@ repaired by downloading the song again.
 | File class | Owner and lifecycle |
 | --- | --- |
 | Download staging | `Downloader`-owned, locked `downloads/staging/job-*` folder; removed after every outcome, or at the next launch once its process has ended |
-| Completed, unregistered download | Its checksum receipt owns the handoff until the next launch resolves it |
+| Completed, unregistered download | Removed if registering fails; if the process ends first, the file stays and Maintenance lists it |
 | Managed library audio | `MusicManager`; desktop uses the music folder, on Android the music folder is inside public `Music` (`Music/Melody` by default); tracks earlier releases kept in private storage move there once at launch |
 | Downloaded audio of a removed entry | `OwnedFiles`: recorded in `state.db` (`pending_file_deletions`) before the entry goes, then deleted with its `.lrc`; a file that cannot be deleted yet (held open, or a crash in between) is deleted at a later launch, unless an entry still uses it |
 | Imported local original | The user's; Melody copies it and never deletes the original |
@@ -486,14 +477,14 @@ transaction; a failure rolls back and the owner restores its in-memory model.
 The library's commits are flushed to durable storage before they return
 (`FULL`); application state uses `NORMAL`, which survives application crashes
 and may lose only the latest session saves on power loss. Each database opens
-with an integrity quick check. Cookies, receipts, saved lyrics, and
+with an integrity quick check. Cookies, saved lyrics, and
 artwork are written to a `.melody-tmp-*` file, flushed, and renamed; a
 temporary file a crash leaves behind is removed at a later launch.
 
 The two databases are not a distributed transaction. Startup marks completed
 downloads whose library track lost its file as repairable (a track the user
-removed is not lost), replays verified receipts, and filters the restored queue
-by file availability. `LibraryService.reconcile`
+removed is not lost), starts interrupted downloads over, and filters the
+restored queue by file availability. `LibraryService.reconcile`
 (Settings → Maintenance) removes stale secondary references and lists
 unregistered files without deleting them.
 

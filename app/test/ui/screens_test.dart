@@ -196,7 +196,6 @@ Future<MelodyApp> _app(
     worker,
     thumbnails: thumbnails,
     stagingDirectory: paths.downloadStaging,
-    receiptDirectory: paths.downloadReceipts,
   );
   final catalog = MusicCatalog(worker);
   final services = AppServices(

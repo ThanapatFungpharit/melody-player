@@ -4,14 +4,12 @@
 /// the old data where it was and runs again at the next launch.
 library;
 
-import "dart:convert";
 import "dart:io";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
 
 import "../core/downloader/downloader.dart" show removeAbandonedStagingIn;
-import "../core/downloader/receipts.dart";
 import "../core/library/manager.dart";
 import "../core/storage.dart";
 import "../platform/paths.dart";
@@ -36,7 +34,7 @@ class LegacyLayout {
   /// `Music` folder downloaded into.
   String get privateMusic => _data("Music");
 
-  /// Staging and receipts outside `downloads/`.
+  /// Staging outside `downloads/`.
   String get downloadStaging => _data("download-staging");
 
   /// The prefix of download staging folders and receipts that earlier
@@ -63,6 +61,9 @@ class LegacyLayout {
   List<String> get obsoleteFolders => [
     // Media-session artwork, now in the cache folder.
     p.join(Directory.systemTemp.path, "melody-notification-artwork"),
+    // Checksums of downloads not yet registered. A next launch starts those
+    // over, and their files, if any, are listed as not in the library.
+    _data(p.join("downloads", "receipts")),
   ];
 
   /// Copies of [stateJson] and [libraryMmdb] kept after their import.
@@ -123,7 +124,7 @@ Future<void> upgradeLegacyState(
   await _dropCookieSetting(legacy.paths, store);
   await _moveOffPrivateStorage(legacy, store, manager);
   for (final folder in {manager.musicFolder, legacy.downloadStaging}) {
-    await _adoptReceipts(folder, legacy.paths.downloadReceipts);
+    await _removeLegacyReceipts(folder);
     await removeAbandonedStagingIn(folder, prefix: LegacyLayout.downloadPrefix);
   }
   // Everything left in the old staging folder is Melody's and unused, unless
@@ -166,46 +167,20 @@ Future<void> _dropCookieSetting(AppPaths paths, ApplicationStore store) async {
   }
 }
 
-/// Moves the receipts in [folder] (named with [LegacyLayout.downloadPrefix])
-/// into [receipts], recording that their files are in [folder].
-Future<void> _adoptReceipts(String folder, String receipts) async {
-  final List<File> found;
+/// Deletes the checksum files earlier releases kept beside the music; the audio
+/// they name stays, listed as not in the library.
+Future<void> _removeLegacyReceipts(String folder) async {
   try {
     if (!await Directory(folder).exists()) return;
-    found = [
-      await for (final entity in Directory(folder).list(followLinks: false))
-        if (entity is File &&
-            p.basename(entity.path).startsWith(LegacyLayout.downloadPrefix) &&
-            p.extension(entity.path) == ".json")
-          entity,
-    ];
+    await for (final entity in Directory(folder).list(followLinks: false)) {
+      if (entity is File &&
+          p.basename(entity.path).startsWith(LegacyLayout.downloadPrefix) &&
+          p.extension(entity.path) == ".json") {
+        await deleteQuietly(entity.path);
+      }
+    }
   } on FileSystemException catch (error) {
     debugPrint("Could not look for download receipts in $folder: $error");
-    return;
-  }
-  for (final file in found) {
-    try {
-      final Map<String, Object?> data;
-      try {
-        data = await readReceiptData(file.path);
-      } on FormatException catch (error) {
-        // It can vouch for no file, so it goes; the files it names stay.
-        debugPrint("Discarding unreadable receipt ${file.path}: $error");
-        await deleteQuietly(file.path);
-        continue;
-      }
-      final taskId = data["task_id"] as String;
-      final target = receiptPath(receipts, taskId);
-      if (!p.equals(p.dirname(target), receipts)) {
-        await deleteQuietly(file.path);
-        continue;
-      }
-      data["directory"] ??= p.absolute(folder);
-      await atomicWrite(target, utf8.encode(jsonEncode(data)));
-      await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not move download receipt ${file.path}: $error");
-    }
   }
 }
 

@@ -49,7 +49,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
   open it in the Files app; folders outside `Music` are refused. Changing it
   moves the library like on desktop.
 - Each download stages in private app data, as on desktop (Android would
-  refuse partial streams, thumbnails, and receipts in `Music`), and removes
+  refuse partial streams and thumbnails in `Music`), and removes
   its staging when it ends.
 - Downloads keep running off screen with a foreground service and its
   notification. Android can refuse to start that service for an app already in

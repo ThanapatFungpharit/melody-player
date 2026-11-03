@@ -100,8 +100,8 @@ class LibraryService {
   }
 
   /// Repairs stale secondary metadata and reports ambiguous media. Missing
-  /// tracks stay available for source-based repair; files without a download
-  /// receipt are never adopted or deleted automatically.
+  /// tracks stay available for source-based repair; files no track uses are
+  /// never adopted or deleted automatically.
   Future<LibraryReconciliation> reconcile() => manager.mutation.run(() async {
     final tracks = manager.listTracks();
     final removed = store.reconcileTrackReferences({

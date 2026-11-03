@@ -15,7 +15,6 @@ import "package:path_provider/path_provider.dart";
 /// music-move.json         a music folder move in progress (MusicManager)
 /// lyrics/                 saved lyrics, one JSON file per song
 /// downloads/staging/      one locked folder per running download
-/// downloads/receipts/     completed downloads not yet registered
 /// runtime/<package>/      ytmusicapi and yt-dlp updates (the worker's)
 /// cache/artwork/          artwork copied out of downloaded files
 /// cache/yt-dlp/           yt-dlp's player and signature cache
@@ -61,7 +60,6 @@ class AppPaths {
   String get lyrics => _data("lyrics");
 
   String get downloadStaging => _data(p.join("downloads", "staging"));
-  String get downloadReceipts => _data(p.join("downloads", "receipts"));
 
   /// The worker's folder for runtime updates of a Python [package]
   /// (`yt-dlp`, `ytmusicapi`), separate from the bundled copy.
@@ -89,7 +87,6 @@ class AppPaths {
   List<String> get atomicWriteFolders => [
     dataDirectory,
     lyrics,
-    downloadReceipts,
     artworkCache,
     cache,
   ];

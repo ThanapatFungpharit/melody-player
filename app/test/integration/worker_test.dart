@@ -125,7 +125,6 @@ void main() {
           cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
         ),
         stagingDirectory: p.join(root.path, "downloads", "staging"),
-        receiptDirectory: p.join(root.path, "downloads", "receipts"),
       );
       final finished = Completer<DownloadRecord>();
       coordinator.onRecord = (record) {
@@ -186,7 +185,6 @@ void main() {
             cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
           ),
           stagingDirectory: p.join(root.path, "downloads", "staging"),
-          receiptDirectory: p.join(root.path, "downloads", "receipts"),
         );
         final finished = Completer<DownloadRecord>();
         coordinator.onRecord = (record) {

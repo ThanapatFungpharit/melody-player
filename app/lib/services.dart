@@ -163,7 +163,6 @@ class AppServices {
       lyrics: lyrics,
       sharedOptions: sharedOptions,
       stagingDirectory: paths.downloadStaging,
-      receiptDirectory: paths.downloadReceipts,
     );
     final ffmpeg = ffmpegExecutable(paths.ffmpegLocation);
     final loudness = await LoudnessNormalizer.open(
@@ -197,8 +196,7 @@ class AppServices {
 
   /// Startup housekeeping that needs no ordering: temporary files a crash
   /// left mid-write (in Melody's data and beside library tracks), and
-  /// yt-dlp's cache. Download staging and receipts are the download
-  /// coordinator's.
+  /// yt-dlp's cache. Download staging is the download coordinator's.
   static Future<void> _removeLeftovers(
     AppPaths paths,
     MusicManager manager,

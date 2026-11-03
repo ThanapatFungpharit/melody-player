@@ -14,7 +14,6 @@ import "../artwork.dart";
 import "../errors.dart";
 import "../id3_lyrics.dart";
 import "../storage.dart";
-import "receipts.dart";
 
 /// The lifecycle of one download. The names are persisted in download history.
 enum DownloadStatus {
@@ -104,8 +103,7 @@ class _Staging {
 
 /// Deletes the subfolders of [parent] named `<prefix>...` that a download
 /// abandoned when its process ended (closed mid-download, crashed, or
-/// killed): partial streams, intermediate audio, and thumbnails no receipt
-/// owns. Folders another running process still holds are kept, as are the
+/// killed): partial streams, intermediate audio, and thumbnails. Folders another running process still holds are kept, as are the
 /// ones in [except]. Returns how many were removed.
 Future<int> removeAbandonedStagingIn(
   String parent, {
@@ -256,8 +254,7 @@ class _Job {
 /// Runs yt-dlp jobs through the worker with bounded concurrency.
 ///
 /// The downloader owns only staging files. Completed files are moved into
-/// [outputDirectory] behind a checksum receipt kept in [receiptDirectory];
-/// callers decide whether to register them and acknowledge the receipt.
+/// [outputDirectory]; callers decide whether to register them.
 class Downloader {
   Downloader(
     this._worker,
@@ -267,14 +264,12 @@ class Downloader {
     this._options = const {},
     this.lyricsTimeout = const Duration(seconds: 15),
     required this.stagingDirectory,
-    required this.receiptDirectory,
   }) : _maxWorkers = max(1, maxWorkers),
        _audioExtensions = {
          for (final item in audioExtensions) item.toLowerCase(),
        } {
     Directory(_outputDirectory).createSync(recursive: true);
     Directory(stagingDirectory).createSync(recursive: true);
-    Directory(receiptDirectory).createSync(recursive: true);
   }
 
   final WorkerClient _worker;
@@ -287,10 +282,6 @@ class Downloader {
   /// thumbnails, one locked subfolder per job; nothing else is in it. It is
   /// never the music folder, which on Android accepts only audio.
   final String stagingDirectory;
-
-  /// Private folder holding the receipts of completed downloads until the
-  /// caller acknowledges them; nothing else is in it.
-  final String receiptDirectory;
 
   /// Sends later downloads to [directory]. Refused while any job is queued
   /// or running, since a job stages and finishes in one directory.
@@ -556,10 +547,9 @@ class Downloader {
     Set<String> audioExtensions,
   ) async {
     final files = <String>[];
-    final entries = <Map<String, String>>[];
     // Listed up front: moving entries out of a directory while it is being
     // enumerated can skip or repeat entries on some filesystems. Sorted so
-    // the receipt and the destination names do not depend on listing order.
+    // the destination names do not depend on listing order.
     final staged = [
       await for (final entity in staging.list())
         if (entity is File &&
@@ -576,17 +566,6 @@ class Downloader {
         }
         final destination = _reserveDestination(p.basename(entity.path));
         try {
-          entries.add({
-            "filename": p.basename(destination),
-            "sha256": await sha256File(entity.path),
-          });
-          await writeReceipt(
-            receiptDirectory,
-            job.progress.task,
-            job.progress.url,
-            entries,
-            filesDirectory: outputDirectory,
-          );
           // Copies when the music folder is on another volume.
           await moveFile(entity.path, destination);
         } finally {
@@ -632,11 +611,6 @@ class Downloader {
       status = DownloadStatus.cancelled;
       files = const [];
       error = null;
-    }
-    if (status != DownloadStatus.completed) {
-      unawaited(
-        _removeFiles([receiptPath(receiptDirectory, job.progress.task)]),
-      );
     }
     final message = error == null ? "" : "$error";
     job.progress = job.progress.copyWith(

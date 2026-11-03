@@ -1,13 +1,10 @@
 import "../support/temp.dart";
-import "dart:convert";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/storage_upgrade.dart";
 import "package:melody/application/store.dart";
-import "package:melody/core/downloader/receipts.dart";
 import "package:melody/core/library/manager.dart";
-import "package:melody/core/storage.dart";
 import "package:melody/platform/paths.dart";
 import "package:path/path.dart" as p;
 
@@ -79,8 +76,12 @@ void main() {
       final saved = write(p.join(paths.lyrics, "youtube_abc.json"));
       write(p.join(paths.lyrics, "not_embedded.json"), "{}");
       write(p.join(paths.cache, "lyrics-embedded.json"), "[]");
+      final receipts = p.join(paths.dataDirectory, "downloads", "receipts");
+      write(p.join(receipts, "task.json"), "{}");
 
       await relocateLegacyFolders(legacy);
+
+      expect(Directory(receipts).existsSync(), isFalse);
 
       expect(Directory(paths.lyrics).listSync().map((e) => e.path), [
         saved.path,
@@ -138,29 +139,13 @@ void main() {
       expect(File(paths.cookieFile).existsSync(), isTrue);
     });
 
-    test("receipts beside the music move to the receipts folder", () async {
+    test("receipts beside the music go, and their audio stays", () async {
       final song = write(p.join(music, "Song.mp3"), "audio");
-      const task = "11111111-1111-4111-8111-111111111111";
-      // As the Python releases wrote it: no folder, files beside it.
-      write(
-        p.join(music, ".melody-download-$task.json"),
-        jsonEncode({
-          "schema": 1,
-          "task_id": task,
-          "url": "https://youtu.be/abcdefghijk",
-          "files": [
-            {"filename": "Song.mp3", "sha256": await sha256File(song.path)},
-          ],
-        }),
-      );
+      write(p.join(music, ".melody-download-task.json"), "{}");
       write(p.join(music, ".melody-download-bad.json"), "{not json");
 
       await upgradeLegacyState(legacy, store, manager, storesExisted: true);
 
-      final receipt = await readReceipt(
-        receiptPath(paths.downloadReceipts, task),
-      );
-      expect(receipt.files, [p.absolute(song.path)]);
       expect(Directory(music).listSync().map((e) => e.path), [song.path]);
     });
 
