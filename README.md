@@ -20,6 +20,7 @@ interfaces for the same shared capabilities.
 - Automatic import of completed audio into the SQLite music library
 - Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
 - Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, copy/move, and safe removal that does not delete audio files
+- Portable M3U8 playlist export and import: downloaded tracks are listed by their source link (missing ones download on import), other tracks by a relative path plus a `#MELODY-SHA256:` content line, so another device finds the same audio even when it is stored elsewhere or renamed. Entries that still match nothing can be located on disk after the import, and Library cleanup can relink any track whose file moved
 - Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and integrity-aware file paths
 - Persistent playback queue with play-next, append, reorder, remove and clear-upcoming (both undoable), a visible one-time shuffle reorder, repeat-track, and repeat-queue
 - Sleep timer that pauses playback after 15–90 minutes or when the playing track ends

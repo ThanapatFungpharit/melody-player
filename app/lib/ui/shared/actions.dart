@@ -32,7 +32,7 @@ List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
   MenuAction(
     "From file (M3U)",
     Icons.file_open_rounded,
-    () => importPlaylistFile(app),
+    () => importPlaylistFile(context, app),
   ),
   MenuAction(
     "From $youtubeMusicName link",

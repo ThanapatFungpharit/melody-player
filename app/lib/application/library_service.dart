@@ -214,6 +214,44 @@ class LibraryService {
         await manager.replaceTrackFile(trackId, path);
       });
 
+  /// Points a track whose audio is missing at the file the user located,
+  /// keeping its identity and playlist membership. The file is copied
+  /// into the music folder, where the track's file was. An imported track
+  /// then remembers it as its original, so [restoreLocalFile] can use it.
+  Future<void> relinkTrack(
+    String trackId,
+    String path,
+  ) => manager.mutation.run(() async {
+    final source = p.normalize(p.absolute(path));
+    final extension = p.extension(source).toLowerCase();
+    if (!audioSuffixes.contains(extension)) {
+      throw FormatException(
+        "Unsupported audio format: ${extension.isEmpty ? "unknown" : extension}",
+      );
+    }
+    if (!await File(source).exists()) {
+      throw PathNotFoundException(source, const OSError("File not found"));
+    }
+    final track = manager.getTrack(trackId);
+    final String destination;
+    if (_pathOf(track) case final previous?
+        when !await File(previous).exists() &&
+            p.extension(previous).toLowerCase() == extension) {
+      destination = previous;
+    } else {
+      destination = availablePath(manager.musicFolder, p.basename(source));
+    }
+    if (pathKey(destination) != pathKey(source)) {
+      await Directory(p.dirname(destination)).create(recursive: true);
+      await atomicCopy(source, destination);
+      await _importLyricsFile(source, destination);
+    }
+    await manager.replaceTrackFile(trackId, destination);
+    if (!ownsFile(track)) {
+      manager.updateTrack(trackId, source: Uri.file(source).toString());
+    }
+  });
+
   static String? _originalFile(Track track) {
     final uri = Uri.tryParse(track.source);
     if (uri == null || uri.scheme != "file") return null;
@@ -479,42 +517,92 @@ class LibraryService {
     trackIds: [for (final track in favoriteTrackList()) track.id],
   );
 
-  /// An ordered M3U8 index of the library: each track's source link.
-  List<int> exportLibraryM3u8() => _m3u8(manager.listTracks());
+  /// The whole library as a portable M3U8 playlist; see
+  /// [exportPlaylistM3u8].
+  List<int> exportLibraryM3u8({String? directory}) =>
+      _m3u8(null, manager.listTracks(), directory);
 
-  /// An M3U8 index in the playlist's saved track order.
-  List<int> exportPlaylistM3u8(String playlistId) => _m3u8(
-    playlistId == favoritesPlaylistId
-        ? favoriteTrackList()
-        : manager.playlistTracks(playlistId),
-  );
+  /// The playlist as a portable M3U8 file, in its saved track order and
+  /// named by a `#PLAYLIST:` line.
+  ///
+  /// A downloaded track is listed by its source link, which works on any
+  /// device. Any other track is listed by a relative path: from [directory],
+  /// the folder the playlist file is saved in, so other players find it
+  /// there, or else from the music folder. A `#MELODY-SHA256:` line records
+  /// each file's contents, so another Melody library recognizes the same
+  /// audio wherever it is stored. Other players ignore that line.
+  List<int> exportPlaylistM3u8(String playlistId, {String? directory}) {
+    final favorites = playlistId == favoritesPlaylistId;
+    return _m3u8(
+      favorites ? "Favorites" : manager.getPlaylist(playlistId).name,
+      favorites ? favoriteTrackList() : manager.playlistTracks(playlistId),
+      directory,
+    );
+  }
 
-  /// A track with no link (one imported from a local file) is listed by its
-  /// file instead, or left out when that is outside the music folders.
-  List<int> _m3u8(Iterable<Track> tracks) {
-    final lines = ["#EXTM3U"];
+  /// A track whose file is outside the music folders and that has no link
+  /// cannot be found anywhere else, so it is left out.
+  List<int> _m3u8(String? name, List<Track> tracks, String? directory) {
+    final details = detailsMany([for (final track in tracks) track.id]);
+    final lines = [
+      "#EXTM3U",
+      if (name != null && name.trim().isNotEmpty) "#PLAYLIST:${_oneLine(name)}",
+    ];
     for (final track in tracks) {
-      final String location;
-      if (isHttpUrl(track.source)) {
-        location = track.source.trim();
-      } else if (_pathOf(track) case final path?) {
-        location = Uri.file(p.normalize(p.absolute(path))).toString();
-      } else {
-        continue;
+      final location = isHttpUrl(track.source)
+          ? track.source.trim()
+          : _portablePath(track, directory);
+      if (location == null) continue;
+      final duration = details[track.id]?.duration ?? 0;
+      lines.add(
+        "#EXTINF:${duration > 0 ? duration.round() : -1},"
+        "${_oneLine(track.displayTitle)}",
+      );
+      if (track.contentHash.isNotEmpty) {
+        lines.add("$_hashTag${track.contentHash}");
       }
-      final title = track.displayTitle.split(RegExp(r"\s+")).join(" ");
-      lines
-        ..add("#EXTINF:-1,$title")
-        ..add(location);
+      lines.add(location);
     }
     return utf8.encode("${lines.join("\n")}\n");
   }
 
-  /// Matches each entry of an M3U or M3U8 file to a library track by its
-  /// path, its source (a URL, or the file a local track was imported from),
-  /// its contents, or a file name only one track has. An unmatched
-  /// YouTube link is left for the caller to download.
-  /// [baseDirectory] resolves relative entries.
+  static String _oneLine(String text) =>
+      text.trim().split(RegExp(r"\s+")).join(" ");
+
+  /// The track's file relative to [directory] when it can be reached from
+  /// there (not on another drive), else relative to the music folder, with
+  /// `/` separators every system reads.
+  String? _portablePath(Track track, String? directory) {
+    final path = _pathOf(track);
+    if (path == null) return null;
+    var relative = p.relative(path, from: manager.musicRoot);
+    if (directory != null) {
+      try {
+        final fromFile = p.relative(path, from: _resolved(directory));
+        if (p.isRelative(fromFile)) relative = fromFile;
+      } on p.PathException {
+        // Another drive: the music folder name is the portable one.
+      }
+    }
+    return p.split(relative).join("/");
+  }
+
+  /// [directory] with links resolved, the form [Track] paths have.
+  static String _resolved(String directory) {
+    try {
+      return Directory(directory).resolveSymbolicLinksSync();
+    } on FileSystemException {
+      return p.normalize(p.absolute(directory));
+    }
+  }
+
+  /// Matches each entry of an M3U or M3U8 file to a library track by, in
+  /// turn: the contents its `#MELODY-SHA256:` line records; its path or
+  /// link; its relative path from the playlist file ([baseDirectory]) or
+  /// from the music folder; a file name only one track has; or a title
+  /// only one track has, when the durations agree. An unmatched YouTube
+  /// link is left for the caller to download; other unmatched entries are
+  /// [PlaylistFileEntry.missing], for the user to locate.
   Future<PlaylistFileMatch> matchPlaylistM3u(
     List<int> bytes, {
     required String fallbackName,
@@ -524,9 +612,15 @@ class LibraryService {
     if (entries.isEmpty) {
       throw const FormatException("The playlist file lists no tracks");
     }
+    final tracks = manager.listTracks();
+    final durations = detailsMany([for (final track in tracks) track.id]);
     final byPath = <String, String>{};
     final byName = <String, List<String>>{};
-    for (final track in manager.listTracks()) {
+    final byTitle = <String, List<Track>>{};
+    for (final track in tracks) {
+      byTitle
+          .putIfAbsent(_oneLine(track.displayTitle).toLowerCase(), () => [])
+          .add(track);
       final path = _pathOf(track);
       if (path == null) continue;
       byPath[pathKey(p.absolute(path))] = track.id;
@@ -535,10 +629,25 @@ class LibraryService {
           .add(track.id);
     }
     final matched = <PlaylistFileEntry>[];
-    for (final (:location, :title) in entries) {
-      final path = _entryPath(location, baseDirectory);
-      String? id;
-      if (path != null) {
+    for (final entry in entries) {
+      final location = entry.location;
+      var id = entry.hash == null
+          ? null
+          : manager.findTrackByHash(entry.hash!)?.id;
+      final paths = _entryPaths(location, baseDirectory);
+      if (id == null && paths.isEmpty) {
+        if (Uri.tryParse(location)?.hasScheme ?? false) {
+          id = manager.findTrackBySource(location)?.id;
+          if (id == null && isYoutubeUrl(location)) {
+            matched.add(
+              PlaylistFileEntry.download(location, entry.title ?? location),
+            );
+            continue;
+          }
+        }
+      }
+      for (final path in paths) {
+        if (id != null) break;
         id =
             byPath[pathKey(p.absolute(path))] ??
             manager.findTrackBySource(Uri.file(path).toString())?.id;
@@ -549,23 +658,30 @@ class LibraryService {
             // An unreadable file can still match by name.
           }
         }
-      } else if (Uri.tryParse(location)?.hasScheme ?? false) {
-        id = manager.findTrackBySource(location)?.id;
-        if (id == null && isYoutubeUrl(location)) {
-          matched.add(PlaylistFileEntry.download(location, title ?? location));
-          continue;
-        }
       }
+      // Another system's separators are not this one's.
+      final name = location.split(RegExp(r"[\\/]")).last;
       if (id == null) {
-        // Another system's separators are not this one's.
-        final name = (path ?? location).split(RegExp(r"[\\/]")).last;
         final candidates = byName[name.toLowerCase()];
         if (candidates != null && candidates.length == 1) id = candidates.first;
+      }
+      if (id == null && entry.title != null) {
+        final candidates = byTitle[_oneLine(entry.title!).toLowerCase()];
+        if (candidates != null && candidates.length == 1) {
+          final known = durations[candidates.first.id]?.duration ?? 0;
+          final listed = entry.duration ?? 0;
+          if (known <= 0 || listed <= 0 || (known - listed).abs() <= 2) {
+            id = candidates.first.id;
+          }
+        }
       }
       matched.add(
         id != null
             ? PlaylistFileEntry.track(id)
-            : const PlaylistFileEntry.skipped(),
+            : PlaylistFileEntry.missing(
+                location,
+                entry.title ?? p.basenameWithoutExtension(name),
+              ),
       );
     }
     if (matched.every((entry) => entry.trackId == null && entry.url == null)) {
@@ -588,12 +704,16 @@ class LibraryService {
     List<int> bytes, {
     required String fallbackName,
     String? baseDirectory,
-  }) async {
-    final match = await matchPlaylistM3u(
+  }) async => createPlaylistFromMatch(
+    await matchPlaylistM3u(
       bytes,
       fallbackName: fallbackName,
       baseDirectory: baseDirectory,
-    );
+    ),
+  );
+
+  /// Creates a playlist of [match]'s library tracks.
+  PlaylistFileImport createPlaylistFromMatch(PlaylistFileMatch match) {
     final trackIds = match.trackIds;
     if (trackIds.isEmpty) {
       throw FormatException(
@@ -617,33 +737,62 @@ class LibraryService {
     );
   }
 
-  /// A local entry's path, or null for a URL or a relative entry without
-  /// [base]. A drive letter is a path, not a URL scheme.
-  static String? _entryPath(String entry, String? base) {
+  /// The library track of the audio file at [path]: the track that already
+  /// has its contents, or a new one imported from it.
+  Future<String> trackForFile(String path) => manager.mutation.run(() async {
+    if (await File(path).exists()) {
+      final existing = await manager.findTrackByContent(path);
+      if (existing != null) return existing.id;
+    }
+    return _importLocalFile(path);
+  });
+
+  /// Where a local entry may be: its path, or for a relative entry, that
+  /// path from [base] and then from the music folder. Empty for a URL.
+  /// A drive letter is a path, not a URL scheme.
+  List<String> _entryPaths(String entry, String? base) {
     final uri = Uri.tryParse(entry);
     if (uri != null && uri.scheme == "file") {
       try {
-        return uri.toFilePath();
+        return [uri.toFilePath()];
       } on UnsupportedError {
-        return null;
+        return const [];
       }
     }
-    if (uri != null && uri.scheme.length > 1) return null;
-    if (p.isAbsolute(entry)) return p.normalize(entry);
-    return base == null ? null : p.normalize(p.join(base, entry));
+    if (uri != null && uri.scheme.length > 1) return const [];
+    if (p.isAbsolute(entry)) return [p.normalize(entry)];
+    return [
+      if (base != null) p.normalize(p.join(base, entry)),
+      p.normalize(p.join(manager.musicRoot, entry)),
+    ];
   }
 }
 
-/// An M3U entry matched to a library track, a link to download, or neither.
+/// The line before an entry that records its file's SHA-256.
+const _hashTag = "#MELODY-SHA256:";
+
+/// An M3U entry matched to a library track, a link to download, or a file
+/// this library does not have.
 class PlaylistFileEntry {
-  const PlaylistFileEntry.track(String this.trackId) : url = null, title = "";
+  const PlaylistFileEntry.track(String this.trackId)
+    : url = null,
+      location = "",
+      title = "";
   const PlaylistFileEntry.download(String this.url, this.title)
-    : trackId = null;
-  const PlaylistFileEntry.skipped() : trackId = null, url = null, title = "";
+    : trackId = null,
+      location = url;
+  const PlaylistFileEntry.missing(this.location, this.title)
+    : trackId = null,
+      url = null;
 
   final String? trackId;
   final String? url;
+
+  /// The entry as the file lists it.
+  final String location;
   final String title;
+
+  bool get isMissing => trackId == null && url == null;
 }
 
 /// A playlist file's name and its entries in order.
@@ -655,9 +804,7 @@ class PlaylistFileMatch {
 
   List<String> get trackIds => [for (final entry in entries) ?entry.trackId];
 
-  int get skipped => entries
-      .where((entry) => entry.trackId == null && entry.url == null)
-      .length;
+  int get skipped => entries.where((entry) => entry.isMissing).length;
 }
 
 /// The playlist an M3U import created, how many tracks it holds (a track
@@ -676,20 +823,31 @@ class PlaylistFileImport {
   final int skipped;
 }
 
+/// One track entry of an M3U file: where it is, and the title, duration in
+/// seconds, and content hash the lines before it give.
+typedef M3uEntry = ({
+  String location,
+  String? title,
+  int? duration,
+  String? hash,
+});
+
 /// The `#PLAYLIST:` title and the track entries of an M3U or M3U8 file, in
-/// order, each with the title its `#EXTINF:` line gives. Text that is not
-/// UTF-8 is read as Latin-1, as plain `.m3u` often is.
-(String?, List<({String location, String? title})>) parseM3u(List<int> bytes) {
+/// order. Text that is not UTF-8 is read as Latin-1, as plain `.m3u` often
+/// is.
+(String?, List<M3uEntry>) parseM3u(List<int> bytes) {
   String text;
   try {
     text = utf8.decode(bytes);
   } on FormatException {
     text = latin1.decode(bytes);
   }
-  if (text.startsWith("\uFEFF")) text = text.substring(1);
+  if (text.startsWith("﻿")) text = text.substring(1);
   String? title;
   String? entryTitle;
-  final entries = <({String location, String? title})>[];
+  int? entryDuration;
+  String? entryHash;
+  final entries = <M3uEntry>[];
   for (final raw in const LineSplitter().convert(text)) {
     final line = raw.trim();
     if (line.isEmpty) continue;
@@ -701,11 +859,27 @@ class PlaylistFileImport {
         final comma = line.indexOf(",");
         final value = comma < 0 ? "" : line.substring(comma + 1).trim();
         entryTitle = value.isEmpty ? null : value;
+        // The duration may be followed by attributes before the comma.
+        final seconds = RegExp(
+          r"^-?\d+",
+        ).firstMatch(line.substring("#EXTINF:".length).trim())?.group(0);
+        final parsed = seconds == null ? null : int.tryParse(seconds);
+        entryDuration = parsed != null && parsed > 0 ? parsed : null;
+      } else if (line.startsWith(_hashTag)) {
+        final value = line.substring(_hashTag.length).trim().toLowerCase();
+        entryHash = RegExp(r"^[0-9a-f]{64}$").hasMatch(value) ? value : null;
       }
       continue;
     }
-    entries.add((location: line, title: entryTitle));
+    entries.add((
+      location: line,
+      title: entryTitle,
+      duration: entryDuration,
+      hash: entryHash,
+    ));
     entryTitle = null;
+    entryDuration = null;
+    entryHash = null;
   }
   return (title, entries);
 }

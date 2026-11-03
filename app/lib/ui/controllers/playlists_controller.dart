@@ -8,8 +8,10 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/catalog.dart";
 import "../../application/downloads.dart";
-import "../../application/library_service.dart" show favoritesPlaylistId;
+import "../../application/library_service.dart"
+    show PlaylistFileEntry, favoritesPlaylistId;
 import "../../core/downloader/downloader.dart";
+import "../../core/errors.dart" show publicErrorMessage;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 import "../shared/format.dart" show plural;
@@ -25,6 +27,7 @@ class _ImportSession {
     Map<String, String> resolved = const {},
     this.resolveMetadata = false,
     this.skipped = 0,
+    this.locate,
   }) : resolved = {...resolved},
        pending = Queue.of(
          tracks.keys.where((key) => !resolved.containsKey(key)),
@@ -45,6 +48,9 @@ class _ImportSession {
 
   /// Entries of the source that matched nothing and cannot be downloaded.
   final int skipped;
+
+  /// The summary's action that finds the [skipped] entries.
+  final (String, VoidCallback)? Function(_ImportSession session)? locate;
 
   /// Source keys not yet requested.
   final Queue<String> pending;
@@ -225,11 +231,13 @@ class PlaylistsController extends ChangeNotifier {
 
   /// Creates a playlist from the tracks an M3U or M3U8 file lists, named
   /// after the file unless it names itself. Linked tracks missing from the
-  /// library are downloaded.
+  /// library are downloaded. When some entries match nothing, the summary
+  /// offers [onLocate] to find them.
   Future<void> importFromFile(
     List<int> bytes,
     String fileName, {
     String? directory,
+    void Function(MissingPlaylistTracks missing)? onLocate,
   }) async {
     final library = app.services.library;
     final match = await library.matchPlaylistM3u(
@@ -237,6 +245,19 @@ class PlaylistsController extends ChangeNotifier {
       fallbackName: p.basenameWithoutExtension(fileName),
       baseDirectory: directory,
     );
+    (String, VoidCallback)? locate(
+      String playlistId,
+      String? Function(PlaylistFileEntry entry) trackOf,
+    ) => onLocate == null || match.skipped == 0
+        ? null
+        : (
+            "Locate",
+            () => onLocate(
+              MissingPlaylistTracks(playlistId, match.entries, [
+                for (final entry in match.entries) trackOf(entry),
+              ]),
+            ),
+          );
     if (match.entries.any((entry) => entry.url != null)) {
       final order = <String>[];
       final tracks = <String, SearchResult>{};
@@ -273,24 +294,55 @@ class PlaylistsController extends ChangeNotifier {
         resolved: resolved,
         resolveMetadata: true,
         skipped: match.skipped,
+        locate: (session) => locate(
+          session.playlistId,
+          (entry) =>
+              entry.trackId ??
+              (entry.url == null
+                  ? null
+                  : session.resolved[sourceKey(entry.url!)]),
+        ),
       );
       return;
     }
-    final result = await library.importPlaylistM3u(
-      bytes,
-      fallbackName: p.basenameWithoutExtension(fileName),
-      baseDirectory: directory,
-    );
+    final result = library.createPlaylistFromMatch(match);
     selectedPlaylistId = result.playlistId;
     pageOffset = 0;
     app.touchLibrary();
     app.navigate(3);
     notifyListeners();
-    final skipped = result.skipped;
     app.showMessage(
       "Imported ${plural(result.added, "track")} into “${result.name}”."
-      "${skipped > 0 ? " Skipped ${plural(skipped, "track")} not in the library." : ""}",
+      "${_notFound(result.skipped)}",
+      action: locate(result.playlistId, (entry) => entry.trackId),
     );
+  }
+
+  static String _notFound(int count) => count > 0
+      ? " ${plural(count, "track")} ${count == 1 ? "was" : "were"} not found."
+      : "";
+
+  /// Puts the audio file at [path] in the imported playlist where the
+  /// missing entry at [index] was, importing the file if the library does
+  /// not have it yet.
+  Future<void> locateMissing(
+    MissingPlaylistTracks missing,
+    int index,
+    String path,
+  ) async {
+    final manager = app.services.manager;
+    if (!manager.hasPlaylist(missing.playlistId)) {
+      throw StateError("The imported playlist no longer exists");
+    }
+    final trackId = await app.services.library.trackForFile(path);
+    missing.tracks[index] = trackId;
+    // Tracks removed from the playlist since the import stay removed.
+    final current = manager.getPlaylist(missing.playlistId).trackIds.toSet();
+    manager.mergeTracksIntoPlaylist(missing.playlistId, [
+      for (final id in missing.tracks.nonNulls)
+        if (id == trackId || current.contains(id)) id,
+    ]);
+    app.touchLibrary();
   }
 
   // -- remote import ---------------------------------------------------------
@@ -337,6 +389,7 @@ class PlaylistsController extends ChangeNotifier {
     Map<String, String> resolved = const {},
     bool resolveMetadata = false,
     int skipped = 0,
+    (String, VoidCallback)? Function(_ImportSession session)? locate,
   }) async {
     if (_session != null) {
       app.showError("A playlist import is already in progress.");
@@ -358,6 +411,7 @@ class PlaylistsController extends ChangeNotifier {
       resolved: resolved,
       resolveMetadata: resolveMetadata,
       skipped: skipped,
+      locate: locate,
     );
     _session = session;
     selectedPlaylistId = playlistId;
@@ -497,11 +551,36 @@ class PlaylistsController extends ChangeNotifier {
     final summary =
         "Imported $imported of ${session.total} tracks into “${session.name}”: "
         "reused ${session.reused}, downloaded ${session.downloaded}."
-        "${session.skipped > 0 ? " Skipped ${plural(session.skipped, "track")} not in the library." : ""}";
+        "${_notFound(session.skipped)}";
+    final action = session.locate?.call(session);
     if (session.failed > 0) {
-      app.showError("$summary ${session.failed} could not be downloaded.");
+      app.showMessage(
+        publicErrorMessage(
+          "$summary ${session.failed} could not be downloaded.",
+        ),
+        error: true,
+        action: action,
+      );
     } else {
-      app.showMessage(summary);
+      app.showMessage(summary, action: action);
     }
   }
+}
+
+/// The entries of an imported playlist file that matched no library track,
+/// for the user to locate on disk.
+class MissingPlaylistTracks {
+  MissingPlaylistTracks(this.playlistId, this.entries, this.tracks);
+
+  final String playlistId;
+  final List<PlaylistFileEntry> entries;
+
+  /// Each entry's library track, null until it is found.
+  final List<String?> tracks;
+
+  /// The positions of the entries still missing.
+  List<int> get pending => [
+    for (final (index, entry) in entries.indexed)
+      if (entry.isMissing && tracks[index] == null) index,
+  ];
 }
