@@ -151,9 +151,8 @@ class PlaybackController {
     required this.persistence,
     this.loudness,
     Set<String>? availableTrackIds,
-    String Function(String source)? artworkUri,
     this.onError,
-  }) : _artworkUri = artworkUri ?? ((source) => source) {
+  }) {
     final settings = store.settings;
     final restored = settings.resumeSession
         ? store.get("playback", const {})
@@ -211,7 +210,6 @@ class PlaybackController {
 
   /// Per-track loudness gains; without it every track plays unscaled.
   final LoudnessNormalizer? loudness;
-  final String Function(String source) _artworkUri;
   void Function(String message)? onError;
 
   final StreamController<PlaybackChange> _changes = StreamController.broadcast(
@@ -717,6 +715,14 @@ class PlaybackController {
   void onDuration(int duration) {
     if (_playerLoading) return;
     durationMs = duration < 0 ? 0 : duration;
+    if (currentTrackId case final trackId? when durationMs > 0) {
+      try {
+        library.rememberDuration(trackId, durationMs / 1000);
+      } on Object catch (error) {
+        // Only a nicety: the next play tries again.
+        debugPrint("Could not save a track's length: $error");
+      }
+    }
     if (durationMs > 0 && positionMs > durationMs) {
       positionMs = durationMs;
       _persist();
@@ -874,7 +880,7 @@ class PlaybackController {
         title: manager.getTrack(trackId).displayTitle,
         artist: details.uploader,
         album: details.sourceName,
-        artworkUri: _artworkUri(details.thumbnail),
+        artworkUri: library.artworkUri(trackId),
         gain: _gainFor(trackId, row, held),
       );
     });

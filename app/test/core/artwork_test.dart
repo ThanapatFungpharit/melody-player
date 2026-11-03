@@ -27,6 +27,27 @@ void main() {
     expect(sha256.convert(artwork).toString(), expected["cover.mp3"]);
   });
 
+  for (final name in [
+    "tagged.mp3",
+    "tagged_v23.mp3",
+    "tagged.m4a",
+    "tagged.flac",
+    "tagged.opus",
+    "tagged.ogg",
+  ]) {
+    test("reads the title and artist of $name", () async {
+      final tags = await readEmbeddedTags(p.join("test/fixtures/tags", name));
+      expect(tags.title, "Tagged Títle ปั้น");
+      expect(tags.artist, "Tagged Ártist");
+    });
+  }
+
+  test("files without tags name nothing", () async {
+    expect(readEmbeddedTagsSync(p.join(fixtures, "no_cover.mp3")), noAudioTags);
+    expect(readEmbeddedTagsSync("/no/such/file.mp3"), noAudioTags);
+    expect(readEmbeddedTagsSync("/no/such/file.wav"), noAudioTags);
+  });
+
   test("damaged and unknown files have no artwork", () async {
     final directory = await Directory.systemTemp.createTemp("melody-artwork");
     addTearDown(() => directory.delete(recursive: true));

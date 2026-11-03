@@ -142,7 +142,12 @@ class _DownloadCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 12,
             children: [
-              Artwork(app, record.thumbnail, size: 48, seed: record.title),
+              Artwork(
+                app,
+                downloadArtwork(app, record),
+                size: 48,
+                seed: record.title,
+              ),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

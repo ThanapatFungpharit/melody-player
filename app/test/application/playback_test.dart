@@ -359,6 +359,25 @@ void main() {
     });
   });
 
+  test(
+    "the length the decoder reports is saved for a track without one",
+    () async {
+      final [known, unknown] = await tracks(["known.mp3", "unknown.mp3"]);
+      store.saveTrackDetails(known, TrackDetails(duration: 200));
+      final playback = controller()
+        ..playTracks([known, unknown])
+        ..onLoaded()
+        ..onDuration(90000);
+      expect(store.trackDetails(known).duration, 200);
+
+      playback
+        ..onTrackChanged(unknown, 1)
+        ..onLoaded()
+        ..onDuration(90000);
+      expect(store.trackDetails(unknown).duration, 90);
+    },
+  );
+
   test("a repeated tap on a row preparing to play reloads nothing", () async {
     final ids = await tracks(["one.mp3", "two.mp3"]);
     final playback = controller()..playTracks(ids, startIndex: 1);

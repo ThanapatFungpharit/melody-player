@@ -47,7 +47,7 @@ class _MobileQueueState extends State<MobileQueue> {
               title: track.displayTitle,
               credit:
                   "${queueItemStatus(queue, index)} · ${details.uploader.isEmpty ? "Queued track" : details.uploader}",
-              artwork: details.thumbnail,
+              artwork: app.services.library.artwork(trackId),
               selected: index == queue.currentIndex,
               favorite: details.favorite,
               onTap: () => app.playback.playQueueIndex(position),

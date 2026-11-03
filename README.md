@@ -17,7 +17,7 @@ interfaces for the same shared capabilities.
 - Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in every downloaded media file plus a derived offline UI cache
 - Search actions have one clear intent: Play reuses the intact library file or downloads it, keeping the current music going until it is ready and then playing it ahead of the rest of the queue; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
 - Automatic import of completed audio into the SQLite music library
-- Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
+- Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection, using the title, artist, and cover art each file is tagged with
 - Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, add/move between playlists, and safe removal that does not delete audio files
 - Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and repair of missing files
 - Persistent playback queue with play-next, append, reorder, remove, clear, and shuffle (all undoable), where shuffle is a visible one-time reorder of the whole queue around the current track, plus repeat-track and repeat-queue

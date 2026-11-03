@@ -1,9 +1,11 @@
 import "dart:convert";
 import "dart:io";
+import "dart:isolate";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
 
+import "../core/artwork.dart";
 import "../core/errors.dart" show failureMessage;
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
@@ -79,6 +81,24 @@ class LibraryService {
 
   TrackDetails details(String trackId) => store.trackDetails(trackId);
 
+  /// What shows a track's cover: its cached copy, or its remote artwork until
+  /// there is one. Empty when it has neither.
+  String artwork(String trackId) =>
+      thumbnails?.cachedPath(trackId) ?? details(trackId).thumbnail;
+
+  /// A track's cover for system media controls.
+  String artworkUri(String trackId) =>
+      thumbnails?.artworkUri(trackId) ?? details(trackId).thumbnail;
+
+  /// Remembers a track's length the first time the decoder reports it, for
+  /// files nothing else has named one for.
+  void rememberDuration(String trackId, double seconds) {
+    if (seconds <= 0 || !manager.hasTrack(trackId)) return;
+    final current = details(trackId);
+    if (current.duration > 0) return;
+    store.saveTrackDetails(trackId, current..duration = seconds);
+  }
+
   Map<String, TrackDetails> detailsMany(Iterable<String> trackIds) =>
       store.trackDetailsMany(trackIds);
 
@@ -137,15 +157,17 @@ class LibraryService {
               );
               continue;
             }
+            final file = await _readFile(path);
             final trackId = await manager.addTrack(
               path,
-              title: p.basenameWithoutExtension(path),
+              title: file.title(p.basenameWithoutExtension(path)),
             );
             try {
               store.saveTrackDetails(
                 trackId,
-                TrackDetails(sourceName: "Local file"),
+                TrackDetails(uploader: file.artist, sourceName: "Local file"),
               );
+              await thumbnails?.store(trackId, file.artwork);
             } catch (_) {
               manager.deleteTrack(trackId);
               rethrow;
@@ -279,14 +301,13 @@ class LibraryService {
   /// now: it is deleted at a later launch ([OwnedFiles]).
   Future<void> deleteTrack(String trackId) => manager.mutation.run(() async {
     final track = manager.getTrack(trackId);
-    final thumbnail = details(trackId).thumbnail;
     final owned = _ownedPaths([track]);
     _files.mark(owned);
     manager.deleteTrack(trackId);
     store.removeTrackDetails(trackId);
     await _files.release(owned);
     await _removeMelodySidecars([track]);
-    await _forgetCaches([(track.source, thumbnail)]);
+    await _forgetCaches([track]);
   });
 
   /// Removes every track and playlist record, every file Melody downloaded
@@ -296,19 +317,13 @@ class LibraryService {
   Future<(int, int)> clearLibrary({bool deleteImported = false}) =>
       manager.mutation.run(() async {
         final tracks = manager.listTracks();
-        final thumbnailsById = detailsMany([
-          for (final track in tracks) track.id,
-        ]);
         final owned = _ownedPaths(tracks, all: deleteImported);
         _files.mark(owned);
         final counts = manager.clearLibrary();
         store.clearLibraryData();
         await _files.release(owned);
         if (!deleteImported) await _removeMelodySidecars(tracks);
-        await _forgetCaches([
-          for (final track in tracks)
-            (track.source, thumbnailsById[track.id]?.thumbnail ?? ""),
-        ]);
+        await _forgetCaches(tracks);
         return counts;
       });
 
@@ -326,25 +341,11 @@ class LibraryService {
     }
   }
 
-  Future<void> _forgetCaches(List<(String, String)> removed) async {
-    final remaining = manager.listTracks();
-    final cache = thumbnails;
-    if (cache != null) {
-      final inUse = {
-        for (final other in detailsMany([
-          for (final track in remaining) track.id,
-        ]).values)
-          other.thumbnail,
-      };
-      for (final thumbnail in {for (final (_, url) in removed) url}) {
-        if (thumbnail.isNotEmpty && !inUse.contains(thumbnail)) {
-          await cache.remove(thumbnail);
-        }
-      }
-    }
-    final keepFor = [for (final track in remaining) track.source];
-    for (final source in {for (final (source, _) in removed) source}) {
-      await lyrics?.forget(source, keepFor: keepFor);
+  Future<void> _forgetCaches(List<Track> removed) async {
+    final keepFor = [for (final track in manager.listTracks()) track.source];
+    for (final track in removed) {
+      await thumbnails?.remove(track.id);
+      await lyrics?.forget(track.source, keepFor: keepFor);
     }
   }
 
@@ -354,11 +355,8 @@ class LibraryService {
   /// before its track is registered. Returns how many files were removed.
   Future<int> removeUnusedCaches() async {
     final tracks = manager.listTracks();
-    final details = detailsMany([for (final track in tracks) track.id]);
     final artwork =
-        await thumbnails?.retainOnly([
-          for (final item in details.values) item.thumbnail,
-        ]) ??
+        await thumbnails?.retainOnly([for (final track in tracks) track.id]) ??
         0;
     final saved =
         await lyrics?.retainOnly([for (final track in tracks) track.source]) ??
@@ -397,12 +395,13 @@ class LibraryService {
     );
     await atomicCopy(sourcePath, destination);
     await _importLyricsFile(sourcePath, destination);
+    final file = await _readFile(destination);
     final String trackId;
     try {
       trackId = await manager.addTrack(
         destination,
         source: Uri.file(sourcePath).toString(),
-        title: p.basenameWithoutExtension(sourcePath),
+        title: file.title(p.basenameWithoutExtension(sourcePath)),
       );
     } catch (_) {
       await deleteQuietly(destination);
@@ -410,7 +409,11 @@ class LibraryService {
       rethrow;
     }
     try {
-      store.saveTrackDetails(trackId, TrackDetails(sourceName: "Local file"));
+      store.saveTrackDetails(
+        trackId,
+        TrackDetails(uploader: file.artist, sourceName: "Local file"),
+      );
+      await thumbnails?.store(trackId, file.artwork);
     } catch (_) {
       // Registration and metadata live in separate stores; undo the first so
       // a failed import never leaves a half-imported track visible.
@@ -424,6 +427,68 @@ class LibraryService {
       rethrow;
     }
     return trackId;
+  }
+
+  static Future<_FileMetadata> _readFile(String path) =>
+      Isolate.run(() => _FileMetadata.read(path));
+
+  /// Reads what tracks' files hold and the library has not read yet: every
+  /// track's cover, and a local track's title and artist where the library
+  /// still has only its file name. Works through the library newest first, a
+  /// few files at a time in a background isolate, and calls [onChanged] as it
+  /// goes. [cancelled] ends it early; the next launch carries on.
+  Future<void> readMissingMetadata({
+    void Function()? onChanged,
+    bool Function()? cancelled,
+  }) async {
+    final cache = thumbnails;
+    if (cache == null) return;
+    final missing = [
+      for (final track in manager.listTracks())
+        if (!cache.known(track.id)) track,
+    ];
+    const batch = 16;
+    for (var start = 0; start < missing.length; start += batch) {
+      if (cancelled?.call() ?? false) return;
+      final tracks = missing.skip(start).take(batch).toList();
+      final paths = [for (final track in tracks) _pathOf(track)];
+      final files = await Isolate.run(
+        () => [
+          for (final path in paths)
+            if (path == null || !File(path).existsSync())
+              null
+            else
+              _FileMetadata.read(path),
+        ],
+      );
+      if (cancelled?.call() ?? false) return;
+      for (final (index, file) in files.indexed) {
+        final track = tracks[index];
+        // A missing file is read once it is back.
+        if (file == null || !manager.hasTrack(track.id)) continue;
+        await cache.store(track.id, file.artwork);
+        if (!ownsFile(track)) _adoptTags(track, file);
+      }
+      onChanged?.call();
+    }
+  }
+
+  /// Gives a local track the tags of its file, where the library still has
+  /// only the file's name for them.
+  void _adoptTags(Track track, _FileMetadata file) {
+    final original = p.basenameWithoutExtension(
+      _originalFile(track) ?? track.filename,
+    );
+    final named =
+        track.title == original ||
+        track.title == p.basenameWithoutExtension(track.filename);
+    if (named && file.tags.title.isNotEmpty) {
+      manager.updateTrack(track.id, title: file.tags.title);
+    }
+    final current = details(track.id);
+    if (current.uploader.isEmpty && file.artist.isNotEmpty) {
+      store.saveTrackDetails(track.id, current..uploader = file.artist);
+    }
   }
 
   /// Brings along a `.lrc` beside the original, so its lyrics show for the
@@ -640,6 +705,24 @@ class LibraryService {
     if (p.isAbsolute(entry)) return p.normalize(entry);
     return base == null ? null : p.normalize(p.join(base, entry));
   }
+}
+
+/// What an audio file says about itself.
+class _FileMetadata {
+  const _FileMetadata(this.tags, this.artwork);
+
+  /// Reads [path]; run it off the UI isolate.
+  factory _FileMetadata.read(String path) =>
+      _FileMetadata(readEmbeddedTagsSync(path), readEmbeddedArtworkSync(path));
+
+  final AudioTags tags;
+  final Uint8List artwork;
+
+  String get artist => tags.artist;
+
+  /// The tagged title, or [fallback] for a file without one.
+  String title(String fallback) =>
+      tags.title.isNotEmpty ? tags.title : fallback;
 }
 
 /// An M3U entry matched to a library track, a link to download, or neither.

@@ -175,7 +175,7 @@ them to the playback controller.
 | Staged download files, cancellation, terminal outcome | `Downloader` | The worker writes only inside the staging directory it is given (and yt-dlp's cache folder, also chosen by the app) |
 | Download reuse, registration, retry, receipt replay | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once, byte progress never (a download active at startup is reported as interrupted) |
 | Embedded cover artwork | The downloaded media container | The downloader reads it back before committing the file |
-| Offline UI artwork keyed by remote URL | `ThumbnailCache` | Derived only from verified embedded bytes, cached once the track is registered; entries no library track uses are removed at launch (`LibraryService.removeUnusedCaches`) and with the last track that uses them |
+| Cover art for the UI, one file per track ID | `ThumbnailCache` | Read from the track's own file: when a download is registered or a file imported, else by the background pass after launch (`LibraryService.readMissingMetadata`), which covers earlier imports and a deleted cache. An empty entry records a file without art, so it is not read again. Entries of removed tracks go with them and at launch (`LibraryService.removeUnusedCaches`) |
 | Runtime ytmusicapi and yt-dlp selection | `worker/src/melody_worker/updater/`, once per launch before import | `PackageRuntime` (one per package) schedules updates and reports status |
 | Saved lyrics, keyed by media identity | `LyricsLibrary` (`lyrics/<provider>_<id>.json`) | Saved on download completion, first play, and the library pass at launch; keeps lyrics showing until they are embedded (and on mobile); tracks without lyrics are rechecked weekly |
 | Lyrics embedded in downloaded audio | The media file, written in staging before artwork verification and hashing | MP3 gets a `USLT` frame from `core/id3_lyrics.dart` (FFmpeg can only write a non-standard `TXXX`); other formats get FFmpeg's tag through the worker |
@@ -336,7 +336,7 @@ installs upgrade in place; inside it:
 | `downloads/staging/` | One locked `job-*` folder per running download | `Downloader` |
 | `downloads/receipts/` | `<task>.json` for completed, unregistered downloads | `Downloader` writes, `DownloadCoordinator` acknowledges |
 | `runtime/yt-dlp/`, `runtime/ytmusicapi/` | Runtime package updates, separate from the bundled copies | The worker's updater |
-| `cache/artwork/` | Artwork copied out of downloaded files | `ThumbnailCache` |
+| `cache/artwork/` | Artwork copied out of audio files, `<track id>.thumb` | `ThumbnailCache` |
 | `cache/yt-dlp/` | yt-dlp's player and signature cache (`cachedir`) | yt-dlp; pruned by `pruneYtDlpCache` |
 | `cache/notification-artwork/` | Square crops for the system media controls | melody_audio; the 64 most recently used are kept |
 | `cache/loudness.json` | Loudness measurements of library tracks | `LoudnessNormalizer`; removed tracks are dropped at launch |
@@ -434,6 +434,11 @@ watch, short, live, embed, and youtu.be URLs normalize to `youtube:<id>`.
 Titles and filenames never determine remote equality; local files use a
 content hash.
 
+An imported file's title, artist, and cover come from its tags, falling back to
+its name, and tracks imported before that are filled in once by the background
+pass; a title the user changed stays. A track whose length nothing has named gets
+it the first time it plays.
+
 A track counts as available while its file exists and is not empty. The recorded
 hash only finds duplicates by content: a file edited elsewhere (new tags, say)
 stays the track's own and is never replaced. Only a missing or empty file is
@@ -448,7 +453,7 @@ repaired by downloading the song again.
 | Imported local original | The user's; Melody copies it and never deletes the original |
 | Copied import, lyrics rewrite | A `.melody-tmp-*` file beside the destination; an atomic rename exposes only complete files; an abandoned one is removed at launch |
 | yt-dlp cache | `cache/yt-dlp/`; disposable, pruned at launch by age and size |
-| Cached artwork | `cache/artwork/`; derived from downloaded files, pruned to what library tracks use |
+| Cached artwork | `cache/artwork/`; derived from each track's file, pruned to the library's tracks |
 | Uploaded cookies | `cookies.txt`; explicit upload/remove only (restoring default settings removes it) |
 | Runtime yt-dlp wheels | `runtime/yt-dlp/`, separate from the bundled yt-dlp |
 | Runtime ytmusicapi wheels and their extracted copies | `runtime/ytmusicapi/`, separate from the bundled ytmusicapi |
@@ -507,7 +512,9 @@ work stays out of builds and event handlers:
   thousands of them: canonical IDs skip UUID parsing, and sorted track orders
   are kept until the tracks change.
 - Launch cleanup of cached artwork and saved lyrics runs in a background
-  isolate, since it hashes or parses a URL for every library track.
+  isolate, since it lists the folders and parses a URL for every library track.
+- The background pass that reads covers and tags opens a few files at a time in
+  a background isolate.
 
 Known limits: opening the two databases (an integrity quick check and loading
 the library model) is synchronous during the loading view, and a SQLite

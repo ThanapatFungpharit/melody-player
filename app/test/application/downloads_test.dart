@@ -134,7 +134,7 @@ void main() {
       expect(details.duration, 200);
       expect(details.sourceName, "YouTube Music");
       // The cache is derived from the verified embedded cover.
-      expect(thumbnails.cachedPath(_result().thumbnail), isNotNull);
+      expect(thumbnails.cachedPath(track.id), isNotNull);
       expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
       expect(coordinator.activeCount(), 0);
       // No staging directory survives, and only the audio reached the music
@@ -271,7 +271,7 @@ void main() {
     );
     expect(record.status, DownloadStatus.completed);
     expect(manager.counts().$1, 1);
-    expect(thumbnails.cachedPath(_result().thumbnail), isNull);
+    expect(thumbnails.cachedPath(record.trackIds.single), isNull);
   });
 
   test("a batch of any size waits its turn instead of failing", () async {

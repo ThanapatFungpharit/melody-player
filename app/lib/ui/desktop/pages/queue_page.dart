@@ -149,7 +149,7 @@ class _QueuePanelState extends State<QueuePanel> {
                             ),
                             title: track.displayTitle,
                             subtitle: details.credit,
-                            artwork: details.thumbnail,
+                            artwork: app.services.library.artwork(trackId),
                             status: status,
                             statusHighlight:
                                 current || status.startsWith("Up next"),

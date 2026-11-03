@@ -597,7 +597,7 @@ class DownloadCoordinator extends ChangeNotifier {
         }
         if (storedPaths.isNotEmpty) storedName = p.basename(storedPaths.first);
         // Only once a track uses it, so a failed import leaves no entry.
-        await _cacheThumbnail(record.thumbnail, result.artwork);
+        await _cacheArtwork(imported, result.artwork);
       } catch (failure) {
         debugPrint("Downloaded media could not be imported: $failure");
         status = DownloadStatus.failed;
@@ -632,16 +632,11 @@ class DownloadCoordinator extends ChangeNotifier {
     _publish(record);
   }
 
-  /// Caches artwork verified in the media file; the file stays canonical.
-  Future<void> _cacheThumbnail(String url, Uint8List? artwork) async {
-    final cache = thumbnails;
-    if (cache == null || url.isEmpty || artwork == null || artwork.isEmpty) {
-      return;
-    }
-    try {
-      await cache.storeBytes(url, artwork);
-    } on Object catch (error) {
-      debugPrint("Could not cache downloaded thumbnail: $error");
+  /// Caches artwork read from the media file; the file stays canonical.
+  Future<void> _cacheArtwork(List<String> trackIds, Uint8List? artwork) async {
+    if (artwork == null) return;
+    for (final trackId in trackIds.toSet()) {
+      await thumbnails?.store(trackId, artwork);
     }
   }
 

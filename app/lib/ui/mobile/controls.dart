@@ -379,7 +379,7 @@ Widget libraryTrackRow(
     app: app,
     title: track.displayTitle,
     credit: info.credit,
-    artwork: info.thumbnail,
+    artwork: app.services.library.artwork(track.id),
     selected: app.playback.currentTrackId == track.id,
     favorite: info.favorite,
     onTap: () => app.library.playFrom(index),

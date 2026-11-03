@@ -140,7 +140,7 @@ void main() {
       final path = manager.trackPath(track.id);
       expect(p.extension(path), ".mp3");
       expect(await readEmbeddedArtwork(path), isNotEmpty);
-      expect(thumbnails.cachedPath(result.thumbnail), isNotNull);
+      expect(thumbnails.cachedPath(track.id), isNotNull);
       expect(track.contentHash, await sha256File(path));
       // yt-dlp's intermediate files went with the staging folder.
       expect([

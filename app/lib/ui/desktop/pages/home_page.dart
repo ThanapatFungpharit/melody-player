@@ -138,7 +138,7 @@ class _HomePageState extends State<HomePage> {
       app: app,
       title: track.displayTitle,
       subtitle: details.credit,
-      artwork: details.thumbnail,
+      artwork: app.services.library.artwork(track.id),
       onPlay: () => app.playback.playTracks([
         for (final item in tracks) item.id,
       ], startIndex: index),
@@ -265,7 +265,7 @@ class _QuickTile extends StatelessWidget {
             children: [
               Artwork(
                 app,
-                details.thumbnail,
+                app.services.library.artwork(track.id),
                 size: 60,
                 seed: track.displayTitle,
                 radius: 0,

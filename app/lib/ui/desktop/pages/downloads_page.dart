@@ -292,7 +292,12 @@ class _DownloadRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         spacing: 16,
         children: [
-          Artwork(app, record.thumbnail, size: 52, seed: record.title),
+          Artwork(
+            app,
+            downloadArtwork(app, record),
+            size: 52,
+            seed: record.title,
+          ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

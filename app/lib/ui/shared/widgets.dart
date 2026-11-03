@@ -9,9 +9,9 @@ import "../../application/queue.dart";
 import "../../core/library/models.dart";
 import "theme.dart";
 
-/// Track or playlist artwork: the offline cache first, then the network,
-/// with a placeholder while loading or on failure. The placeholder takes a
-/// stable tint from [seed] so tracks without covers stay distinguishable.
+/// Track or playlist artwork from a file or the network, with a placeholder
+/// while loading or on failure. The placeholder takes a stable tint from [seed]
+/// so tracks without covers stay distinguishable.
 class Artwork extends StatelessWidget {
   const Artwork(
     this.app,
@@ -46,12 +46,9 @@ class Artwork extends StatelessWidget {
       icon: playlist ? Icons.album_rounded : Icons.music_note_rounded,
     );
     if (source.isEmpty) return placeholder;
-    final cached = app.services.thumbnails.cachedPath(source);
     final cacheWidth = (size * MediaQuery.devicePixelRatioOf(context)).round();
     final ImageProvider provider;
-    if (cached != null) {
-      provider = FileImage(File(cached));
-    } else if (source.startsWith("http://") || source.startsWith("https://")) {
+    if (source.startsWith("http://") || source.startsWith("https://")) {
       provider = NetworkImage(source);
     } else if (p.isAbsolute(source)) {
       // No existence check while building: a missing file decodes to an
@@ -97,7 +94,17 @@ class Artwork extends StatelessWidget {
 String playlistArtwork(MelodyApp app, Playlist playlist) =>
     playlist.trackIds.isEmpty
     ? ""
-    : app.services.library.details(playlist.trackIds.first).thumbnail;
+    : app.services.library.artwork(playlist.trackIds.first);
+
+/// A finished download's cover: its track's, or the one it was listed with.
+String downloadArtwork(MelodyApp app, DownloadRecord record) {
+  for (final trackId in record.trackIds) {
+    if (app.services.manager.hasTrack(trackId)) {
+      return app.services.library.artwork(trackId);
+    }
+  }
+  return record.thumbnail;
+}
 
 /// A stable hue for [seed]; String.hashCode is not stable across runs.
 double seedHue(String seed) {

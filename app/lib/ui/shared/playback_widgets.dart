@@ -37,7 +37,7 @@ class NowPlayingInfo {
       final details = app.services.library.details(id);
       title = track.displayTitle;
       credit = details.credit;
-      thumbnail = details.thumbnail;
+      thumbnail = app.services.library.artwork(id);
       favorite = details.favorite;
       canFavorite = true;
     }

@@ -75,7 +75,7 @@ class _MobileHomeState extends State<MobileHome> {
                   app: app,
                   title: track.displayTitle,
                   subtitle: details.credit,
-                  artwork: details.thumbnail,
+                  artwork: app.services.library.artwork(track.id),
                   onTap: () => app.playback.playTracks([
                     for (final favorite in favorites) favorite.id,
                   ], startIndex: index),
@@ -173,7 +173,7 @@ class _QuickGrid extends StatelessWidget {
                       children: [
                         Artwork(
                           app,
-                          app.services.library.details(track.id).thumbnail,
+                          app.services.library.artwork(track.id),
                           size: 52,
                           seed: track.displayTitle,
                           radius: 0,

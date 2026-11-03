@@ -231,7 +231,7 @@ class LibraryTrackRow extends StatelessWidget {
     number: index + 1,
     title: track.displayTitle,
     subtitle: details.credit,
-    artwork: details.thumbnail,
+    artwork: app.services.library.artwork(track.id),
     duration: formatDuration(details.duration),
     favorite: details.favorite,
     onFavorite: () => app.toggleFavorite(track.id),

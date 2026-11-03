@@ -68,7 +68,7 @@ void main() {
     await File(path).writeAsString(name);
     final id = await manager.addTrack(path, source: source, title: name);
     store.saveTrackDetails(id, TrackDetails(thumbnail: _thumbnail));
-    await thumbnails.storeBytes(_thumbnail, _png);
+    await thumbnails.store(id, _png);
     await lyrics.load(source);
     return id;
   }
@@ -78,14 +78,14 @@ void main() {
   test("deleting a track removes its file, artwork, and lyrics", () async {
     final id = await downloaded("song.mp3");
     final path = manager.trackPath(id);
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(id), isNotNull);
     expect(await lyricsSaved(), isTrue);
 
     await library.deleteTrack(id);
 
     expect(manager.hasTrack(id), isFalse);
     expect(await File(path).exists(), isFalse);
-    expect(thumbnails.cachedPath(_thumbnail), isNull);
+    expect(thumbnails.cachedPath(id), isNull);
     expect(await lyricsSaved(), isFalse);
   });
 
@@ -149,13 +149,17 @@ void main() {
     expect(store.get("pending_file_deletions"), isEmpty);
   });
 
-  test("caches another track still uses are kept", () async {
+  test("what another track still uses is kept", () async {
     final first = await downloaded("first.mp3");
-    await downloaded("second.mp3", source: "https://youtu.be/abcdefghijk");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://youtu.be/abcdefghijk",
+    );
 
     await library.deleteTrack(first);
 
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(first), isNull);
+    expect(thumbnails.cachedPath(second), isNotNull);
     expect(await lyricsSaved(), isTrue);
   });
 
@@ -187,7 +191,7 @@ void main() {
     expect(manager.listTracks(), isEmpty);
     expect(await File(songPath).exists(), isFalse);
     expect(await File(mine).exists(), isTrue);
-    expect(thumbnails.cachedPath(_thumbnail), isNull);
+    expect(thumbnails.cachedPath(song), isNull);
     expect(await lyricsSaved(), isFalse);
   });
 
@@ -292,21 +296,21 @@ void main() {
   });
 
   test("unused artwork and lyrics are removed at startup", () async {
-    await downloaded("song.mp3");
-    const orphan = "https://i.ytimg.com/vi/zzzzzzzzzzz/hq.jpg";
-    await thumbnails.storeBytes(orphan, _png);
+    final id = await downloaded("song.mp3");
+    const orphan = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+    await thumbnails.store(orphan, _png);
     final unrelated = File(p.join(thumbnails.directory, "notes.txt"))
       ..writeAsStringSync("kept");
-    // Lyrics saved for a preview, or for a download that failed.
-    const preview = "https://music.youtube.com/watch?v=zzzzzzzzzzz";
-    await lyrics.load(preview);
+    // Lyrics saved for a download that failed.
+    const failed = "https://music.youtube.com/watch?v=zzzzzzzzzzz";
+    await lyrics.load(failed);
 
     expect(await library.removeUnusedCaches(), 2);
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(id), isNotNull);
     expect(thumbnails.cachedPath(orphan), isNull);
     expect(unrelated.existsSync(), isTrue);
     expect(await lyricsSaved(), isTrue);
-    expect(await lyrics.saved(preview), isNull);
+    expect(await lyrics.saved(failed), isNull);
     // Idempotent.
     expect(await library.removeUnusedCaches(), 0);
   });
@@ -503,6 +507,127 @@ void main() {
     expect(library.tracks(query: "music"), isEmpty);
     expect(library.tracks(query: "watch"), isEmpty);
     expect(library.tracks(query: "abcdefghijk"), isEmpty);
+  });
+
+  group("what a file says about itself", () {
+    const tagged = "test/fixtures/tags/tagged.mp3";
+    const covered = "test/fixtures/artwork/cover.mp3";
+    const uncovered = "test/fixtures/artwork/no_cover.mp3";
+
+    test("names an imported track and shows its cover", () async {
+      final id = await library.importLocalFile(tagged);
+      expect(manager.getTrack(id).title, "Tagged Títle ปั้น");
+      expect(library.details(id).uploader, "Tagged Ártist");
+      expect(library.details(id).sourceName, "Local file");
+
+      final withCover = await library.importLocalFile(covered);
+      expect(manager.getTrack(withCover).title, "cover");
+      expect(library.artwork(withCover), thumbnails.cachedPath(withCover));
+      expect(library.artwork(withCover), isNotEmpty);
+    });
+
+    test("names a stray file added in place", () async {
+      final stray = p.join(music, "stray.mp3");
+      await File(tagged).copy(stray);
+      expect((await library.addStrayFiles([stray])).done, 1);
+      final track = manager.listTracks().single;
+      expect(track.title, "Tagged Títle ปั้น");
+      expect(library.details(track.id).uploader, "Tagged Ártist");
+    });
+
+    test("fills in what earlier imports left out, once", () async {
+      // As earlier releases imported them: file names and nothing else.
+      Future<String> imported(String fixture, String name) async {
+        final path = p.join(music, name);
+        await File(fixture).copy(path);
+        final id = await manager.addTrack(
+          path,
+          source: Uri.file(p.join(root.path, name)).toString(),
+          title: p.basenameWithoutExtension(name),
+        );
+        store.saveTrackDetails(id, TrackDetails(sourceName: "Local file"));
+        return id;
+      }
+
+      final named = await imported(tagged, "named.mp3");
+      final renamed = await imported(tagged, "renamed.mp3");
+      manager.updateTrack(renamed, title: "My own title");
+      final cover = await imported(covered, "covered.mp3");
+      final plain = await imported(uncovered, "plain.mp3");
+      var changes = 0;
+
+      await library.readMissingMetadata(onChanged: () => changes++);
+
+      expect(changes, greaterThan(0));
+      expect(manager.getTrack(named).title, "Tagged Títle ปั้น");
+      expect(library.details(named).uploader, "Tagged Ártist");
+      // A title the user chose stays.
+      expect(manager.getTrack(renamed).title, "My own title");
+      expect(library.details(renamed).uploader, "Tagged Ártist");
+      expect(thumbnails.cachedPath(cover), isNotNull);
+      expect(thumbnails.cachedPath(plain), isNull);
+
+      // Everything is known now, covers or not: nothing is read again.
+      await File(manager.trackPath(plain)).delete();
+      changes = 0;
+      await library.readMissingMetadata(onChanged: () => changes++);
+      expect(changes, 0);
+    });
+
+    test("a download's tags never replace what was listed for it", () async {
+      final path = p.join(music, "song.mp3");
+      await File(tagged).copy(path);
+      final id = await manager.addTrack(path, source: _source, title: "Listed");
+      store.saveTrackDetails(id, TrackDetails(uploader: "Listed artist"));
+
+      await library.readMissingMetadata();
+
+      expect(manager.getTrack(id).title, "Listed");
+      expect(library.details(id).uploader, "Listed artist");
+    });
+
+    test("a missing file is read once it is back", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, title: "Song");
+      final moved = "$path.moved";
+      await File(path).rename(moved);
+
+      await library.readMissingMetadata();
+      expect(thumbnails.known(id), isFalse);
+
+      await File(moved).rename(path);
+      await library.readMissingMetadata();
+      expect(thumbnails.cachedPath(id), isNotNull);
+    });
+
+    test("cancelling stops before the next batch", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, title: "Song");
+      await library.readMissingMetadata(cancelled: () => true);
+      expect(thumbnails.known(id), isFalse);
+    });
+
+    test("a remote cover shows until the track's own is cached", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, source: _source, title: "Song");
+      store.saveTrackDetails(id, TrackDetails(thumbnail: _thumbnail));
+      expect(library.artwork(id), _thumbnail);
+      expect(library.artworkUri(id), _thumbnail);
+
+      await library.readMissingMetadata();
+
+      expect(library.artwork(id), thumbnails.cachedPath(id));
+      expect(library.artworkUri(id), startsWith("file:"));
+    });
+
+    test("a length is not remembered for a track the library lacks", () {
+      const id = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+      library.rememberDuration(id, 10);
+      expect(store.hasTrackDetails(id), isFalse);
+    });
   });
 
   test("linked tracks missing from the library are left to download", () async {

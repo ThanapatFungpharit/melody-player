@@ -207,7 +207,7 @@ class _PlaylistDetail extends StatelessWidget {
               app: app,
               title: track.displayTitle,
               credit: details[track.id]!.credit,
-              artwork: details[track.id]!.thumbnail,
+              artwork: app.services.library.artwork(track.id),
               selected: app.playback.currentTrackId == track.id,
               favorite: details[track.id]!.favorite,
               onTap: () =>

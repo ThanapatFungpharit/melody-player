@@ -68,7 +68,6 @@ class MelodyApp {
       persistence: persistence,
       loudness: services.loudness,
       availableTrackIds: services.availableTrackIds,
-      artworkUri: services.thumbnails.artworkUri,
       onError: showError,
     );
     backend.callbacks
@@ -108,6 +107,18 @@ class MelodyApp {
       () => unawaited(services.loudness.analyzeLibrary()),
     );
     libraryRevision.addListener(services.loudness.analyzeNew);
+    // Files are read once the first view has settled, one small batch at a time.
+    _metadataStart = Timer(
+      const Duration(seconds: 5),
+      () => unawaited(
+        run(
+          () => services.library.readMissingMetadata(
+            onChanged: touchLibrary,
+            cancelled: () => _closed,
+          ),
+        ),
+      ),
+    );
   }
 
   final AppServices services;
@@ -132,6 +143,7 @@ class MelodyApp {
   late final SettingsController settingsDraft;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
   Timer? _loudnessStart;
+  Timer? _metadataStart;
 
   /// Track, transport, queue, and loading changes.
   final Signal playbackState = Signal();
@@ -350,7 +362,7 @@ class MelodyApp {
           details.uploader,
           // Melody stores no album tags; the source is useful context.
           details.sourceName,
-          services.thumbnails.artworkUri(details.thumbnail),
+          services.library.artworkUri(id),
         ),
         details.favorite,
       );
@@ -623,6 +635,7 @@ class MelodyApp {
     persistence.close();
     services.lyricsEmbedder?.close();
     _loudnessStart?.cancel();
+    _metadataStart?.cancel();
     libraryRevision.removeListener(services.loudness.analyzeNew);
     unawaited(services.loudness.close());
     // Running jobs observe cancellation at their next yt-dlp callback.

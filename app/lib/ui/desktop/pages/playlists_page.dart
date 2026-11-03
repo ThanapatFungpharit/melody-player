@@ -303,7 +303,7 @@ class _PlaylistDetail extends StatelessWidget {
                       ),
                       title: track.displayTitle,
                       subtitle: info.credit,
-                      artwork: info.thumbnail,
+                      artwork: app.services.library.artwork(track.id),
                       duration: formatDuration(info.duration),
                       current: app.playback.currentTrackId == track.id,
                       favorite: info.favorite,
