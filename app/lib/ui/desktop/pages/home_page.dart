@@ -60,16 +60,6 @@ class _HomePageState extends State<HomePage> {
                     count > 0 ? "Shuffle your library" : "Find your music",
                   ),
                 ),
-                OutlinedButton.icon(
-                  onPressed: count > 0 ? app.home.playLibrary : null,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                  label: const Text("Play all"),
-                ),
-                IconButton(
-                  onPressed: count > 0 ? app.home.queueLibrary : null,
-                  tooltip: "Add library to queue",
-                  icon: const Icon(Icons.add_to_queue_rounded),
-                ),
               ],
             ),
             const SizedBox(height: 28),
@@ -91,7 +81,7 @@ class _HomePageState extends State<HomePage> {
               _CardShelf(
                 app,
                 itemCount: favorites.length,
-                itemBuilder: (context, index) => _trackCard(favorites[index]),
+                itemBuilder: (context, index) => _trackCard(favorites, index),
               ),
             if (playlists.isNotEmpty) ...[
               const SizedBox(height: 28),
@@ -140,15 +130,18 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _trackCard(Track track) {
+  Widget _trackCard(List<Track> tracks, int index) {
     final app = widget.app;
+    final track = tracks[index];
     final details = app.services.library.details(track.id);
     return CoverCard(
       app: app,
       title: track.displayTitle,
       subtitle: details.credit,
       artwork: details.thumbnail,
-      onPlay: () => app.playback.playTrack(track.id),
+      onPlay: () => app.playback.playTracks([
+        for (final item in tracks) item.id,
+      ], startIndex: index),
       playTooltip: "Play ${track.displayTitle}",
     );
   }
@@ -225,8 +218,17 @@ class _QuickGrid extends StatelessWidget {
             spacing: gap,
             runSpacing: gap,
             children: [
-              for (final track in tracks)
-                SizedBox(width: width, child: _QuickTile(app, track)),
+              for (final (index, track) in tracks.indexed)
+                SizedBox(
+                  width: width,
+                  child: _QuickTile(
+                    app,
+                    track,
+                    onPlay: () => app.playback.playTracks([
+                      for (final item in tracks) item.id,
+                    ], startIndex: index),
+                  ),
+                ),
             ],
           );
         },
@@ -236,10 +238,11 @@ class _QuickGrid extends StatelessWidget {
 }
 
 class _QuickTile extends StatelessWidget {
-  const _QuickTile(this.app, this.track);
+  const _QuickTile(this.app, this.track, {required this.onPlay});
 
   final MelodyApp app;
   final Track track;
+  final VoidCallback onPlay;
 
   @override
   Widget build(BuildContext context) {
@@ -257,7 +260,7 @@ class _QuickTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(Radii.medium),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => app.playback.playTrack(track.id),
+          onTap: onPlay,
           child: Row(
             children: [
               Artwork(
@@ -295,7 +298,7 @@ class _QuickTile extends StatelessWidget {
                 child: Padding(
                   padding: const EdgeInsets.only(right: 10),
                   child: PlayCircle(
-                    onPressed: () => app.playback.playTrack(track.id),
+                    onPressed: onPlay,
                     tooltip: "Play ${track.displayTitle}",
                     size: 36,
                   ),
@@ -328,10 +331,9 @@ class _Recommendations extends StatelessWidget {
     } else if (home.recommendationsError.isNotEmpty) {
       body = EmptyState(Icons.cloud_off_rounded, home.recommendationsError);
     } else if (home.recommendations.isNotEmpty) {
-      final playlists = app.services.manager.listPlaylists();
       body = _Shelf([
         for (final result in home.visibleRecommendations())
-          SearchResultCard(app, result, playlists),
+          SearchResultCard(app, result),
       ]);
     } else {
       body = const EmptyState(

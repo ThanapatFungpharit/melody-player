@@ -281,7 +281,7 @@ class _DownloadRow extends StatelessWidget {
           )
         : completed && playable.isNotEmpty
         ? IconButton(
-            onPressed: () => app.playback.playTracks(playable),
+            onPressed: () => app.playback.playNow(playable),
             tooltip: "Play",
             icon: const Icon(Icons.play_arrow_rounded),
           )
@@ -292,13 +292,7 @@ class _DownloadRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         spacing: 16,
         children: [
-          Artwork(
-            app,
-            record.thumbnail,
-            size: 52,
-            seed: record.title,
-            playlist: record.kind == "playlist",
-          ),
+          Artwork(app, record.thumbnail, size: 52, seed: record.title),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

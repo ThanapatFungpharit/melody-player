@@ -46,7 +46,6 @@ class _MobileSearchState extends State<MobileSearch> {
     return Watch(
       [search, app.libraryRevision],
       builder: (context) {
-        final playlists = app.services.manager.listPlaylists();
         final recent = search.queryText.isEmpty
             ? search.recentSearches
             : const <String>[];
@@ -77,7 +76,7 @@ class _MobileSearchState extends State<MobileSearch> {
             spacing: 8,
             children: [
               for (final result in search.results)
-                searchResultRow(context, app, result, playlists),
+                searchResultRow(context, app, result),
             ],
           );
         }

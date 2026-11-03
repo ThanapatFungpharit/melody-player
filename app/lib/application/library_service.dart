@@ -349,7 +349,7 @@ class LibraryService {
   }
 
   /// Drops cached artwork and saved lyrics that no library track uses, such
-  /// as those of previews and of downloads that failed. Call it before
+  /// as those of downloads that failed. Call it before
   /// downloads start: a finishing download caches its artwork and lyrics
   /// before its track is registered. Returns how many files were removed.
   Future<int> removeUnusedCaches() async {
@@ -445,7 +445,13 @@ class LibraryService {
     String sort = "recent",
     int offset = 0,
     int? limit,
-  }) => manager.searchTracks(query, offset: offset, limit: limit, sort: sort);
+  }) => manager.searchTracks(
+    query,
+    offset: offset,
+    limit: limit,
+    sort: sort,
+    artist: (trackId) => details(trackId).uploader,
+  );
 
   List<Playlist> playlists() => manager.listPlaylists();
 

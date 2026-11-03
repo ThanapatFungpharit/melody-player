@@ -17,7 +17,6 @@ class LibraryController extends ChangeNotifier {
   static const queryDebounce = Duration(milliseconds: 150);
 
   final MelodyApp app;
-  String mode = "tracks";
   String queryText = "";
   String sortKey = "recent";
   int pageOffset = 0;
@@ -46,26 +45,11 @@ class LibraryController extends ChangeNotifier {
     );
   }
 
-  List<Playlist> matchingPlaylists() {
-    final term = queryText.toLowerCase();
-    return [
-      for (final playlist in app.services.manager.listPlaylists())
-        if (term.isEmpty || playlist.name.toLowerCase().contains(term))
-          playlist,
-    ];
-  }
-
   List<Track> visibleTracks() =>
       app.services.library.tracks(query: queryText, sort: sortKey);
 
   void changePage(int direction) {
     pageOffset = (pageOffset + direction * libraryPageSize).clamp(0, 1 << 30);
-    notifyListeners();
-  }
-
-  void setMode(String value) {
-    mode = value;
-    pageOffset = 0;
     notifyListeners();
   }
 
@@ -84,6 +68,11 @@ class LibraryController extends ChangeNotifier {
 
   void playVisible() =>
       app.playback.playTracks([for (final track in visibleTracks()) track.id]);
+
+  /// Plays the visible tracks from the one at [index].
+  void playFrom(int index) => app.playback.playTracks([
+    for (final track in visibleTracks()) track.id,
+  ], startIndex: index);
 
   void shuffleVisible() => app.playback.playTracksShuffled([
     for (final track in visibleTracks()) track.id,

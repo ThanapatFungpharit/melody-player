@@ -107,17 +107,15 @@ class _MobileQueueState extends State<MobileQueue> {
                     active: true,
                   ),
                   Tooltip(
-                    message: "Shuffle upcoming tracks",
+                    message: "Shuffle the queue",
                     child: chip(
                       Icons.shuffle_rounded,
                       "Shuffle",
-                      queue.upcomingCount < 2
-                          ? null
-                          : app.playback.shuffleUpcoming,
+                      queue.canShuffle ? app.shuffleQueue : null,
                     ),
                   ),
                   Tooltip(
-                    message: "Clear upcoming tracks",
+                    message: "Remove every track but the current one",
                     child: chip(
                       Icons.clear_all_rounded,
                       "Clear",

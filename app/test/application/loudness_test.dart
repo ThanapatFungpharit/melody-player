@@ -100,7 +100,6 @@ void main() {
     expect(normalizer.gainFor(loud), closeTo(linearGain(-10), 1e-9));
     normalizer.configure(enabled: false, targetLufs: -18);
     expect(normalizer.gainFor(loud), 1);
-    expect(normalizer.fallbackGain, 1);
     await normalizer.close();
   });
 
@@ -121,7 +120,6 @@ void main() {
 
       // Gains -4, -3, and 0 dB: the median is -3 dB.
       expect(normalizer.gainFor(ids[3]), closeTo(linearGain(-3), 1e-9));
-      expect(normalizer.fallbackGain, closeTo(linearGain(-3), 1e-9));
       await normalizer.close();
     },
   );
@@ -213,7 +211,7 @@ void main() {
     await normalizer.idle;
     // Measured, which records the file as unmeasurable.
     expect(measured, ["song.mp3"]);
-    expect(normalizer.gainFor(id), normalizer.fallbackGain);
+    expect(normalizer.gainFor(id), 1);
     await normalizer.close();
   });
 

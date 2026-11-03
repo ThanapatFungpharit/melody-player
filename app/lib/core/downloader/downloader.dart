@@ -38,8 +38,6 @@ enum DownloadStatus {
   bool get isUnsuccessful => this == failed || this == cancelled;
 }
 
-const _thumbnailExtensions = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"};
-
 /// Staging directories are `<stagingDirectory>/job-<random>`.
 const _stagingPrefix = "job-";
 
@@ -241,17 +239,6 @@ class DownloadResult {
   final Uint8List? artwork;
 }
 
-/// The downloader cannot accept another job right now.
-class WorkerQueueFull implements Exception {
-  WorkerQueueFull(this.capacity);
-
-  final int capacity;
-
-  @override
-  String toString() =>
-      "Background work limit reached ($capacity tasks); retry shortly.";
-}
-
 class _Cancelled implements Exception {}
 
 class _Job {
@@ -276,14 +263,12 @@ class Downloader {
     this._worker,
     this._outputDirectory, {
     int maxWorkers = 4,
-    int? maxPending,
     Set<String> audioExtensions = const {".mp3"},
     this.options = const {},
     this.lyricsTimeout = const Duration(seconds: 15),
     required this.stagingDirectory,
     required this.receiptDirectory,
   }) : _maxWorkers = max(1, maxWorkers),
-       _capacity = max(1, maxWorkers) + (maxPending ?? max(1, maxWorkers)),
        _audioExtensions = {
          for (final item in audioExtensions) item.toLowerCase(),
        } {
@@ -318,7 +303,6 @@ class Downloader {
   }
 
   final int _maxWorkers;
-  final int _capacity;
   final Set<String> _audioExtensions;
 
   /// yt-dlp options applied to every job.
@@ -351,7 +335,6 @@ class Downloader {
     final source = url.trim();
     if (source.isEmpty) throw ArgumentError("A download URL is required");
     if (_shutdown) throw StateError("The downloader has been shut down");
-    if (_inFlight >= _capacity) throw WorkerQueueFull(_capacity);
     final task = const Uuid().v4();
     final job = _Job(
       DownloadProgress(task: task, url: source, status: DownloadStatus.queued),
@@ -451,12 +434,7 @@ class Downloader {
         _raiseIfCancelled(job);
         if (lyrics != null) await _writeMp3Lyrics(staging, lyrics);
       }
-      final sidecar = await _readDownloadedThumbnail(staging);
-      final artwork = await _verifiedEmbeddedArtwork(
-        staging,
-        artworkExpected:
-            sidecar.isNotEmpty || job.progress.thumbnail.trim().isNotEmpty,
-      );
+      final artwork = await _embeddedArtwork(staging);
       final files = await _moveDownloadedFiles(job, staging);
       if (files.isEmpty) {
         throw DownloadError("The download did not produce an audio file");
@@ -531,59 +509,26 @@ class Downloader {
     );
   }
 
-  /// The sidecar yt-dlp retained after embedding, for verification.
-  Future<Uint8List> _readDownloadedThumbnail(Directory staging) async {
-    File? largest;
-    var largestSize = 0;
-    try {
-      await for (final entity in staging.list()) {
-        if (entity is! File ||
-            !_thumbnailExtensions.contains(
-              p.extension(entity.path).toLowerCase(),
-            )) {
-          continue;
-        }
-        final size = await entity.length();
-        if (size > 0 && size <= maxArtworkBytes && size > largestSize) {
-          largest = entity;
-          largestSize = size;
-        }
-      }
-      return largest == null ? Uint8List(0) : await largest.readAsBytes();
-    } on FileSystemException {
-      return Uint8List(0);
-    }
-  }
-
-  /// Reads back burned cover art before any completed media is committed.
-  Future<Uint8List> _verifiedEmbeddedArtwork(
-    Directory staging, {
-    required bool artworkExpected,
-  }) async {
-    final embedded = <Uint8List>[];
-    final missing = <String>[];
+  /// Reads back the cover art burned into the staged audio, for the UI cache.
+  /// A song without one is still the song: it plays with a placeholder.
+  Future<Uint8List> _embeddedArtwork(Directory staging) async {
+    var largest = Uint8List(0);
     await for (final entity in staging.list()) {
       if (entity is! File ||
           !_audioExtensions.contains(p.extension(entity.path).toLowerCase())) {
         continue;
       }
-      final artwork = await readEmbeddedArtwork(entity.path);
-      if (artwork.isNotEmpty) {
-        embedded.add(artwork);
-      } else if (artworkExpected) {
-        missing.add(p.basename(entity.path));
+      try {
+        final artwork = await readEmbeddedArtwork(entity.path);
+        if (artwork.length > largest.length) largest = artwork;
+        if (artwork.isEmpty) {
+          debugPrint("${entity.path} holds no readable cover art");
+        }
+      } on Object catch (error) {
+        debugPrint("Could not read the cover art of ${entity.path}: $error");
       }
     }
-    if (missing.isNotEmpty) {
-      throw DownloadError(
-        "Thumbnail artwork was available, but it was not embedded in the "
-        "media file: ${(missing..sort()).join(", ")}",
-      );
-    }
-    return embedded.fold<Uint8List>(
-      Uint8List(0),
-      (best, item) => item.length > best.length ? item : best,
-    );
+    return largest;
   }
 
   Future<List<String>> _moveDownloadedFiles(_Job job, Directory staging) async {

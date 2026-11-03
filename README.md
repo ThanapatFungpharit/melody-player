@@ -5,7 +5,7 @@ Flutter app written in Dart; Python is embedded only to run two libraries with
 no Dart equivalent: [`ytmusicapi`](https://github.com/sigma67/ytmusicapi),
 which finds songs, radio mixes, playlists, and lyrics on YouTube Music, and
 [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), which downloads them. It
-provides one continuous workflow for searching, previewing, downloading,
+provides one continuous workflow for searching, downloading,
 organizing, queueing, and playing music, with dedicated desktop and mobile
 interfaces for the same shared capabilities.
 
@@ -13,15 +13,14 @@ interfaces for the same shared capabilities.
 
 - Paged YouTube Music song search (YouTube Music's own song results, with artists, album artwork, and durations) with track-list and artwork-grid views; pasted playlist URLs load their tracks with playlist-aware pagination
 - Lyrics, timed when available: the current line follows playback and tapping a line seeks to it. Lyrics download with each track and are saved inside its audio file (a standard `USLT` frame in MP3, `©lyr` in M4A, `LYRICS` in FLAC/Ogg/Opus), not in a separate file, so other players see them too. On desktop, tracks already in the library get their lyrics embedded automatically in the background. Imported files show lyrics from their own tags or a `.lrc` with the same name; everything works offline
-- Optional manually uploaded cookie-file sessions for stream previews and downloads that need a signed-in session
-- Stream previews directly from Search
+- Optional manually uploaded cookie-file sessions for downloads that need a signed-in session
 - Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in every downloaded media file plus a derived offline UI cache
-- Search actions have one clear intent: Play reuses the intact library file or downloads it and starts playback when ready; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
+- Search actions have one clear intent: Play reuses the intact library file or downloads it, keeping the current music going until it is ready and then playing it ahead of the rest of the queue; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
 - Automatic import of completed audio into the SQLite music library
 - Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
-- Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, copy/move, and safe removal that does not delete audio files
+- Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, add/move between playlists, and safe removal that does not delete audio files
 - Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and repair of missing files
-- Persistent playback queue with play-next, append, reorder, remove and clear-upcoming (both undoable), a visible one-time shuffle reorder, repeat-track, and repeat-queue
+- Persistent playback queue with play-next, append, reorder, remove, clear, and shuffle (all undoable), where shuffle is a visible one-time reorder of the whole queue around the current track, plus repeat-track and repeat-queue
 - Sleep timer that pauses playback after 15–90 minutes or when the playing track ends
 - Background playback while Melody is minimized, another app is active, or a mobile device is locked
 - Android lock-screen and notification-panel controls, plus Windows and macOS system-media controls (not on Linux), with synchronized artwork, title, artist, playback state, seeking, and previous/next actions; Pause keeps the session available and explicit Stop removes it, keeping the queue
@@ -198,6 +197,6 @@ commit it. `--allow-debug-signing` is for local testing only.
 The **Application builds** workflow builds Windows, Linux, Intel and Apple
 Silicon macOS, Android APKs, and the Android App Bundle on tagged releases.
 
-## License status
+## License
 
-A project license has not yet been selected. See [Contributing](CONTRIBUTING.md#licensing-status); this repository currently contains no new license grant for Melody or its local plugin.
+Melody and its local plugin are released under the [MIT License](LICENSE). Third-party components retain their own licenses.

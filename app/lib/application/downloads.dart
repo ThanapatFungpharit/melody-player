@@ -422,10 +422,8 @@ class DownloadCoordinator extends ChangeNotifier {
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
-    if (metadata.kind != "playlist") {
-      if (await availableTrack(url) case final track?) {
-        return DownloadRequest.existing(track);
-      }
+    if (await availableTrack(url) case final track?) {
+      return DownloadRequest.existing(track);
     }
     final active = _activeRecordForSource(url);
     if (active != null) return DownloadRequest.task(active.id, started: false);
@@ -947,7 +945,6 @@ class _DownloadMetadata {
     this.uploader = "",
     this.thumbnail = "",
     this.source = youtubeMusicName,
-    this.kind = "track",
     this.duration = 0,
     this.resolveMetadata = false,
     this.createdAt,
@@ -964,7 +961,6 @@ class _DownloadMetadata {
         uploader: result.uploader,
         thumbnail: result.thumbnail,
         source: result.source,
-        kind: result.kind,
         duration: result.duration,
       );
 
@@ -996,7 +992,6 @@ class _DownloadMetadata {
       uploader: original.uploader,
       thumbnail: original.thumbnail,
       source: original.source,
-      kind: original.kind,
       // URL batches start with placeholder titles that yt-dlp replaces.
       resolveMetadata: batched,
       // A batch song keeps its place and count in its batch.
@@ -1014,7 +1009,6 @@ class _DownloadMetadata {
 
   /// The service shown as the track's source.
   final String source;
-  final String kind;
 
   /// In seconds; 0 when unknown.
   final double duration;
@@ -1035,7 +1029,6 @@ class _DownloadMetadata {
     uploader: uploader,
     thumbnail: thumbnail,
     source: source,
-    kind: kind,
     createdAt: createdAt,
     batchId: batchId,
     batchPosition: batchPosition,

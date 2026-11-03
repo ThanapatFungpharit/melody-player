@@ -78,16 +78,12 @@ void main() {
       first.advanceTo(const Duration(seconds: 42));
       await _settle();
 
-      await engine.loadSource(
-        "/music/preview.mp3",
-        generation: 4,
-        position: const Duration(seconds: 5),
-      );
+      await setQueue(["b"], 0, generation: 4, positionMs: 5000);
 
-      final preview = audio.last;
-      expect(preview, isNot(same(first)));
-      expect(preview.loadRequest!.initialPosition, const Duration(seconds: 5));
-      expect(preview.seeks, isEmpty);
+      final next = audio.last;
+      expect(next, isNot(same(first)));
+      expect(next.loadRequest!.initialPosition, const Duration(seconds: 5));
+      expect(next.seeks, isEmpty);
       expect(playbackState().position, const Duration(seconds: 5));
     },
   );
@@ -983,11 +979,6 @@ void main() {
       await engine.updateQueue(gained({"b": 1, "a": 0.5}), currentIndex: 1);
       await _settle();
       expect(audio.last.volumes.last, closeTo(0.5, 1e-9));
-    });
-
-    test("a preview stream plays at its own gain", () async {
-      await engine.loadSource("/music/preview.mp3", generation: 2, gain: 0.7);
-      expect(audio.last.volumes.last, closeTo(0.7, 1e-9));
     });
 
     group("boosting quiet tracks", () {

@@ -21,8 +21,6 @@ class PlaybackQueue {
       ? items[currentIndex]
       : null;
 
-  int get upcomingCount => items.length - max(0, currentIndex + 1);
-
   String? replace(
     List<String> trackIds, {
     int startIndex = 0,
@@ -100,21 +98,28 @@ class PlaybackQueue {
     currentIndex = kept != null ? 0 : -1;
   }
 
-  /// Reshuffles the remaining tracks once.
-  bool shuffleUpcoming() {
-    final start = max(0, currentIndex + 1);
-    if (upcomingCount < 2) return false;
-    final original = items.sublist(start);
+  /// Whether [shuffle] has another order to offer.
+  bool get canShuffle =>
+      items.length > 2 || (items.length == 2 && currentIndex == 1);
+
+  /// Reorders the whole queue at random, once: the current track stays current
+  /// at the top, and every other row follows it, whether it has played or not.
+  bool shuffle() {
+    if (items.length < 2) return false;
+    final selected = max(0, currentIndex);
+    final original = [...items.take(selected), ...items.skip(selected + 1)];
     // One track queued several times has no other order to offer.
-    if (original.toSet().length < 2) return false;
-    final upcoming = List.of(original)..shuffle(_random);
+    if (selected == 0 && original.toSet().length < 2) return false;
+    final others = List.of(original)..shuffle(_random);
     final unchanged = Iterable.generate(
-      upcoming.length,
-    ).every((i) => upcoming[i] == original[i]);
-    final reordered = unchanged
-        ? [...upcoming.skip(1), upcoming.first]
-        : upcoming;
-    items.replaceRange(start, items.length, reordered);
+      others.length,
+    ).every((i) => others[i] == original[i]);
+    // Moving the current track to the top is a change by itself.
+    final reordered = selected == 0 && unchanged
+        ? [...others.skip(1), others.first]
+        : others;
+    items = [items[selected], ...reordered];
+    currentIndex = 0;
     return true;
   }
 

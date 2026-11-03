@@ -764,8 +764,7 @@ class MusicManager {
   Map<String, String> get _search {
     return _searchText ??= {
       for (final track in _tracks.values)
-        track.id: "${track.title}\u0000${track.filename}\u0000${track.source}"
-            .toLowerCase(),
+        track.id: track.displayTitle.toLowerCase(),
     };
   }
 
@@ -832,11 +831,13 @@ class MusicManager {
     return id != null && _tracks.containsKey(id);
   }
 
+  /// Tracks whose title holds [query], or whose [artist] does when given.
   List<Track> searchTracks(
     String query, {
     int offset = 0,
     int? limit,
     String sort = "recent",
+    String Function(String trackId)? artist,
   }) {
     final needle = query.trim().toLowerCase();
     if (limit != null && limit <= 0) return const [];
@@ -844,7 +845,11 @@ class MusicManager {
     Iterable<String> matching = _ordered(sort);
     if (needle.isNotEmpty) {
       final search = _search;
-      matching = matching.where((id) => search[id]!.contains(needle));
+      matching = matching.where(
+        (id) =>
+            search[id]!.contains(needle) ||
+            (artist?.call(id).toLowerCase().contains(needle) ?? false),
+      );
     }
     var page = matching.skip(start);
     if (limit != null) page = page.take(limit);
@@ -1030,10 +1035,11 @@ class MusicManager {
       if (_tracks[id] case final track?) track.copy(),
   ];
 
-  void addToPlaylist(String playlistId, String trackId) {
+  /// Returns false when the playlist already holds the track.
+  bool addToPlaylist(String playlistId, String trackId) {
     final playlist = _getPlaylist(playlistId);
     final track = _getTrack(trackId);
-    if (playlist.trackIds.contains(track.id)) return;
+    if (playlist.trackIds.contains(track.id)) return false;
     playlist.trackIds.add(track.id);
     try {
       _commit(
@@ -1044,6 +1050,7 @@ class MusicManager {
       playlist.trackIds.removeLast();
       rethrow;
     }
+    return true;
   }
 
   /// Adds several existing tracks with one atomic metadata write.
@@ -1134,27 +1141,6 @@ class MusicManager {
       _commit((db) => _writePlaylistTracks(db, playlist), tracksChanged: false);
     } catch (_) {
       playlist.trackIds = previous;
-      rethrow;
-    }
-  }
-
-  /// Copies a track between playlists, preserving source membership.
-  void copyPlaylistTrack(String sourceId, String targetId, String trackId) {
-    final source = _getPlaylist(sourceId);
-    final target = _getPlaylist(targetId);
-    final track = _getTrack(trackId);
-    if (!source.trackIds.contains(track.id)) {
-      throw ArgumentError("Track ${track.id} is not in playlist ${source.id}");
-    }
-    if (target.trackIds.contains(track.id)) return;
-    target.trackIds.add(track.id);
-    try {
-      _commit(
-        (db) => _appendPlaylistTrack(db, target.id, track.id),
-        tracksChanged: false,
-      );
-    } catch (_) {
-      target.trackIds.removeLast();
       rethrow;
     }
   }

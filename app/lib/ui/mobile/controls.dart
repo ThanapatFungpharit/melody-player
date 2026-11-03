@@ -3,7 +3,7 @@ import "dart:async";
 import "package:flutter/material.dart";
 
 import "../../application/models.dart";
-import "../../core/library/models.dart";
+import "../../core/library/models.dart" show Track;
 import "../app_state.dart";
 import "../shared/actions.dart";
 import "../shared/format.dart";
@@ -371,7 +371,7 @@ Widget libraryTrackRow(
   BuildContext context,
   MelodyApp app,
   Track track,
-  List<Playlist> playlists, {
+  int index, {
   TrackDetails? details,
 }) {
   final info = details ?? app.services.library.details(track.id);
@@ -382,10 +382,10 @@ Widget libraryTrackRow(
     artwork: info.thumbnail,
     selected: app.playback.currentTrackId == track.id,
     favorite: info.favorite,
-    onTap: () => app.playback.playTrack(track.id),
+    onTap: () => app.library.playFrom(index),
     trailing: MoreButton(
       track.displayTitle,
-      () => libraryTrackActions(context, app, track, info, playlists),
+      () => libraryTrackActions(context, app, track, info),
     ),
   );
 }
@@ -394,31 +394,19 @@ Widget searchResultRow(
   BuildContext context,
   MelodyApp app,
   SearchResult result,
-  List<Playlist> playlists,
-) {
-  final detail = result.isPlaylist
-      ? "${result.entryCount > 0 ? result.entryCount : "Multiple"} tracks"
-      : formatDuration(result.duration);
-  return TrackRow(
-    app: app,
-    title: result.title,
-    credit: "${result.uploader} · $detail",
-    artwork: result.thumbnail,
-    playlist: result.isPlaylist,
-    favorite: !result.isPlaylist && app.search.isFavorite(result),
-    onTap: () => app.search.playResult(result),
-    trailing: MoreButton(
-      result.title,
-      () => searchResultActions(
-        context,
-        app,
-        result,
-        playlists,
-        includePrimaryActions: true,
-      ),
-    ),
-  );
-}
+) => TrackRow(
+  app: app,
+  title: result.title,
+  credit: "${result.uploader} · ${formatDuration(result.duration)}",
+  artwork: result.thumbnail,
+  favorite: app.search.isFavorite(result),
+  onTap: () => app.search.playResult(result),
+  trailing: MoreButton(
+    result.title,
+    () =>
+        searchResultActions(context, app, result, includePrimaryActions: true),
+  ),
+);
 
 /// A cover-first card for horizontal shelves.
 class MobileCoverCard extends StatelessWidget {

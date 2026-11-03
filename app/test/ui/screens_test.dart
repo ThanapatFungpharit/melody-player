@@ -25,6 +25,7 @@ import "package:melody/ui/desktop/player_bar.dart";
 import "package:melody/ui/desktop/shell.dart";
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
+import "package:melody/ui/shared/dialogs.dart";
 import "package:melody/ui/shared/actions.dart"
     show playlistActions, queueDropSlot;
 import "package:melody/ui/shared/theme.dart";
@@ -185,7 +186,7 @@ Future<MelodyApp> _app(
     stagingDirectory: paths.downloadStaging,
     receiptDirectory: paths.downloadReceipts,
   );
-  final catalog = MusicCatalog(worker, () => const {});
+  final catalog = MusicCatalog(worker);
   final services = AppServices(
     paths: paths,
     store: store,
@@ -456,7 +457,7 @@ void main() {
     expect(queue, isNotEmpty);
     expect(stop().onPressed, isNull);
 
-    app.playback.beginPendingTrack("Song");
+    app.playback.toggle();
     await tester.pump();
     expect(stop().onPressed, isNotNull);
 
@@ -464,6 +465,115 @@ void main() {
     await tester.pump();
     expect(stop().onPressed, isNull);
     expect(app.playback.queue.items, queue);
+    // The real engine has no decoder here; let its calls time out.
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  test("shuffling the queue offers to put it back", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final messages = <AppMessage>[];
+    final subscription = app.messages.listen(messages.add);
+    addTearDown(subscription.cancel);
+    final before = List.of(app.playback.queue.items);
+    final current = app.playback.currentTrackId;
+
+    app.shuffleQueue();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(app.playback.currentTrackId, current);
+    expect(app.playback.queue.currentIndex, 0);
+    final (label, undo) = messages.single.action!;
+    expect(label, "Undo");
+    undo();
+    expect(app.playback.queue.items, before);
+    expect(app.playback.currentTrackId, current);
+  });
+
+  testWidgets("a track can go to a playlist picked or made from its menu", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final track = app.services.manager.listTracks().first;
+    final existing = app.services.manager.listPlaylists().single;
+    Future<void> pick() async {
+      showPlaylistPicker(
+        tester.element(find.byType(DesktopShell)),
+        app,
+        title: "Add to playlist",
+        onChosen: (id) => app.playlists.addTrack(id, track.id),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await pick();
+    await tester.tap(find.text("New playlist…"));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, "Fresh");
+    await tester.tap(find.text("Create"));
+    await tester.pumpAndSettle();
+    final fresh = app.services.manager.listPlaylists().firstWhere(
+      (playlist) => playlist.name == "Fresh",
+    );
+    expect(fresh.trackIds, [track.id]);
+    expect(app.playlists.selectedPlaylistId, isNull);
+
+    await pick();
+    expect(find.text(existing.name), findsWidgets);
+    await tester.tap(find.text("Fresh").last);
+    await tester.pumpAndSettle();
+    expect(app.services.manager.getPlaylist(fresh.id).trackIds, [track.id]);
+  });
+
+  testWidgets("Select all picks only the tracks a search shows", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final playlist = app.services.manager.getPlaylist(
+      app.playlists.create("Empty", open: false),
+    );
+    showBulkAddTracksDialog(
+      tester.element(find.byType(DesktopShell)),
+      app,
+      playlist,
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, "weightless");
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("Select all 1 shown"));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("Add selected"));
+    await tester.pumpAndSettle();
+    final added = app.services.manager.getPlaylist(playlist.id).trackIds;
+    expect(added, hasLength(1));
+    expect(app.services.manager.getTrack(added.single).title, "Weightless");
+  });
+
+  testWidgets("a library row plays the list from there", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.navigate(2);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final ids = [for (final track in app.library.visibleTracks()) track.id];
+    app.playback.queue.replace([ids.first]);
+
+    app.library.playFrom(1);
+
+    expect(app.playback.queue.items, ids);
+    expect(app.playback.currentTrackId, ids[1]);
+    await tester.pump(const Duration(seconds: 13));
   });
 
   testWidgets("Reset everything says it deletes the library's audio", (

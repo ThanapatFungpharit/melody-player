@@ -122,7 +122,7 @@ class _DownloadCard extends StatelessWidget {
           )
         : playable.isNotEmpty
         ? TextButton.icon(
-            onPressed: () => app.playback.playTracks(playable),
+            onPressed: () => app.playback.playNow(playable),
             icon: const Icon(Icons.play_arrow_rounded),
             label: const Text("Play"),
           )
@@ -142,13 +142,7 @@ class _DownloadCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 12,
             children: [
-              Artwork(
-                app,
-                record.thumbnail,
-                size: 48,
-                seed: record.title,
-                playlist: record.kind == "playlist",
-              ),
+              Artwork(app, record.thumbnail, size: 48, seed: record.title),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

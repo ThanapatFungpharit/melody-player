@@ -132,14 +132,15 @@ void main() {
       expect((await reopen()).getPlaylist(playlist).trackIds, [b, c]);
     });
 
-    test("moving and copying between playlists", () async {
+    test("adding to and moving between playlists", () async {
       final a = await add("a.mp3");
       final b = await add("b.mp3");
       final first = manager.createPlaylist("First");
       final second = manager.createPlaylist("Second");
       manager.addTracksToPlaylist(first, [a, b]);
 
-      manager.copyPlaylistTrack(first, second, a);
+      expect(manager.addToPlaylist(second, a), isTrue);
+      expect(manager.addToPlaylist(second, a), isFalse);
       manager.moveTrackBetweenPlaylists(first, second, b);
 
       final reopened = await reopen();
@@ -183,18 +184,35 @@ void main() {
   });
 
   group("tracks", () {
-    test("search matches titles, filenames, and sources", () async {
+    test("search matches titles, never links or file names", () async {
       await add("one.mp3", title: "Blue Song");
-      await add("two.mp3", title: "Red", source: "https://example.com/blue");
-      await add("blue-three.mp3", title: "Green");
-      await add("four.mp3", title: "Yellow");
+      await add("two.mp3", title: "Blue Note");
+      await add("three.mp3", title: "Red", source: "https://example.com/blue");
+      await add("blue-four.mp3", title: "Green");
 
       final found = manager.searchTracks("  BLUE ");
 
-      expect(found.map((track) => track.title), ["Green", "Red", "Blue Song"]);
+      expect(found.map((track) => track.title), ["Blue Note", "Blue Song"]);
       final page = manager.searchTracks("blue", offset: 1, limit: 1);
-      expect(page.single.title, "Red");
+      expect(page.single.title, "Blue Song");
       expect(manager.searchTracks("blue", limit: 0), isEmpty);
+      expect(manager.searchTracks("https"), isEmpty);
+      expect(manager.searchTracks("mp3"), isEmpty);
+    });
+
+    test("search falls back to a track's file name for its title", () async {
+      await add("untitled-demo.mp3");
+      expect(manager.searchTracks("demo"), hasLength(1));
+    });
+
+    test("search also matches the artist it is given", () async {
+      final adele = await add("hello.mp3", title: "Hello");
+      await add("other.mp3", title: "Other");
+      final found = manager.searchTracks(
+        "adele",
+        artist: (id) => id == adele ? "Adele" : "Someone",
+      );
+      expect(found.single.id, adele);
     });
 
     test("sorting by title or age", () async {

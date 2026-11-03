@@ -76,17 +76,15 @@ class _QueuePanelState extends State<QueuePanel> {
                       ),
                     ),
                     Tooltip(
-                      message: "Shuffle upcoming tracks",
+                      message: "Shuffle the queue",
                       child: _Chip(
                         icon: Icons.shuffle_rounded,
                         label: "Shuffle",
-                        onPressed: queue.upcomingCount < 2
-                            ? null
-                            : app.playback.shuffleUpcoming,
+                        onPressed: queue.canShuffle ? app.shuffleQueue : null,
                       ),
                     ),
                     Tooltip(
-                      message: "Clear upcoming tracks",
+                      message: "Remove every track but the current one",
                       child: _Chip(
                         icon: Icons.clear_all_rounded,
                         label: "Clear",

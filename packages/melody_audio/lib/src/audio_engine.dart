@@ -26,7 +26,7 @@ class AudioQueueItem {
 
   final String trackId;
 
-  /// A local path or an http(s) URL.
+  /// A local path.
   final String source;
   final String title;
   final String artist;
@@ -114,7 +114,7 @@ class AudioEngineSnapshot {
   final int generation;
   final String? trackId;
 
-  /// The active path or URL; null when nothing is loaded.
+  /// The active path; null when nothing is loaded.
   final String? source;
   final String title;
   final String artist;
@@ -156,8 +156,7 @@ enum MediaCommand {
   }
 }
 
-/// One row of the decoder's playlist. [queueIndex] is -1 for a row outside the
-/// queue: a stream, or a playing track whose row was removed.
+/// One row of the decoder's playlist, and the queue row it was made from.
 @immutable
 class _NativeRow {
   const _NativeRow(this.queueIndex, this.trackId, this.source);
@@ -257,26 +256,6 @@ class AudioEngine {
   }
 
   // -- requests ------------------------------------------------------------
-
-  /// Replaces the engine's source with a single path or URL outside any
-  /// queue. [gain] is its normalization gain, as on [AudioQueueItem].
-  Future<void> loadSource(
-    String source, {
-    required int generation,
-    bool autoplay = false,
-    Duration position = Duration.zero,
-    double gain = 1,
-  }) async {
-    await _select(
-      rows: [_NativeRow(-1, "", source)],
-      queue: const [],
-      generation: generation,
-      repeatMode: AudioRepeatMode.off,
-      autoplay: autoplay,
-      position: position,
-      gain: gain,
-    );
-  }
 
   /// Installs a complete queue and selects [currentIndex], or the first
   /// playable row after it. Reads only the rows the decoder will hold.
@@ -392,7 +371,7 @@ class AudioEngine {
     for (final row in wanted.skip(kept)) {
       if (player != _player || _rowsStale) return;
       _rows = [..._rows, row];
-      await player.addAudioSource(_source(row.source));
+      await player.addAudioSource(AudioSource.file(row.source));
     }
     if (player != _player || _rowsStale) return;
     final loopMode = _nativeLoopMode;
@@ -578,7 +557,7 @@ class AudioEngine {
       return null;
     }
     final row = _rows[next].queueIndex;
-    if (row < 0 || row >= _queue.length) return null;
+    if (row >= _queue.length) return null;
     final gain = _clampGain(_queue[row].gain);
     return (gain - _gain).abs() < 0.001 ? null : gain;
   }
@@ -841,17 +820,6 @@ class AudioEngine {
     );
   }
 
-  AudioSource _source(String source) {
-    // Most sources are file paths, one per queue row: parse only likely URLs.
-    final uri =
-        source.length > 5 && source.substring(0, 4).toLowerCase() == "http"
-        ? Uri.tryParse(source)
-        : null;
-    return uri?.scheme == "http" || uri?.scheme == "https"
-        ? AudioSource.uri(uri!)
-        : AudioSource.file(source);
-  }
-
   /// Repeating the queue needs no native mode: its playlist wraps by itself.
   LoopMode _loopMode(AudioRepeatMode mode) =>
       mode == AudioRepeatMode.track ? LoopMode.one : LoopMode.off;
@@ -880,7 +848,7 @@ class AudioEngine {
       await candidate.setLoopMode(_loopMode(repeatMode));
       final duration = await candidate
           .setAudioSources(
-            [for (final row in rows) _source(row.source)],
+            [for (final row in rows) AudioSource.file(row.source)],
             initialIndex: 0,
             initialPosition: position < Duration.zero
                 ? Duration.zero
@@ -904,7 +872,7 @@ class AudioEngine {
       _queueIndex = active.queueIndex;
       _detachedSuccessor = -1;
       _activeSource = active.source;
-      _activeTrackId = active.queueIndex >= 0 ? active.trackId : null;
+      _activeTrackId = active.trackId;
       _generation = generation;
       _reportedErrorGeneration = null;
       _pendingLoadedGeneration = null;
@@ -915,7 +883,7 @@ class AudioEngine {
       _cancelRamp();
       _gain = _preparingGain;
       _appliedVolume = _level(_gain);
-      if (_queueIndex >= 0) _announceTrack(queue[_queueIndex]);
+      _announceTrack(queue[_queueIndex]);
       if (previous != null) {
         try {
           await previous.pause();
@@ -1033,7 +1001,6 @@ class AudioEngine {
     }
     final row = _rows[index];
     _playlistIndex = index;
-    if (row.trackId.isEmpty) return;
     // An edit waiting its turn may already have renumbered the queue.
     final queue = _queue;
     final position = reconcileNativeQueue(

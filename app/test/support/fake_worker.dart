@@ -10,7 +10,6 @@ import "package:path/path.dart" as p;
 class FakeWorkerTransport implements WorkerTransport {
   FakeWorkerTransport({
     this.audioFixture = "test/fixtures/artwork/cover.mp3",
-    this.extractResult,
     Map<String, Object?>? ytMusicResults,
   }) : ytMusicResults = ytMusicResults ?? defaultYtMusicResults() {
     scheduleMicrotask(
@@ -95,8 +94,6 @@ class FakeWorkerTransport implements WorkerTransport {
   final StreamController<Map<String, Object?>> _frames =
       StreamController.broadcast();
   String audioFixture;
-  Map<String, Object?>? extractResult;
-  Map<String, Object?>? extractError;
   final List<Map<String, Object?>> sent = [];
 
   /// Downloads wait on this gate when set.
@@ -141,12 +138,6 @@ class FakeWorkerTransport implements WorkerTransport {
   Future<void> _handle(Map<String, Object?> frame) async {
     final id = frame["id"];
     switch (frame["op"]) {
-      case "extract":
-        if (extractError != null) {
-          _frames.add({"id": id, "ok": false, "error": extractError});
-        } else {
-          _frames.add({"id": id, "ok": true, "result": extractResult});
-        }
       case "cancel":
         _cancelled.add("${frame["task"]}");
         _frames.add({"id": id, "ok": true, "result": true});

@@ -92,10 +92,6 @@ class _PlaylistDetail extends StatelessWidget {
     final tracks = app.playlists.tracks(playlist.id);
     final (start, end) = app.playlists.visibleRange(tracks.length);
     final visible = tracks.sublist(start, end);
-    final others = [
-      for (final item in app.services.manager.listPlaylists())
-        if (item.id != playlist.id) item,
-    ];
     final details = app.services.library.detailsMany(
       visible.map((track) => track.id),
     );
@@ -108,7 +104,6 @@ class _PlaylistDetail extends StatelessWidget {
         playlist,
         track,
         position,
-        others,
         details[track.id]!,
       ),
     );

@@ -9,7 +9,6 @@ import "../../application/models.dart";
 import "../../application/catalog.dart";
 import "../../application/downloads.dart";
 import "../../application/library_service.dart" show favoritesPlaylistId;
-import "../../core/downloader/downloader.dart";
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 import "../shared/format.dart" show plural;
@@ -140,9 +139,10 @@ class PlaylistsController extends ChangeNotifier {
   void shuffle(Playlist playlist) =>
       app.playback.playTracksShuffled(playlist.trackIds);
 
-  String create(String name) {
+  /// Creates a playlist; with [open], the Playlists page then shows it.
+  String create(String name, {bool open = true}) {
     final id = app.services.manager.createPlaylist(name);
-    selectedPlaylistId = id;
+    if (open) selectedPlaylistId = id;
     app.touchLibrary();
     notifyListeners();
     return id;
@@ -165,9 +165,9 @@ class PlaylistsController extends ChangeNotifier {
 
   void addTrack(String playlistId, String trackId) {
     _requireEditable(playlistId);
-    app.services.manager.addToPlaylist(playlistId, trackId);
+    final added = app.services.manager.addToPlaylist(playlistId, trackId);
     app.touchLibrary();
-    app.showMessage("Added to playlist.");
+    app.showMessage(added ? "Added to playlist." : "Already in this playlist.");
   }
 
   int addTracks(String playlistId, List<String> trackIds) {
@@ -205,19 +205,10 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  void transferTrack(
-    String source,
-    String target,
-    String trackId, {
-    required bool move,
-  }) {
+  void moveTrack(String source, String target, String trackId) {
     _requireEditable(source);
     _requireEditable(target);
-    if (move) {
-      app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
-    } else {
-      app.services.manager.copyPlaylistTrack(source, target, trackId);
-    }
+    app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
     app.touchLibrary();
   }
 
@@ -368,10 +359,13 @@ class PlaylistsController extends ChangeNotifier {
               session.activeDownloads.isNotEmpty) &&
           identical(_session, session)) {
         var changed = false;
-        var queueFull = false;
-        // Requests are non-blocking; submit until the downloader reports
-        // backpressure, then refill after terminal notifications wake us.
-        while (session.pending.isNotEmpty && identical(_session, session)) {
+        // Requests are non-blocking. Only a window of a long playlist's songs
+        // waits in the downloader (and its history) at a time; terminal
+        // notifications wake this loop to refill it.
+        final window = app.settings.concurrentDownloads * 2;
+        while (session.pending.isNotEmpty &&
+            session.activeDownloads.length < window &&
+            identical(_session, session)) {
           final key = session.pending.first;
           final DownloadRequest request;
           try {
@@ -379,9 +373,6 @@ class PlaylistsController extends ChangeNotifier {
               session.tracks[key]!,
               resolveMetadata: session.resolveMetadata,
             );
-          } on WorkerQueueFull {
-            queueFull = true;
-            break;
           } catch (_) {
             session.failed++;
             session.pending.removeFirst();
@@ -441,15 +432,7 @@ class PlaylistsController extends ChangeNotifier {
         }
         if (session.pending.isEmpty && session.activeDownloads.isEmpty) break;
         if (terminalSeen) continue;
-        if (session.activeDownloads.isNotEmpty) {
-          await _wakeup.future;
-        } else if (queueFull) {
-          // The downloader may be busy with unrelated work.
-          await _wakeup.future.timeout(
-            const Duration(milliseconds: 200),
-            onTimeout: () {},
-          );
-        }
+        if (session.activeDownloads.isNotEmpty) await _wakeup.future;
       }
       _finish(session);
     } finally {

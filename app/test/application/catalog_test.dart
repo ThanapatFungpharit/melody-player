@@ -16,7 +16,7 @@ void main() {
   setUp(() {
     transport = FakeWorkerTransport();
     worker = WorkerClient(transport);
-    catalog = MusicCatalog(worker, () => const {});
+    catalog = MusicCatalog(worker);
   });
 
   tearDown(() => worker.close());

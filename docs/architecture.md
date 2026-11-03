@@ -79,8 +79,8 @@ committed, as Flutter's templates expect, and so are the `pubspec.lock` and
 ## The Python boundary
 
 Python remains for what has no Dart equivalent: ytmusicapi (YouTube Music's
-private API: song search, radio, playlists, lyrics), yt-dlp (stream URLs and
-downloads), and choosing the release of each to import (the updater must run
+private API: song search, radio, playlists, lyrics), yt-dlp
+(downloads), and choosing the release of each to import (the updater must run
 inside the interpreter, before the first import). Everything else is Dart.
 
 `WorkerClient` (`app/lib/worker/worker_client.dart`) is the app's only API to
@@ -107,7 +107,7 @@ worker also emits `{"event": "ready", "status"}` once and
 | Operation | Purpose |
 | --- | --- |
 | `ytmusic` | `YTMusic().<method>(**arguments)` for `search`, `get_watch_playlist`, `get_lyrics`, or `get_playlist`, as JSON |
-| `extract` | `YoutubeDL(options).extract_info(target, download=False)`, trimmed to the fields Melody reads (stream URLs) |
+| `extract` | `YoutubeDL(options).extract_info(target, download=False)`, trimmed to a few fields. Only the `melody-worker` console uses it, to diagnose yt-dlp; the app does not |
 | `download` | Run yt-dlp into a staging directory owned by the app, emitting `progress` events; optional `metadata` (such as `lyrics`) becomes tags FFmpegMetadata writes |
 | `tag` | Copy an audio file with FFmpeg (through yt-dlp, so `ffmpeg_location` applies), keeping every stream and tag and setting `metadata` tags such as `lyrics` |
 | `cancel` | Stop a download at its next progress hook; never queued behind other work |
@@ -152,14 +152,14 @@ when it starts Python. Melody uses absolute paths everywhere.
 them to the playback controller.
 
 - `AudioEngine` is the process-scoped just_audio player. Requests (`setQueue`,
-  `updateQueue`, `loadSource`, `play`, `seek`, ...) carry an even generation
+  `updateQueue`, `play`, `seek`, ...) carry an even generation
   chosen by the app; it reports `AudioEngineEvent`s (`AudioLoaded`,
   `AudioPositionChanged`, `AudioTrackChanged`, ...) tagged with their
   generation. Transitions the engine makes by itself use odd generations.
 - `SystemMediaSession` publishes a `MediaSessionState` to lock-screen,
   notification, and desktop controls, and routes `MediaCommand`s: the engine
   carries out transport commands itself, and only commands that need
-  application policy (favorite, shuffle, repeat, leaving a stream) reach the
+  application policy (favorite, shuffle, repeat) reach the
   app.
 - `AndroidPlatform` is the Kotlin MethodChannel for the directories Melody
   needs from Android and for opening the Music folder in the Files app.
@@ -271,11 +271,17 @@ every play, pause, seek, playback event, queue edit, and volume change, and an
 approach that does not end in a transition is undone. An explicit selection
 starts at its own gain. A measurement that arrives while a track plays applies
 from its next play. Switching normalization or the target fades the playing
-track over 1.5 seconds. Unmeasured and unmeasurable tracks, and streams, use
+track over 1.5 seconds. Unmeasured and unmeasurable tracks use
 the median gain of the measured library, and silent tracks are left alone.
 
-Shuffle is a one-time in-place reorder of the upcoming rows (or the whole
-collection when starting shuffled). Next, Previous, repeat, persistence, and
+Shuffle is a one-time in-place reorder of the whole queue: the current track
+moves to the top and stays current, and every other row follows it, whether it
+has played or not. An edit like any other, it never replaces the decoder, and it
+can be undone. A tap on a row of any track list replaces the queue with that list
+and plays from the row. Play on a search result instead joins the queue after
+the current row, so the listener returns to the queue afterwards; a song still
+downloading leaves the current music playing, and any selection or transport
+command made meanwhile supersedes the request. Next, Previous, repeat, persistence, and
 the queue view then follow that visible order. Playlist order is separately
 authoritative in `MusicManager`; reordering a playlist never replaces the
 active queue.
@@ -290,17 +296,17 @@ which downloads each song as its own task.
 Coordinator reservations use canonical source keys; requests for one source
 share active work. File allocation, duplicate lookup, and registration are
 serialized through `MusicManager.mutation`, including local imports. The
-downloader's queue is bounded by `concurrent_downloads` active plus as many
-pending jobs; overload is reported per song (`WorkerQueueFull`) without
-cancelling a batch. Download options (format, quality, concurrency, folder,
+downloader runs `concurrent_downloads` jobs and queues the rest, so a batch of any
+size waits its turn; a playlist import keeps only a window of its songs queued, so
+a long playlist does not fill the history at once. Download options (format, quality, concurrency, folder,
 cookies) are fixed when the coordinator opens, so changing them applies at the
-next launch; catalog requests read the cookie file on every request.
+next launch.
 
 yt-dlp keeps the thumbnail sidecar in staging while metadata is written, and
 the cover is burned in as the last postprocessor. Before promotion the
 downloader reads the cover back from every audio file with `core/artwork.dart`
-(ID3v2, MP4 `covr`, FLAC, Ogg Opus/Vorbis); advertised artwork without a
-readable embedded cover fails the download. Only verified bytes reach the
+(ID3v2, MP4 `covr`, FLAC, Ogg Opus/Vorbis). A song without a readable cover is
+still kept, and plays with a placeholder. Only verified bytes reach the
 thumbnail cache.
 
 Before completed files are promoted, a checksum receipt
@@ -401,8 +407,8 @@ outcome and again at the next launch if the process ended first:
   in `music-move.json` first. If the process ends before the new folder is
   saved, the next launch moves them back to the saved folder (or, after a
   completed move, just deletes the journal).
-- **Saved lyrics and cached artwork** that no library track uses (previews,
-  failed downloads, removed tracks) are removed at launch
+- **Saved lyrics and cached artwork** that no library track uses (failed
+  downloads, removed tracks) are removed at launch
   (`LibraryService.removeUnusedCaches`) and with the last track that uses
   them. Embedder records of removed tracks are dropped at launch.
 - **yt-dlp's cache** lives in `cache/yt-dlp/` instead of `~/.cache/yt-dlp`.
@@ -435,7 +441,6 @@ repaired by downloading the song again.
 
 | File class | Owner and lifecycle |
 | --- | --- |
-| Preview stream | Ephemeral URL; never creates a library track |
 | Download staging | `Downloader`-owned, locked `downloads/staging/job-*` folder; removed after every outcome, or at the next launch once its process has ended |
 | Completed, unregistered download | Its checksum receipt owns the handoff until the next launch resolves it |
 | Managed library audio | `MusicManager`; desktop uses the music folder, on Android the music folder is inside public `Music` (`Music/Melody` by default); tracks earlier releases kept in private storage move there once at launch |

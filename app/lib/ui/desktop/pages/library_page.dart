@@ -9,7 +9,6 @@ import "../../shared/format.dart";
 import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
 import "../controls.dart";
-import "playlists_page.dart";
 
 const _sortLabels = {
   "recent": "Recently added",
@@ -49,8 +48,6 @@ class _LibraryPageState extends State<LibraryPage> {
       ]),
       builder: (context, _) {
         final (tracks, hasMore) = library.page();
-        final hasVisible = library.mode == "tracks" ? tracks.isNotEmpty : true;
-        final playlists = app.services.manager.listPlaylists();
         final total = app.services.manager.counts().$1;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -90,25 +87,10 @@ class _LibraryPageState extends State<LibraryPage> {
                 const SizedBox(width: 4),
                 IconButton(
                   onPressed: tracks.isEmpty ? null : library.shuffleVisible,
-                  tooltip: "Shuffle visible tracks",
+                  tooltip: "Shuffle these tracks",
                   icon: const Icon(Icons.shuffle_rounded),
                 ),
-                IconButton(
-                  onPressed: tracks.isEmpty ? null : () => queueVisible(app),
-                  tooltip: "Add visible tracks to queue",
-                  icon: const Icon(Icons.add_to_queue_rounded),
-                ),
                 const Spacer(),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: "tracks", label: Text("Tracks")),
-                    ButtonSegment(value: "playlists", label: Text("Playlists")),
-                  ],
-                  selected: {library.mode},
-                  showSelectedIcon: false,
-                  onSelectionChanged: (value) => library.setMode(value.first),
-                ),
-                const SizedBox(width: 6),
                 SizedBox(
                   width: 260,
                   child: TextField(
@@ -159,14 +141,12 @@ class _LibraryPageState extends State<LibraryPage> {
             ),
             const SizedBox(height: 20),
             Expanded(
-              child: library.mode == "playlists"
-                  ? _playlists(context)
-                  : !hasVisible
+              child: tracks.isEmpty
                   ? const EmptyState(
                       Icons.library_music_rounded,
                       "Nothing matches this view. Search for music or add local files.",
                     )
-                  : _tracks(context, tracks, hasMore, playlists),
+                  : _tracks(context, tracks, hasMore),
             ),
           ],
         );
@@ -174,12 +154,7 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  Widget _tracks(
-    BuildContext context,
-    List<Track> tracks,
-    bool hasMore,
-    List<Playlist> playlists,
-  ) {
+  Widget _tracks(BuildContext context, List<Track> tracks, bool hasMore) {
     final app = widget.app;
     final library = app.library;
     final details = app.services.library.detailsMany(
@@ -227,40 +202,12 @@ class _LibraryPageState extends State<LibraryPage> {
                 track,
                 library.pageOffset + index,
                 details[track.id]!,
-                playlists,
               );
             },
           ),
         ),
       ],
     );
-  }
-
-  Widget _playlists(BuildContext context) {
-    final playlists = widget.app.library.matchingPlaylists();
-    if (playlists.isEmpty) {
-      return const EmptyState(
-        Icons.library_music_rounded,
-        "Nothing matches this view. Search for music or add local files.",
-      );
-    }
-    return SingleChildScrollView(
-      child: CoverGrid(
-        children: [
-          for (final playlist in playlists)
-            (width) => PlaylistCard(widget.app, playlist, width: width),
-        ],
-      ),
-    );
-  }
-}
-
-void queueVisible(MelodyApp app) {
-  final count = app.playback.addLastMany(
-    app.library.visibleTracks().map((track) => track.id),
-  );
-  if (count > 0) {
-    app.showMessage("Added ${plural(count, "track")} to the queue.");
   }
 }
 
@@ -269,8 +216,7 @@ class LibraryTrackRow extends StatelessWidget {
     this.app,
     this.track,
     this.index,
-    this.details,
-    this.playlists, {
+    this.details, {
     super.key,
   });
 
@@ -278,7 +224,6 @@ class LibraryTrackRow extends StatelessWidget {
   final Track track;
   final int index;
   final TrackDetails details;
-  final List<Playlist> playlists;
 
   @override
   Widget build(BuildContext context) => TrackListRow(
@@ -290,12 +235,11 @@ class LibraryTrackRow extends StatelessWidget {
     duration: formatDuration(details.duration),
     favorite: details.favorite,
     onFavorite: () => app.toggleFavorite(track.id),
-    onPlay: () => app.playback.playTrack(track.id),
+    onPlay: () => app.library.playFrom(index),
+    playTooltip: "Play from here",
     current: app.playback.currentTrackId == track.id,
     trailing: [
-      ActionMenu(
-        () => libraryTrackActions(context, app, track, details, playlists),
-      ),
+      ActionMenu(() => libraryTrackActions(context, app, track, details)),
     ],
   );
 }

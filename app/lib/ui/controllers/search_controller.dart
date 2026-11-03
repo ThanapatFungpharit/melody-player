@@ -55,7 +55,7 @@ class MusicSearchController extends ChangeNotifier {
   Future<void> _refreshLocalTracks() async {
     final request = _request;
     final check = ++_availabilityCheck;
-    final ids = _recordIds(results.where((item) => !item.isPlaylist));
+    final ids = _recordIds(results);
     final changed = [
       for (final MapEntry(key: url, value: id) in ids.entries)
         if (id != _checkedIds[url]) url,
@@ -105,15 +105,11 @@ class MusicSearchController extends ChangeNotifier {
     status = "Searching page $page…";
     notifyListeners();
     try {
-      final fetched = await app.services.catalog.search(
+      final tracks = await app.services.catalog.search(
         query,
         limit: pageSize + 1,
         offset: (page - 1) * pageSize,
       );
-      final tracks = [
-        for (final item in fetched)
-          if (!item.isPlaylist) item,
-      ];
       final ids = _recordIds(tracks);
       // Each check asks the disk about a library file; run them together.
       final available = await Future.wait([
@@ -125,11 +121,11 @@ class MusicSearchController extends ChangeNotifier {
       };
       if (remember) _rememberQuery(query);
       if (request != _request) return;
-      results = fetched.take(pageSize).toList();
+      results = tracks.take(pageSize).toList();
       localTracks = local;
       _checkedIds = ids;
       pageNumber = page;
-      hasNext = fetched.length > pageSize;
+      hasNext = tracks.length > pageSize;
       playlistTitle = results
           .map((item) => item.playlistTitle)
           .firstWhere((title) => title.isNotEmpty, orElse: () => "");
@@ -283,18 +279,13 @@ class MusicSearchController extends ChangeNotifier {
           app.downloadPlayRequests[task] = requestGeneration;
         }
       }
-      app.showMessage(
-        request.started ? "Downloading…" : "Download already in progress.",
-      );
+      app.showMessage(switch ((after, request.started)) {
+        (TrackAction.play, _) => "Downloading “${result.title}” to play it.",
+        (_, true) => "Downloading…",
+        (_, false) => "Download already in progress.",
+      });
     } catch (failure) {
-      final message = failureMessage(failure);
-      if (after == TrackAction.play && requestGeneration != null) {
-        if (app.playback.isCurrentRequest(requestGeneration)) {
-          app.playback.onBackendError(message);
-        }
-      } else {
-        app.showError(message);
-      }
+      app.showError(failureMessage(failure));
     }
   }
 
@@ -304,9 +295,7 @@ class MusicSearchController extends ChangeNotifier {
     String? playlistId,
   ]) async {
     var existing = availableTrack(result);
-    if (existing == null &&
-        action == TrackAction.favorite &&
-        !result.isPlaylist) {
+    if (existing == null && action == TrackAction.favorite) {
       // Favoriting is metadata-only, so it works for a known record whose
       // file awaits repair.
       existing = app.services.manager.findTrackBySource(result.url);
@@ -322,44 +311,19 @@ class MusicSearchController extends ChangeNotifier {
     await downloadResult(result, after: action, playlistId: playlistId);
   }
 
-  /// Plays a result: tracks are downloaded first; playlists stream a preview.
-  Future<void> playResult(SearchResult result) async {
-    final playback = app.playback;
-    if (playback.loading && playback.externalTitle == result.title) return;
-    final generation = playback.beginPendingTrack(result.title);
-    if (!result.isPlaylist) {
-      await downloadResult(
-        result,
-        after: TrackAction.play,
-        requestGeneration: generation,
-      );
-      return;
-    }
-    try {
-      final stream = await app.services.catalog.resolveStream(result.url);
-      if (!playback.isCurrentRequest(generation)) return;
-      final autoplay = playback.playing;
-      playback.playStream(
-        stream,
-        title: result.title,
-        uploader: result.uploader,
-        thumbnail: result.thumbnail,
-      );
-      if (!autoplay) playback.toggle();
-    } catch (failure) {
-      if (playback.isCurrentRequest(generation)) {
-        playback.onBackendError(failureMessage(failure));
-      }
-    }
-  }
+  /// Plays a result: a song the library lacks is downloaded first, while the
+  /// current music plays on.
+  Future<void> playResult(SearchResult result) => downloadResult(
+    result,
+    after: TrackAction.play,
+    requestGeneration: app.playback.beginPlayRequest(),
+  );
 
   /// Whether a known library record for [result] is a favorite.
   bool isFavorite(SearchResult result) {
     final known =
         availableTrack(result) ??
-        (result.isPlaylist
-            ? null
-            : app.services.manager.findTrackBySource(result.url));
+        app.services.manager.findTrackBySource(result.url);
     return known != null && app.services.library.details(known.id).favorite;
   }
 }

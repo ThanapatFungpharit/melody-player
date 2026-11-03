@@ -289,9 +289,7 @@ Future<void> showSearchResultDetails(
     result.uploader.isEmpty ? "Unknown uploader" : result.uploader,
   ),
   ("Source", result.source),
-  ("Type", result.isPlaylist ? "Playlist" : "Track"),
   if (result.duration > 0) ("Duration", formatDuration(result.duration)),
-  if (result.entryCount > 0) ("Tracks", "${result.entryCount}"),
 ], footer: result.url);
 
 // -- playlists ---------------------------------------------------------------
@@ -334,6 +332,71 @@ Future<void> showDeletePlaylistDialog(
   onConfirm: () => app.run(() => app.playlists.delete(playlist.id)),
 );
 
+/// Lets the user pick one of their playlists, or name a new one, and hands
+/// over its ID. [except] is left out of the list.
+Future<void> showPlaylistPicker(
+  BuildContext context,
+  MelodyApp app, {
+  required String title,
+  String? except,
+  required void Function(String playlistId) onChosen,
+}) => showDialog<void>(
+  context: context,
+  builder: (dialogContext) {
+    void choose(String playlistId) {
+      Navigator.of(dialogContext).pop();
+      onChosen(playlistId);
+    }
+
+    final playlists = [
+      for (final playlist in app.services.manager.listPlaylists())
+        if (playlist.id != except) playlist,
+    ];
+    return AlertDialog(
+      insetPadding: _dialogInsets,
+      title: Text(title),
+      content: SizedBox(
+        width: _dialogWidth(dialogContext),
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.add_rounded),
+              title: const Text("New playlist…"),
+              contentPadding: EdgeInsets.zero,
+              onTap: () {
+                Navigator.of(dialogContext).pop();
+                showTextPrompt(
+                  context,
+                  title: "New playlist",
+                  label: "Playlist name",
+                  confirmLabel: "Create",
+                  onConfirm: (name) async =>
+                      onChosen(app.playlists.create(name, open: false)),
+                );
+              },
+            ),
+            for (final playlist in playlists)
+              ListTile(
+                leading: const Icon(Icons.album_rounded),
+                title: Text(playlist.name),
+                subtitle: Text(plural(playlist.trackIds.length, "track")),
+                contentPadding: EdgeInsets.zero,
+                onTap: () => choose(playlist.id),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text("Cancel"),
+        ),
+      ],
+    );
+  },
+);
+
 Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
   if (app.playlists.importing) {
     app.showError("A playlist import is already in progress.");
@@ -369,10 +432,9 @@ Future<void> showBulkAddTracksDialog(
   Playlist playlist,
 ) {
   final members = playlist.trackIds.toSet();
-  final candidates = [
-    for (final track in app.services.manager.listTracks())
-      if (!members.contains(track.id)) track,
-  ];
+  final hasCandidates = app.services.manager.trackIds.any(
+    (id) => !members.contains(id),
+  );
   final selected = <String>{};
   var query = "";
   var offset = 0;
@@ -381,11 +443,10 @@ Future<void> showBulkAddTracksDialog(
     builder: (context) => StatefulBuilder(
       builder: (context, setState) {
         final matching = [
-          for (final track in candidates)
-            if (query.isEmpty ||
-                track.displayTitle.toLowerCase().contains(query))
-              track,
+          for (final track in app.services.library.tracks(query: query))
+            if (!members.contains(track.id)) track,
         ];
+        final matchingIds = {for (final track in matching) track.id};
         final (start, end) = pageBounds(matching.length, offset);
         offset = start;
         final visible = matching.sublist(start, end);
@@ -408,26 +469,27 @@ Future<void> showBulkAddTracksDialog(
                     prefixIcon: Icon(Icons.search_rounded),
                   ),
                   onChanged: (value) => setState(() {
-                    query = value.toLowerCase();
+                    query = value;
                     offset = 0;
                   }),
                 ),
                 CheckboxListTile(
                   value:
-                      candidates.isNotEmpty &&
-                      selected.length == candidates.length,
-                  onChanged: candidates.isEmpty
+                      matching.isNotEmpty && selected.containsAll(matchingIds),
+                  onChanged: matching.isEmpty
                       ? null
                       : (value) => setState(() {
                           if (value == true) {
-                            selected.addAll(
-                              candidates.map((track) => track.id),
-                            );
+                            selected.addAll(matchingIds);
                           } else {
-                            selected.clear();
+                            selected.removeAll(matchingIds);
                           }
                         }),
-                  title: const Text("Select all tracks"),
+                  title: Text(
+                    query.trim().isEmpty
+                        ? "Select all tracks"
+                        : "Select all ${matching.length} shown",
+                  ),
                   controlAffinity: ListTileControlAffinity.leading,
                   contentPadding: EdgeInsets.zero,
                 ),
@@ -444,7 +506,7 @@ Future<void> showBulkAddTracksDialog(
                     child: matching.isEmpty
                         ? Center(
                             child: Text(
-                              candidates.isEmpty
+                              !hasCandidates
                                   ? "Every library track is already in this playlist."
                                   : "No tracks match this search.",
                             ),
@@ -496,12 +558,11 @@ Future<void> showBulkAddTracksDialog(
               onPressed: selected.isEmpty
                   ? null
                   : () {
-                      final ids = [
-                        for (final track in candidates)
-                          if (selected.contains(track.id)) track.id,
-                      ];
                       app.run(() {
-                        final added = app.playlists.addTracks(playlist.id, ids);
+                        final added = app.playlists.addTracks(
+                          playlist.id,
+                          selected.toList(),
+                        );
                         app.showMessage(
                           "Added ${plural(added, "track")} to “${playlist.name}”.",
                         );

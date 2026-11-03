@@ -30,8 +30,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - **No system media controls.** The media-session plugin has no Linux (MPRIS)
   implementation, so Melody does not appear in the desktop's media applet
   and hardware media keys do nothing. Playback, background playback, and
-  Melody's own keyboard shortcuts work normally. The notification-artwork
-  setting is disabled because nothing shows that artwork.
+  Melody's own keyboard shortcuts work normally.
 - **File dialogs need a helper.** Importing music, uploading a cookie file,
   and exporting playlists use the desktop's file dialog through `zenity`,
   `kdialog`, or `qarma`. Install one if the dialogs do not open.

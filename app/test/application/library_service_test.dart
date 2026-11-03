@@ -491,6 +491,20 @@ void main() {
     },
   );
 
+  test("searching finds artists, and nothing in a track's link", () async {
+    final id = await downloaded("hello.mp3");
+    await downloaded(
+      "other.mp3",
+      source: "https://music.youtube.com/watch?v=lmnopqrstuv",
+    );
+    store.saveTrackDetails(id, TrackDetails(uploader: "Adele"));
+
+    expect(library.tracks(query: "ADELE").single.id, id);
+    expect(library.tracks(query: "music"), isEmpty);
+    expect(library.tracks(query: "watch"), isEmpty);
+    expect(library.tracks(query: "abcdefghijk"), isEmpty);
+  });
+
   test("linked tracks missing from the library are left to download", () async {
     final first = await downloaded("first.mp3");
     final m3u = [

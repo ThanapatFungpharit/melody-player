@@ -26,16 +26,12 @@ class NowPlayingInfo {
 
   static NowPlayingInfo of(MelodyApp app) {
     final playback = app.playback;
-    var title = playback.externalTitle.isNotEmpty
-        ? playback.externalTitle
-        : "Nothing playing";
-    var credit = playback.externalUploader.isNotEmpty
-        ? playback.externalUploader
-        : "Choose music to start listening";
-    var thumbnail = playback.externalThumbnail;
+    var title = "Nothing playing";
+    var credit = "Choose music to start listening";
+    var thumbnail = "";
     var favorite = false;
     var canFavorite = false;
-    final id = playback.currentLibraryTrackId;
+    final id = playback.currentTrackId;
     if (id != null && app.services.manager.hasTrack(id)) {
       final track = app.services.manager.getTrack(id);
       final details = app.services.library.details(id);
@@ -55,7 +51,7 @@ class NowPlayingInfo {
 int knownDurationMs(MelodyApp app) {
   final playback = app.playback;
   if (playback.durationMs > 0) return playback.durationMs;
-  final id = playback.currentLibraryTrackId;
+  final id = playback.currentTrackId;
   if (id == null || !app.services.manager.hasTrack(id)) return 0;
   return (app.services.library.details(id).duration * 1000).round();
 }

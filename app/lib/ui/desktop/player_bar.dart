@@ -107,10 +107,10 @@ class DesktopPlayerBar extends StatelessWidget {
                             spacing: 6,
                             children: [
                               IconButton(
-                                onPressed: playback.queue.upcomingCount >= 2
-                                    ? playback.shuffleUpcoming
+                                onPressed: playback.queue.canShuffle
+                                    ? app.shuffleQueue
                                     : null,
-                                tooltip: "Shuffle upcoming tracks",
+                                tooltip: "Shuffle the queue",
                                 iconSize: 20,
                                 icon: const Icon(Icons.shuffle_rounded),
                               ),

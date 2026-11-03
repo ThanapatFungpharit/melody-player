@@ -410,9 +410,9 @@ class NowPlaying extends StatelessWidget {
                               children: [
                                 TouchIconButton(
                                   Icons.shuffle_rounded,
-                                  "Shuffle upcoming tracks",
-                                  playback.queue.upcomingCount >= 2
-                                      ? playback.shuffleUpcoming
+                                  "Shuffle the queue",
+                                  playback.queue.canShuffle
+                                      ? app.shuffleQueue
                                       : null,
                                 ),
                                 IconButton(

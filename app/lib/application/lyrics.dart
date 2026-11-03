@@ -322,8 +322,8 @@ class LyricsLibrary {
   }
 
   /// Deletes the saved lyrics of every song not among [sources] (the
-  /// library's tracks): those saved for a preview, a download that failed,
-  /// or a track since removed. Call it before downloads start. Other files
+  /// library's tracks): those saved for a download that failed or a track
+  /// since removed. Call it before downloads start. Other files
   /// in the folder are left alone. Returns how many were removed.
   /// Runs in a background isolate: it parses every source and lists the
   /// folder.
@@ -373,18 +373,15 @@ class LyricsLibrary {
   static String _fileName(MediaIdentity identity) =>
       "${identity.provider}_${identity.mediaId.replaceAll(_unsafe, "_")}.json";
 
-  /// Lyrics for a library track, from its files first and then, for
+  /// Lyrics for a library track: its files always come first, and then, for
   /// YouTube Music tracks, saved or fetched lyrics. [refresh] asks YouTube
-  /// Music again (and re-reads the files of other tracks).
+  /// Music again instead of trusting what is saved.
   ///
   /// Returns null when there are none. Throws [ProviderError] when nothing
   /// is saved and YouTube Music cannot be reached.
   Future<Lyrics?> forTrack(LyricsTrack track, {bool refresh = false}) async {
-    final identity = _identity(track.source);
-    if (identity == null || !refresh) {
-      final local = await fromFiles(track.path);
-      if (local != null || identity == null) return local;
-    }
+    final local = await fromFiles(track.path);
+    if (local != null || _identity(track.source) == null) return local;
     return load(track.source, refresh: refresh);
   }
 

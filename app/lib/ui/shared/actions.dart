@@ -41,12 +41,31 @@ List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
   ),
 ];
 
+const addToPlaylistLabel = "Add to playlist…";
+
+MenuAction _addToPlaylist(
+  BuildContext context,
+  MelodyApp app,
+  Track track, {
+  String? except,
+}) => MenuAction(
+  addToPlaylistLabel,
+  Icons.playlist_add_rounded,
+  () => showPlaylistPicker(
+    context,
+    app,
+    title: "Add to playlist",
+    except: except,
+    onChosen: (playlistId) =>
+        app.run(() => app.playlists.addTrack(playlistId, track.id)),
+  ),
+);
+
 List<MenuAction> libraryTrackActions(
   BuildContext context,
   MelodyApp app,
   Track track,
   TrackDetails details,
-  List<Playlist> playlists,
 ) => [
   MenuAction(
     "Play next",
@@ -58,12 +77,7 @@ List<MenuAction> libraryTrackActions(
     Icons.add_to_queue_rounded,
     () => app.playback.addLast(track.id),
   ),
-  for (final playlist in playlists)
-    MenuAction(
-      "Add to ${playlist.name}",
-      Icons.playlist_add_rounded,
-      () => app.run(() => app.playlists.addTrack(playlist.id, track.id)),
-    ),
+  _addToPlaylist(context, app, track),
   MenuAction(
     details.favorite ? "Remove favorite" : "Favorite",
     details.favorite
@@ -91,8 +105,7 @@ List<MenuAction> libraryTrackActions(
 List<MenuAction> searchResultActions(
   BuildContext context,
   MelodyApp app,
-  SearchResult result,
-  List<Playlist> playlists, {
+  SearchResult result, {
   bool includePrimaryActions = false,
 }) {
   final search = app.search;
@@ -101,7 +114,7 @@ List<MenuAction> searchResultActions(
   return [
     if (includePrimaryActions && local == null)
       MenuAction(
-        result.isPlaylist ? "Download playlist" : "Download",
+        "Download",
         Icons.download_rounded,
         () => search.downloadResult(result),
       ),
@@ -120,13 +133,17 @@ List<MenuAction> searchResultActions(
       favorite ? Icons.heart_broken_outlined : Icons.favorite_border_rounded,
       () => search.actOnResult(result, TrackAction.favorite),
     ),
-    for (final playlist in playlists)
-      MenuAction(
-        "Add to ${playlist.name}",
-        Icons.playlist_add_rounded,
-        () =>
-            search.actOnResult(result, TrackAction.addToPlaylist, playlist.id),
+    MenuAction(
+      addToPlaylistLabel,
+      Icons.playlist_add_rounded,
+      () => showPlaylistPicker(
+        context,
+        app,
+        title: "Add to playlist",
+        onChosen: (playlistId) =>
+            search.actOnResult(result, TrackAction.addToPlaylist, playlistId),
       ),
+    ),
     MenuAction(
       "View details",
       Icons.info_outline_rounded,
@@ -141,7 +158,6 @@ List<MenuAction> playlistTrackActions(
   Playlist playlist,
   Track track,
   int index,
-  List<Playlist> otherPlaylists,
   TrackDetails details,
 ) {
   final playlists = app.playlists;
@@ -174,12 +190,7 @@ List<MenuAction> playlistTrackActions(
         Icons.add_to_queue_rounded,
         () => app.playback.addLast(track.id),
       ),
-      for (final target in otherPlaylists)
-        MenuAction(
-          "Add to ${target.name}",
-          Icons.playlist_add_rounded,
-          () => app.run(() => playlists.addTrack(target.id, track.id)),
-        ),
+      _addToPlaylist(context, app, track),
       MenuAction(
         "View details",
         Icons.info_outline_rounded,
@@ -216,32 +227,19 @@ List<MenuAction> playlistTrackActions(
       Icons.info_outline_rounded,
       () => showTrackDetailsDialog(context, app, track),
     ),
-    for (final target in otherPlaylists) ...[
-      MenuAction(
-        "Copy to ${target.name}",
-        Icons.content_copy_rounded,
-        () => app.run(
-          () => playlists.transferTrack(
-            playlist.id,
-            target.id,
-            track.id,
-            move: false,
-          ),
-        ),
+    _addToPlaylist(context, app, track, except: playlist.id),
+    MenuAction(
+      "Move to playlist…",
+      Icons.drive_file_move_outline,
+      () => showPlaylistPicker(
+        context,
+        app,
+        title: "Move to playlist",
+        except: playlist.id,
+        onChosen: (target) =>
+            app.run(() => playlists.moveTrack(playlist.id, target, track.id)),
       ),
-      MenuAction(
-        "Move to ${target.name}",
-        Icons.drive_file_move_outline,
-        () => app.run(
-          () => playlists.transferTrack(
-            playlist.id,
-            target.id,
-            track.id,
-            move: true,
-          ),
-        ),
-      ),
-    ],
+    ),
     MenuAction(
       "Remove from playlist",
       Icons.remove_circle_outline_rounded,

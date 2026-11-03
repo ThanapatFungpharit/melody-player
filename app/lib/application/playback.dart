@@ -5,7 +5,6 @@ import "dart:math";
 import "package:flutter/foundation.dart";
 import "package:melody_audio/melody_audio.dart"
     show AudioEngineSnapshot, AudioQueueItem;
-import "package:path/path.dart" as p;
 
 import "../audio/audio_backend.dart";
 import "../core/library/manager.dart";
@@ -226,16 +225,14 @@ class PlaybackController {
   late int volume;
   late bool muted;
   late int previousVolume;
-  String externalTitle = "";
-  String externalUploader = "";
-  String externalThumbnail = "";
   bool _playing = false;
   bool _sourceLoaded = false;
-  int _loadGeneration = 0;
+
+  /// Moves with every selection and transport command, so a Play request that
+  /// is still downloading can tell the listener has moved on.
+  int _requestGeneration = 0;
   bool _closed = false;
   bool _playerLoading = false;
-  bool _loading = false;
-  bool _loadAutoplay = false;
   DateTime _lastPersistedPosition = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime? _lastBackendErrorAt;
   String? _pendingPlayRecordId;
@@ -251,36 +248,28 @@ class PlaybackController {
   ({String trackId, double gain})? _heldGain;
 
   bool get playing => _playing;
-  bool get loading => _loading || _playerLoading;
+  bool get loading => _playerLoading;
   String? get currentTrackId => queue.current;
   bool get mediaSessionActive => _mediaSessionActive;
 
-  /// Whether anything is selected: a queue row, a stream, or a selection
-  /// still resolving.
-  bool get hasMedia => currentTrackId != null || externalTitle.isNotEmpty;
-
-  /// The current library track, or null while a stream or a selection
-  /// still resolving takes its place.
-  String? get currentLibraryTrackId =>
-      externalTitle.isEmpty ? currentTrackId : null;
+  /// Whether a queue row is selected.
+  bool get hasMedia => currentTrackId != null;
 
   /// Mirrors a decoder that outlived the previous widget tree.
   void onNativeReattach(AudioEngineSnapshot state) {
     final trackId = state.trackId;
-    if (trackId != null && queue.items.contains(trackId)) {
-      queue.select(_rowOf(trackId, state.queueIndex));
-      _clearExternal();
-    } else {
-      final source = state.source ?? "";
-      externalTitle = state.title.isNotEmpty
-          ? state.title
-          : p.basenameWithoutExtension(source);
-      externalUploader = state.artist;
-      externalThumbnail = _artworkPath(state.artworkUri);
+    if (trackId == null || !manager.hasTrack(trackId)) {
+      // Nothing here can show or control what it is playing.
+      _release();
+      _persist();
+      _notify(PlaybackChange.track);
+      return;
     }
+    // Without a resumed session, the queue is empty and the decoder is not.
+    if (!queue.items.contains(trackId)) queue.replace([trackId]);
+    queue.select(_rowOf(trackId, state.queueIndex));
     _sourceLoaded = true;
     _playerLoading = false;
-    _loading = false;
     _playing = state.playing;
     _mediaSessionActive = true;
     positionMs = (state.position?.inMilliseconds ?? 0).clamp(0, 1 << 52);
@@ -289,6 +278,8 @@ class PlaybackController {
     _notify(PlaybackChange.track);
   }
 
+  /// Replaces the queue with a list of tracks and plays from the one at
+  /// [startIndex], as a tap on any row of a list does.
   void playTracks(List<String> trackIds, {int startIndex = 0}) =>
       _playTracks(trackIds, startIndex: startIndex, shuffleOnce: false);
 
@@ -324,6 +315,14 @@ class PlaybackController {
     }
     // Nothing after the selection is available; start with the last before.
     availableIndex ??= available.length - 1;
+    // A repeated tap on a row that is already preparing to play changes nothing.
+    if (!shuffleOnce &&
+        _playerLoading &&
+        _playing &&
+        availableIndex == queue.currentIndex &&
+        listEquals(available, queue.items)) {
+      return;
+    }
     queue.replace(
       available,
       startIndex: availableIndex,
@@ -332,50 +331,20 @@ class PlaybackController {
     _loadCurrent(autoplay: true);
   }
 
-  /// Plays an ephemeral stream without adding it to the library.
-  void playStream(
-    String source, {
-    required String title,
-    String uploader = "",
-    String thumbnail = "",
-  }) {
-    _cancelPendingLoad();
-    externalTitle = title;
-    externalUploader = uploader;
-    externalThumbnail = thumbnail;
-    _sourceLoaded = true;
-    _playerLoading = true;
-    positionMs = 0;
-    durationMs = 0;
-    _playing = true;
-    _mediaSessionActive = true;
-    try {
-      backend.load(source, autoplay: true, gain: loudness?.fallbackGain ?? 1);
-    } catch (error) {
-      onBackendError("$error");
-    }
-    _notify();
-  }
-
-  void playTrack(String trackId) {
-    // Ignore a repeated tap only while this library track is already
-    // preparing to play. A pending remote selection (`_loading`) leaves the
-    // queue's row stale, so tapping that row must still switch to it.
-    if (trackId == currentTrackId &&
-        _playerLoading &&
-        _playing &&
-        externalTitle.isEmpty) {
-      return;
-    }
-    final index = queue.items.indexOf(trackId);
-    if (index >= 0) {
-      queue.select(index);
-    } else if (manager.hasTrack(trackId)) {
-      queue.replace([trackId]);
-    } else {
-      // A stale row (deleted meanwhile) must not discard the queue.
+  /// Plays [trackIds] right away and then returns to the queue, which they
+  /// join after the current row.
+  void playNow(Iterable<String> trackIds) {
+    final items = _inLibrary(trackIds);
+    if (items.isEmpty) {
       _error("This track is no longer in your library.");
       return;
+    }
+    // Already the current track: start it again rather than queue it twice.
+    if (items.length > 1 || items.single != currentTrackId) {
+      final selected = queue.current == null ? 0 : queue.currentIndex + 1;
+      queue
+        ..addNextAll(items)
+        ..select(selected);
     }
     _loadCurrent(autoplay: true);
   }
@@ -388,6 +357,7 @@ class PlaybackController {
   }
 
   void toggle() {
+    _requestGeneration++;
     if (!hasMedia) {
       final tracks = manager.listTracks();
       if (tracks.isNotEmpty) {
@@ -396,17 +366,6 @@ class PlaybackController {
       } else {
         _error("Your library is empty. Download a track first.");
       }
-      return;
-    }
-    if (_loading) {
-      // A selection is still resolving or downloading; keep the desired
-      // state until its source is available.
-      _loadAutoplay = !_playing;
-      _playing = _loadAutoplay;
-      if (_sourceLoaded) _playing ? backend.resume() : backend.pause();
-      if (_playing) _mediaSessionActive = true;
-      _persist();
-      _notify();
       return;
     }
     if (_playerLoading) {
@@ -426,7 +385,6 @@ class PlaybackController {
     } else {
       if (!_sourceLoaded) {
         if (!_loadCurrent(autoplay: true, positionMs: positionMs)) return;
-        if (_loading) return;
       } else {
         backend.resume();
       }
@@ -438,8 +396,6 @@ class PlaybackController {
   }
 
   void next() {
-    // A pending remote selection has no queue row to rewind to either.
-    final wasExternal = externalTitle.isNotEmpty || _loading;
     final sourceWasLoaded = _sourceLoaded;
     final wasPlaying = _playing;
     // _loadCurrent and _release supersede pending work themselves. At the
@@ -448,13 +404,6 @@ class PlaybackController {
     // decoder, and the pause and rewind below would reach that track instead.
     if (queue.next() != null) {
       _loadCurrent(autoplay: true);
-      return;
-    }
-    if (wasExternal) {
-      // A stream has no queue selection to resume after Next.
-      _release();
-      _persist();
-      _notify(PlaybackChange.track);
       return;
     }
     if (sourceWasLoaded) {
@@ -470,9 +419,7 @@ class PlaybackController {
   /// Goes to the previous row, starting it unless [resume] is false and
   /// playback is paused (system controls keep a paused player paused).
   void previous({bool resume = true}) {
-    if (externalTitle.isNotEmpty) {
-      seek(0);
-    } else if (positionMs > 5000) {
+    if (positionMs > 5000) {
       seek(0);
     } else if (queue.previous() != null) {
       _loadCurrent(autoplay: resume || _playing);
@@ -494,23 +441,17 @@ class PlaybackController {
     _resetSource();
   }
 
-  /// Forgets the loaded source, its position, and any stream's details.
+  /// Forgets the loaded source and its position.
   void _resetSource() {
     _sourceLoaded = false;
     _playing = false;
     _mediaSessionActive = false;
     positionMs = 0;
     durationMs = 0;
-    _forgetStream();
   }
 
   void seek(int position) {
     positionMs = _clampPosition(position);
-    if (_loading) {
-      _persist();
-      _notify();
-      return;
-    }
     if (!_sourceLoaded) {
       // A restored queue keeps its resume position until the source loads.
       _persist();
@@ -530,7 +471,7 @@ class PlaybackController {
       return;
     }
     if (!hasMedia) return;
-    if (_loading || _playerLoading || !_sourceLoaded) {
+    if (_playerLoading || !_sourceLoaded) {
       // Toggle carries the new position into the pending or reloaded source.
       seek(position);
       toggle();
@@ -549,17 +490,6 @@ class PlaybackController {
     _mediaSessionActive = true;
     _persist();
     _notify();
-  }
-
-  /// A `file:` artwork URI as a path; a malformed one is dropped rather
-  /// than failing the reattach.
-  static String _artworkPath(String artwork) {
-    if (!artwork.toLowerCase().startsWith("file:")) return artwork;
-    try {
-      return Uri.parse(artwork).toFilePath();
-    } on Object {
-      return "";
-    }
   }
 
   /// [row] while it still holds [trackId], else the track's first row; -1
@@ -637,7 +567,7 @@ class PlaybackController {
     for (final index in rows.reversed) {
       queue.removeAt(index);
     }
-    if (wasCurrent && externalTitle.isEmpty) {
+    if (wasCurrent) {
       if (queue.current != null) {
         _loadCurrent(autoplay: _playing);
       } else {
@@ -677,9 +607,7 @@ class PlaybackController {
   /// Rows whose track left the library meanwhile are dropped.
   bool restoreQueue(QueueSnapshot snapshot) {
     final selected = snapshot.currentIndex;
-    if (externalTitle.isNotEmpty ||
-        _loading ||
-        selected < 0 ||
+    if (selected < 0 ||
         selected >= snapshot.items.length ||
         snapshot.items[selected] != currentTrackId) {
       return false;
@@ -701,10 +629,9 @@ class PlaybackController {
 
   /// Drops queued library tracks and stops a loaded library source.
   void clearLibraryState() {
-    final libraryActive =
-        externalTitle.isEmpty && (currentTrackId != null || _sourceLoaded);
+    final active = currentTrackId != null || _sourceLoaded;
     queue.clear();
-    if (libraryActive) {
+    if (active) {
       _release();
     } else {
       _syncQueue();
@@ -716,10 +643,7 @@ class PlaybackController {
   /// Closes a loaded library file so it can be moved, keeping the queue and
   /// position; the next play loads the track from its new path.
   void releaseLibrarySource() {
-    if (externalTitle.isNotEmpty ||
-        (currentTrackId == null && !_sourceLoaded)) {
-      return;
-    }
+    if (currentTrackId == null && !_sourceLoaded) return;
     final (position, duration) = (positionMs, durationMs);
     _release();
     positionMs = position;
@@ -728,8 +652,8 @@ class PlaybackController {
     _notify(PlaybackChange.track);
   }
 
-  bool shuffleUpcoming() {
-    if (!queue.shuffleUpcoming()) return false;
+  bool shuffle() {
+    if (!queue.shuffle()) return false;
     _queueChanged();
     return true;
   }
@@ -779,7 +703,7 @@ class PlaybackController {
   // -- decoder callbacks ---------------------------------------------------
 
   void onPosition(int position) {
-    if (_loading || _playerLoading) return;
+    if (_playerLoading) return;
     final clamped = position < 0 ? 0 : position;
     positionMs = durationMs > 0 && clamped > durationMs ? durationMs : clamped;
     final now = DateTime.now();
@@ -791,7 +715,7 @@ class PlaybackController {
   }
 
   void onDuration(int duration) {
-    if (_loading || _playerLoading) return;
+    if (_playerLoading) return;
     durationMs = duration < 0 ? 0 : duration;
     if (durationMs > 0 && positionMs > durationMs) {
       positionMs = durationMs;
@@ -801,7 +725,7 @@ class PlaybackController {
   }
 
   void onPlaying(bool playing) {
-    if (_loading || !_sourceLoaded) return;
+    if (!_sourceLoaded) return;
     if (_playerLoading) {
       if (!playing) return;
       // A playing event also confirms preparation finished.
@@ -818,7 +742,7 @@ class PlaybackController {
   }
 
   void onCompleted() {
-    if (_loading || _playerLoading || !_sourceLoaded) return;
+    if (_playerLoading || !_sourceLoaded) return;
     // The native engine already applied repeat and queue policy; completion
     // arrives only when it found no next item.
     _playing = false;
@@ -843,10 +767,8 @@ class PlaybackController {
         ? _engineItems[index]
         : _engineItems.where((item) => item.trackId == trackId).firstOrNull;
     _heldGain = sent == null ? null : (trackId: trackId, gain: sent.gain);
-    _forgetStream();
     _sourceLoaded = true;
     _playerLoading = true;
-    _loading = false;
     _playing = true;
     _mediaSessionActive = true;
     positionMs = 0;
@@ -861,8 +783,7 @@ class PlaybackController {
   void onStopped() {
     if (_closed) return;
     // The engine already released its decoders; only supersede pending work.
-    _loadGeneration++;
-    _loading = false;
+    _requestGeneration++;
     _playerLoading = false;
     _pendingPlayRecordId = null;
     _resetSource();
@@ -877,15 +798,9 @@ class PlaybackController {
     _cancelPendingLoad(discardSource: true);
     _playing = false;
     _sourceLoaded = false;
-    _loading = false;
     _playerLoading = false;
     _mediaSessionActive = false;
     _pendingPlayRecordId = null;
-    if (externalTitle.isNotEmpty) {
-      _forgetStream();
-      positionMs = 0;
-      durationMs = 0;
-    }
     _persist();
     _notify();
     final now = DateTime.now();
@@ -920,7 +835,7 @@ class PlaybackController {
     }
     // A pruned selection's successor starts from the beginning.
     if (trackId != selected) positionMs = 0;
-    _clearExternal();
+    _cancelPendingLoad();
     if (autoplay) _mediaSessionActive = true;
     try {
       _activateQueue(
@@ -1026,7 +941,7 @@ class PlaybackController {
 
   /// Sends every queue mutation to the authoritative native player.
   void _syncQueue() {
-    if (externalTitle.isNotEmpty || _closed) return;
+    if (_closed) return;
     final items = _queueItems();
     _engineItems = items;
     backend.updateQueue(items, queue.currentIndex, repeat: queue.repeat);
@@ -1042,21 +957,9 @@ class PlaybackController {
     },
   );
 
-  void _clearExternal() {
-    _cancelPendingLoad();
-    _forgetStream();
-  }
-
-  void _forgetStream() {
-    externalTitle = "";
-    externalUploader = "";
-    externalThumbnail = "";
-  }
-
   void _cancelPendingLoad({bool discardSource = false}) {
-    _loadGeneration++;
+    _requestGeneration++;
     final playerWasLoading = _playerLoading;
-    _loading = false;
     _playerLoading = false;
     _pendingPlayRecordId = null;
     if (_closed) return;
@@ -1078,24 +981,13 @@ class PlaybackController {
     _cancelPendingLoad();
   }
 
-  /// Reserves playback intent before resolving or downloading a selection.
-  int beginPendingTrack(String title) {
-    _cancelPendingLoad();
-    backend.pause();
-    _sourceLoaded = false;
-    externalTitle = title;
-    externalUploader = "";
-    externalThumbnail = "";
-    _loading = true;
-    _playing = _loadAutoplay = true;
-    _mediaSessionActive = true;
-    positionMs = durationMs = 0;
-    _notify();
-    return _loadGeneration;
-  }
+  /// Registers a wish to play something once it is ready; the listener's
+  /// next selection or transport command supersedes it. Meanwhile the current
+  /// music plays on.
+  int beginPlayRequest() => ++_requestGeneration;
 
   bool isCurrentRequest(int generation) =>
-      !_closed && generation == _loadGeneration;
+      !_closed && generation == _requestGeneration;
 
   void _notify([PlaybackChange change = PlaybackChange.state]) {
     if (!_changes.isClosed) _changes.add(change);

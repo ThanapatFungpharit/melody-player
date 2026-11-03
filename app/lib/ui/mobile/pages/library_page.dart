@@ -1,7 +1,6 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
-import "../../controllers/home_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/widgets.dart";
@@ -22,12 +21,6 @@ class _MobileLibraryState extends State<MobileLibrary> {
   );
 
   @override
-  void initState() {
-    super.initState();
-    widget.app.library.mode = "tracks";
-  }
-
-  @override
   void dispose() {
     _query.dispose();
     super.dispose();
@@ -41,7 +34,6 @@ class _MobileLibraryState extends State<MobileLibrary> {
       [library, app.libraryRevision, app.playbackState],
       builder: (context) {
         final (tracks, hasMore) = library.page();
-        final playlists = app.services.manager.listPlaylists();
         final details = app.services.library.detailsMany(
           tracks.map((track) => track.id),
         );
@@ -59,12 +51,6 @@ class _MobileLibraryState extends State<MobileLibrary> {
                     "Add local audio files",
                     Icons.library_add_rounded,
                     () => pickLocalFiles(app),
-                  ),
-                  MenuAction(
-                    "Add these tracks to queue",
-                    Icons.add_to_queue_rounded,
-                    () => queueCollection(app, library.visibleTracks()),
-                    enabled: tracks.isNotEmpty,
                   ),
                   MenuAction(
                     "Export library playlist",
@@ -123,7 +109,7 @@ class _MobileLibraryState extends State<MobileLibrary> {
               ),
               TouchIconButton(
                 Icons.shuffle_rounded,
-                "Shuffle visible tracks",
+                "Shuffle these tracks",
                 tracks.isEmpty ? null : library.shuffleVisible,
               ),
             ],
@@ -164,7 +150,7 @@ class _MobileLibraryState extends State<MobileLibrary> {
                 context,
                 app,
                 tracks[index],
-                playlists,
+                library.pageOffset + index,
                 details: details[tracks[index].id],
               );
         // A short screen, such as a landscape phone, has no room for a fixed

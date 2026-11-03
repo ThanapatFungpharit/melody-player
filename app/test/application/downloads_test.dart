@@ -261,7 +261,7 @@ void main() {
     );
   });
 
-  test("missing embedded artwork fails before the file is committed", () async {
+  test("a song whose cover did not embed is still kept", () async {
     // yt-dlp retained a thumbnail sidecar, but the audio has no cover.
     transport.audioFixture = "test/fixtures/artwork/no_cover.mp3";
     final coordinator = await open();
@@ -269,14 +269,31 @@ void main() {
       coordinator,
       (await coordinator.request(_result())).task!,
     );
-    expect(record.status, DownloadStatus.failed);
-    expect(record.errorKind, "postprocessing");
-    expect(manager.counts().$1, 0);
+    expect(record.status, DownloadStatus.completed);
+    expect(manager.counts().$1, 1);
+    expect(thumbnails.cachedPath(_result().thumbnail), isNull);
+  });
+
+  test("a batch of any size waits its turn instead of failing", () async {
+    final coordinator = await open();
+    transport.downloadGate = Completer();
+    final batch = await coordinator.startUrls([
+      for (var i = 0; i < 10; i++)
+        "https://music.youtube.com/watch?v=songnumber$i",
+    ]);
+    expect(batch.started, 10);
+    expect(batch.failed, 0);
+    await Future<void>.delayed(Duration.zero);
+    transport.downloadGate!.complete();
+    for (final task in batch.tasks) {
+      expect(
+        (await terminal(coordinator, task)).status,
+        DownloadStatus.completed,
+      );
+    }
     expect(
-      Directory(
-        music,
-      ).listSync().whereType<File>().where((f) => f.path.endsWith(".mp3")),
-      isEmpty,
+      transport.sent.where((frame) => frame["op"] == "download"),
+      hasLength(10),
     );
   });
 

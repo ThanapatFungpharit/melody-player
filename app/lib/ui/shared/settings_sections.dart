@@ -388,7 +388,7 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
     title: "Appearance",
     subtitle: "Set the mood for your music.",
     mobileTitle: "Appearance",
-    mobileSubtitle: "Theme, accent, startup and notifications",
+    mobileSubtitle: "Theme, accent, startup and playback",
     body: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
@@ -518,16 +518,6 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
         if (draft.normalizeLoudness) _note(context, settings.loudnessStatus),
         const Divider(height: 18),
         _label(context, "NOTIFICATIONS"),
-        SwitchListTile(
-          value: draft.notifications,
-          onChanged: (value) =>
-              settings.update((draft) => draft.notifications = value),
-          title: const Text("Show a message when the track changes"),
-          subtitle: const Text(
-            "A brief \"Now playing\" message inside Melody.",
-          ),
-          contentPadding: EdgeInsets.zero,
-        ),
         _dropdown(
           "Android notification shortcuts",
           draft.notificationActionPair,

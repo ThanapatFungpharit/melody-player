@@ -2,7 +2,7 @@ import "package:flutter/material.dart";
 
 import "../../app_state.dart";
 import "../../../application/models.dart";
-import "../../../core/library/models.dart";
+import "../../../core/library/models.dart" show Track;
 import "../../../core/media.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
@@ -62,8 +62,7 @@ class _SearchPageState extends State<SearchPage> {
       listenable: Listenable.merge([search, app.libraryRevision]),
       builder: (context, _) {
         final status =
-            search.status ??
-            "Songs, channels, and playlists. Find something you love.";
+            search.status ?? "Search by song or artist, or paste a link.";
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -236,18 +235,17 @@ class _SearchPageState extends State<SearchPage> {
             ? Icons.travel_explore_rounded
             : Icons.search_off_rounded,
         search.queryText.isEmpty
-            ? "Start with a song, artist, playlist, or $youtubeMusicName URL."
+            ? "Start with a song, an artist, or a $youtubeMusicName link."
             : "No matching music was found.",
       );
     }
-    final playlists = app.services.manager.listPlaylists();
     if (search.viewMode == "grid") {
       return SingleChildScrollView(
         child: CoverGrid(
           minWidth: 196,
           children: [
             for (final result in search.results)
-              (width) => SearchResultCard(app, result, playlists, width: width),
+              (width) => SearchResultCard(app, result, width: width),
           ],
         ),
       );
@@ -255,19 +253,13 @@ class _SearchPageState extends State<SearchPage> {
     return ListView.builder(
       itemCount: search.results.length,
       itemBuilder: (context, index) =>
-          SearchResultRow(app, search.results[index], playlists),
+          SearchResultRow(app, search.results[index]),
     );
   }
 }
 
-String _resultDetail(SearchResult result, {String separator = " · "}) {
-  if (result.isPlaylist) {
-    return "$separator${result.entryCount > 0 ? result.entryCount : "Multiple"} tracks";
-  }
-  return result.duration > 0
-      ? "$separator${formatDuration(result.duration)}"
-      : "";
-}
+String _resultDetail(SearchResult result, {String separator = " · "}) =>
+    result.duration > 0 ? "$separator${formatDuration(result.duration)}" : "";
 
 Widget _downloadAction(
   BuildContext context,
@@ -294,11 +286,10 @@ Widget _downloadAction(
       );
 
 class SearchResultRow extends StatelessWidget {
-  const SearchResultRow(this.app, this.result, this.playlists, {super.key});
+  const SearchResultRow(this.app, this.result, {super.key});
 
   final MelodyApp app;
   final SearchResult result;
-  final List<Playlist> playlists;
 
   @override
   Widget build(BuildContext context) {
@@ -311,36 +302,23 @@ class SearchResultRow extends StatelessWidget {
       title: result.title,
       subtitle: "$uploader · ${result.source}",
       artwork: result.thumbnail,
-      playlist: result.isPlaylist,
-      duration: result.isPlaylist
-          ? "${result.entryCount > 0 ? result.entryCount : "Many"} tracks"
-          : result.duration > 0
-          ? formatDuration(result.duration)
-          : "",
-      favorite: result.isPlaylist ? null : app.search.isFavorite(result),
+      duration: result.duration > 0 ? formatDuration(result.duration) : "",
+      favorite: app.search.isFavorite(result),
       onFavorite: () => app.search.actOnResult(result, TrackAction.favorite),
       onPlay: () => app.search.playResult(result),
-      playTooltip: result.isPlaylist ? "Preview playlist" : "Play",
       trailing: [
         _downloadAction(context, app, result, local),
-        ActionMenu(() => searchResultActions(context, app, result, playlists)),
+        ActionMenu(() => searchResultActions(context, app, result)),
       ],
     );
   }
 }
 
 class SearchResultCard extends StatelessWidget {
-  const SearchResultCard(
-    this.app,
-    this.result,
-    this.playlists, {
-    super.key,
-    this.width = 196,
-  });
+  const SearchResultCard(this.app, this.result, {super.key, this.width = 196});
 
   final MelodyApp app;
   final SearchResult result;
-  final List<Playlist> playlists;
   final double width;
 
   @override
@@ -356,9 +334,7 @@ class SearchResultCard extends StatelessWidget {
       titleLines: 2,
       subtitle: "$uploader${_resultDetail(result)}",
       artwork: result.thumbnail,
-      playlist: result.isPlaylist,
       onPlay: () => app.search.playResult(result),
-      playTooltip: result.isPlaylist ? "Preview playlist" : "Play",
       footer: Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Row(
@@ -371,7 +347,7 @@ class SearchResultCard extends StatelessWidget {
             Transform.translate(
               offset: const Offset(8, 0),
               child: ActionMenu(
-                () => searchResultActions(context, app, result, playlists),
+                () => searchResultActions(context, app, result),
               ),
             ),
           ],

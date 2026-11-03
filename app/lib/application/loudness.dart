@@ -220,9 +220,6 @@ class LoudnessNormalizer {
     limiterHeadroomDb: limiterHeadroomDb,
   );
 
-  /// The factor for a track that is not measured, such as a stream.
-  double get fallbackGain => _enabled ? linearGain(_typicalGain()) : 1;
-
   /// The median gain of the measured, non-silent tracks; 0 dB before any.
   double _typicalGain() => _typicalGainDb ??= () {
     final gains = [

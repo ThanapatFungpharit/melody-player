@@ -69,7 +69,7 @@ void main() {
   test(
     "lyrics come from YouTube Music",
     () async {
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final song = (await catalog.search(
         "Daft Punk Get Lucky",
         limit: 1,
@@ -85,7 +85,7 @@ void main() {
   test(
     "search results map to YouTube Music tracks",
     () async {
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final results = await catalog.search("Debussy Clair de Lune", limit: 3);
       expect(results, isNotEmpty);
       expect(
@@ -109,7 +109,7 @@ void main() {
       );
       final manager = MusicManager.open(p.join(root.path, "library.db"), music);
       final thumbnails = ThumbnailCache(p.join(root.path, "cache", "artwork"));
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final result = (await catalog.search(
         "Erik Satie Gymnopedie 1",
         limit: 1,
@@ -170,7 +170,7 @@ void main() {
         );
         store.saveSettings(store.settings..audioFormat = format);
         final manager = MusicManager.open(p.join(folder, "library.db"), music);
-        final catalog = MusicCatalog(worker, () => {});
+        final catalog = MusicCatalog(worker);
         final result = (await catalog.search(
           "Daft Punk Get Lucky",
           limit: 1,

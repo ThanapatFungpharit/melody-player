@@ -100,9 +100,6 @@ class MediaSessionState {
   final String artist;
   final String album;
   final String artworkUri;
-
-  /// Crop notification artwork around its salient subject instead of the
-  /// center.
   final Duration duration;
   final Duration position;
   final bool playing;
@@ -236,8 +233,7 @@ class SystemMediaSession {
     } catch (error) {
       debugPrint("SystemMediaSession: native action failed: $error");
     }
-    // A queue-less preview may still need application policy (for
-    // example Skip Next returning to the durable library queue).
+    // What the decoder cannot do by itself needs application policy.
     _sendAction(command, seekPosition: seekPosition);
   }
 
