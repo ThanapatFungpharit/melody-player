@@ -12,8 +12,6 @@ import "../../application/library_service.dart" show favoritesPlaylistId;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 import "../shared/format.dart" show plural;
-import "../shared/widgets.dart" show pageBounds;
-import "library_controller.dart";
 
 class _ImportSession {
   _ImportSession(
@@ -66,7 +64,9 @@ class PlaylistsController extends ChangeNotifier {
 
   final MelodyApp app;
   String? selectedPlaylistId;
-  int pageOffset = 0;
+
+  /// What the open playlist's rows are filtered by.
+  String trackQuery = "";
   _ImportSession? _session;
   bool importLoading = false;
   int _generation = 0;
@@ -76,30 +76,19 @@ class PlaylistsController extends ChangeNotifier {
 
   void openPlaylist(String playlistId) {
     selectedPlaylistId = playlistId;
-    pageOffset = 0;
+    trackQuery = "";
     app.navigate(3);
     notifyListeners();
   }
 
   void closePlaylist() {
     selectedPlaylistId = null;
-    pageOffset = 0;
+    trackQuery = "";
     notifyListeners();
   }
 
-  /// The visible page of [total] tracks, clamping a stale offset.
-  (int, int) visibleRange(int total) {
-    final (start, end) = pageBounds(
-      total,
-      pageOffset,
-      pageSize: libraryPageSize,
-    );
-    pageOffset = start;
-    return (start, end);
-  }
-
-  void changePage(int direction) {
-    pageOffset = (pageOffset + direction * libraryPageSize).clamp(0, 1 << 30);
+  void setTrackQuery(String value) {
+    trackQuery = value;
     notifyListeners();
   }
 
@@ -273,7 +262,7 @@ class PlaylistsController extends ChangeNotifier {
       baseDirectory: directory,
     );
     selectedPlaylistId = result.playlistId;
-    pageOffset = 0;
+    trackQuery = "";
     app.touchLibrary();
     app.navigate(3);
     notifyListeners();

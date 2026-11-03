@@ -90,35 +90,28 @@ class _PlaylistDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     final favorites = PlaylistsController.isFavorites(playlist.id);
     final tracks = app.playlists.tracks(playlist.id);
-    final (start, end) = app.playlists.visibleRange(tracks.length);
-    final visible = tracks.sublist(start, end);
-    final details = app.services.library.detailsMany(
-      visible.map((track) => track.id),
-    );
+    final query = app.playlists.trackQuery;
+    final filtering = query.trim().isNotEmpty;
+    // Each row's place in the playlist.
+    final rows = [
+      for (final (position, track) in tracks.indexed)
+        if (!filtering || app.services.library.matches(track.id, query))
+          position,
+    ];
     final ids = [for (final track in tracks) track.id];
-    Widget actions(Track track, int position) => MoreButton(
-      track.displayTitle,
-      () => playlistTrackActions(
-        context,
-        app,
-        playlist,
-        track,
-        position,
-        details[track.id]!,
-      ),
-    );
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) app.playlists.closePlaylist();
       },
       child: reorderablePage(
-        // Rows map to the visible page; the controller takes the drop slot.
+        // The controller takes the drop slot.
+        reorderable: !filtering,
         onReorder: (oldIndex, newIndex) => app.run(
           () => app.playlists.reorder(
             playlist.id,
-            start + oldIndex,
-            start + (newIndex > oldIndex ? newIndex + 1 : newIndex),
+            oldIndex,
+            newIndex > oldIndex ? newIndex + 1 : newIndex,
           ),
         ),
         header: [
@@ -199,31 +192,46 @@ class _PlaylistDetail extends StatelessWidget {
               ),
             ],
           ),
-        ],
-        items: [
-          for (final (offset, track) in visible.indexed)
-            TrackRow(
-              key: ValueKey("${playlist.id}:${start + offset}:${track.id}"),
-              app: app,
-              title: track.displayTitle,
-              credit: details[track.id]!.credit,
-              artwork: app.services.library.artwork(track.id),
-              selected: app.playback.currentTrackId == track.id,
-              favorite: details[track.id]!.favorite,
-              onTap: () =>
-                  app.playback.playTracks(ids, startIndex: start + offset),
-              leading: reorderHandle(context, offset),
-              trailing: actions(track, start + offset),
+          if (tracks.length > findableRows)
+            TextFormField(
+              key: ValueKey("find:${playlist.id}"),
+              initialValue: query,
+              onChanged: app.playlists.setTrackQuery,
+              decoration: const InputDecoration(
+                hintText: "Find in this playlist",
+                prefixIcon: Icon(Icons.search_rounded),
+              ),
             ),
         ],
+        itemCount: rows.length,
+        itemBuilder: (context, row) {
+          final position = rows[row];
+          final track = tracks[position];
+          final info = app.services.library.details(track.id);
+          return TrackRow(
+            key: ValueKey("${playlist.id}:$position:${track.id}"),
+            app: app,
+            title: track.displayTitle,
+            credit: info.credit,
+            artwork: app.services.library.artwork(track.id),
+            selected: app.playback.currentTrackId == track.id,
+            favorite: info.favorite,
+            onTap: () => app.playback.playTracks(ids, startIndex: position),
+            leading: filtering ? null : reorderHandle(context, row),
+            trailing: MoreButton(
+              track.displayTitle,
+              () => playlistTrackActions(
+                context,
+                app,
+                playlist,
+                track,
+                position,
+                info,
+              ),
+            ),
+          );
+        },
         footer: [
-          if (tracks.length > 50)
-            PageNavigation(
-              total: tracks.length,
-              start: start,
-              end: end,
-              onChange: app.playlists.changePage,
-            ),
           if (tracks.isEmpty && favorites)
             const EmptyState(
               Icons.favorite_border_rounded,

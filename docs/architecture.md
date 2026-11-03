@@ -508,9 +508,11 @@ work stays out of builds and event handlers:
   repaint boundary, and the seek bar's times sit in fixed boxes, because text
   that changes every second would otherwise lay out, and so repaint, everything
   above it. `screens_test.dart` counts what one update paints.
-- Library reads stay cheap per row, because queue activation and pages make
+- Library reads stay cheap per row, because queue activation and long lists make
   thousands of them: canonical IDs skip UUID parsing, and sorted track orders
-  are kept until the tracks change.
+  are kept until the tracks change. Local lists have no pages: each builds only
+  the rows in view, and takes their height from a prototype row, so a long list
+  scrolls and jumps without measuring every row.
 - Launch cleanup of cached artwork and saved lyrics runs in a background
   isolate, since it lists the folders and parses a URL for every library track.
 - The background pass that reads covers and tags opens a few files at a time in

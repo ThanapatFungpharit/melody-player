@@ -408,6 +408,7 @@ class TrackListRow extends StatelessWidget {
     this.statusHighlight = false,
     this.favorite,
     this.onFavorite,
+    this.onTap,
     this.onPlay,
     this.playTooltip = "Play",
     this.trailing = const [],
@@ -426,6 +427,7 @@ class TrackListRow extends StatelessWidget {
   final bool statusHighlight;
   final bool? favorite;
   final VoidCallback? onFavorite;
+  final VoidCallback? onTap;
   final VoidCallback? onPlay;
   final String playTooltip;
   final List<Widget> trailing;
@@ -483,6 +485,7 @@ class TrackListRow extends StatelessWidget {
         }
         final isFavorite = favorite ?? false;
         return GestureDetector(
+          onTap: onTap,
           onDoubleTap: onPlay,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),

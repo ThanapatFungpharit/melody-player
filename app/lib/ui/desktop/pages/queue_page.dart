@@ -7,18 +7,6 @@ import "../../shared/widgets.dart";
 import "../controls.dart";
 import "../shell.dart";
 
-/// Starts on the page holding the current track, then follows the user.
-class QueuePaging {
-  int? offset;
-
-  (int, int) visibleRange(int total, int currentIndex) {
-    offset ??= (currentIndex < 0 ? 0 : currentIndex) ~/ 50 * 50;
-    final (start, end) = pageBounds(total, offset!);
-    offset = start;
-    return (start, end);
-  }
-}
-
 class QueuePanel extends StatefulWidget {
   const QueuePanel(this.app, {super.key});
 
@@ -29,7 +17,29 @@ class QueuePanel extends StatefulWidget {
 }
 
 class _QueuePanelState extends State<QueuePanel> {
-  final QueuePaging _paging = QueuePaging();
+  final ScrollController _scroll = ScrollController();
+  String _query = "";
+
+  @override
+  void initState() {
+    super.initState();
+    // Opens at the current track, then follows the user.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final queue = widget.app.playback.queue;
+      scrollToRow(_scroll, queue.currentIndex, queue.items.length);
+    });
+  }
+
+  void _find(String query) {
+    setState(() => _query = query);
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -42,14 +52,13 @@ class _QueuePanelState extends State<QueuePanel> {
           final compact = constraints.maxWidth < 600;
           final queue = app.playback.queue;
           final mode = queueModeStatus(queue);
-          final (start, end) = _paging.visibleRange(
-            queue.items.length,
-            queue.currentIndex,
-          );
-          final rows = <(int, String)>[
-            for (var index = start; index < end; index++)
-              if (app.services.manager.hasTrack(queue.items[index]))
-                (index, queue.items[index]),
+          final filtering = _query.trim().isNotEmpty;
+          final rows = [
+            for (var index = 0; index < queue.items.length; index++)
+              if (app.services.manager.hasTrack(queue.items[index]) &&
+                  (!filtering ||
+                      app.services.library.matches(queue.items[index], _query)))
+                index,
           ];
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -61,7 +70,7 @@ class _QueuePanelState extends State<QueuePanel> {
                 "${queue.items.length} tracks · ${mode.label}",
                 compact: compact,
               ),
-              if (rows.isNotEmpty)
+              if (queue.items.isNotEmpty)
                 Wrap(
                   spacing: 6,
                   runSpacing: 6,
@@ -95,26 +104,47 @@ class _QueuePanelState extends State<QueuePanel> {
                     ),
                   ],
                 ),
+              if (queue.items.length > findableRows)
+                TextField(
+                  onChanged: _find,
+                  decoration: const InputDecoration(
+                    hintText: "Find in the queue",
+                    prefixIcon: Icon(Icons.search_rounded, size: 20),
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
               Expanded(
                 child: rows.isEmpty
-                    ? const EmptyState(
+                    ? EmptyState(
                         Icons.queue_music_rounded,
-                        "Your temporary playback queue is empty.",
+                        filtering
+                            ? "Nothing in the queue matches this."
+                            : "Your temporary playback queue is empty.",
                       )
                     : ReorderableListView.builder(
+                        scrollController: _scroll,
                         buildDefaultDragHandles: false,
                         itemCount: rows.length,
+                        prototypeItem: TrackListRow(
+                          app: app,
+                          leading: const SizedBox(width: 26, height: 44),
+                          title: LazyShelf.sampleText,
+                          subtitle: LazyShelf.sampleText,
+                          artwork: "",
+                          status: "Queued",
+                          favorite: false,
+                          onPlay: () {},
+                          trailing: [ActionMenu(() => const [])],
+                        ),
                         onReorderItem: (oldIndex, newIndex) =>
                             app.playback.reorderQueue(
-                              rows[oldIndex].$1,
-                              queueDropSlot(
-                                [for (final row in rows) row.$1],
-                                oldIndex,
-                                newIndex,
-                              ),
+                              rows[oldIndex],
+                              queueDropSlot(rows, oldIndex, newIndex),
                             ),
                         itemBuilder: (context, row) {
-                          final (index, trackId) = rows[row];
+                          final index = rows[row];
+                          final trackId = queue.items[index];
                           final track = app.services.manager.getTrack(trackId);
                           final details = app.services.library.details(trackId);
                           final current = index == queue.currentIndex;
@@ -125,8 +155,11 @@ class _QueuePanelState extends State<QueuePanel> {
                             current: current,
                             leading: ReorderableDragStartListener(
                               index: row,
+                              enabled: !filtering,
                               child: MouseRegion(
-                                cursor: SystemMouseCursors.grab,
+                                cursor: filtering
+                                    ? MouseCursor.defer
+                                    : SystemMouseCursors.grab,
                                 child: Tooltip(
                                   message: current
                                       ? "Current track • Drag to reorder"
@@ -158,22 +191,15 @@ class _QueuePanelState extends State<QueuePanel> {
                             onPlay: () => app.playback.playQueueIndex(index),
                             playTooltip: "Play from here",
                             trailing: [
-                              ActionMenu(() => queueRowActions(app, index)),
+                              ActionMenu(
+                                () =>
+                                    queueRowActions(context, app, index, track),
+                              ),
                             ],
                           );
                         },
                       ),
               ),
-              if (queue.items.length > 50)
-                PageNavigation(
-                  total: queue.items.length,
-                  start: start,
-                  end: end,
-                  onChange: (direction) => setState(
-                    () =>
-                        _paging.offset = (_paging.offset ?? 0) + direction * 50,
-                  ),
-                ),
             ],
           );
         },

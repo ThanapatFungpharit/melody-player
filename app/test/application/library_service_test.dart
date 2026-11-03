@@ -503,10 +503,84 @@ void main() {
     );
     store.saveTrackDetails(id, TrackDetails(uploader: "Adele"));
 
-    expect(library.tracks(query: "ADELE").single.id, id);
-    expect(library.tracks(query: "music"), isEmpty);
-    expect(library.tracks(query: "watch"), isEmpty);
-    expect(library.tracks(query: "abcdefghijk"), isEmpty);
+    expect(library.trackIds(query: "ADELE"), [id]);
+    expect(library.trackIds(query: "  hello "), [id]);
+    expect(library.trackIds(query: "music"), isEmpty);
+    expect(library.trackIds(query: "watch"), isEmpty);
+    expect(library.trackIds(query: "abcdefghijk"), isEmpty);
+    expect(library.matches(id, "adele"), isTrue);
+    expect(library.matches(id, ""), isTrue);
+    expect(library.matches(id, "someone"), isFalse);
+  });
+
+  group("sorting the library", () {
+    late String ana, bob, ben, nobody;
+
+    Future<String> tagged(
+      String title, {
+      String artist = "",
+      double duration = 0,
+      int plays = 0,
+      double lastPlayed = 0,
+    }) async {
+      final path = p.join(music, "$title.mp3");
+      await File(path).writeAsString(title);
+      final id = await manager.addTrack(path, title: title);
+      store.saveTrackDetails(
+        id,
+        TrackDetails(
+          uploader: artist,
+          duration: duration,
+          playCount: plays,
+          lastPlayed: lastPlayed,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      return id;
+    }
+
+    setUp(() async {
+      ana = await tagged("Zebra", artist: "ana", duration: 100, plays: 1);
+      bob = await tagged("Bee", artist: "Bob", duration: 300, plays: 5);
+      ben = await tagged(
+        "Ant",
+        artist: "Bob",
+        duration: 200,
+        plays: 5,
+        lastPlayed: 9,
+      );
+      nobody = await tagged("Moth");
+    });
+
+    test("by artist, with a track's title within one", () {
+      expect(library.trackIds(sort: "artist"), [ana, ben, bob, nobody]);
+    });
+
+    test("longest first", () {
+      expect(library.trackIds(sort: "longest"), [bob, ben, ana, nobody]);
+    });
+
+    test("most played first, the latest played among equals", () {
+      expect(library.trackIds(sort: "played"), [ben, bob, ana, nobody]);
+    });
+
+    test("keeps its order when filtered", () {
+      expect(library.trackIds(query: "bob", sort: "longest"), [bob, ben]);
+    });
+
+    test("does not change the order it starts from", () {
+      library.trackIds(sort: "longest");
+      expect(library.trackIds(), [nobody, ben, bob, ana]);
+    });
+  });
+
+  test("an artist can be set, and cleared", () async {
+    final id = await downloaded("song.mp3");
+    library.setArtist(id, "  Someone ");
+    expect(library.details(id).uploader, "Someone");
+    library.setArtist(id, "");
+    expect(library.details(id).uploader, isEmpty);
+    expect(library.details(id).thumbnail, _thumbnail);
   });
 
   group("what a file says about itself", () {

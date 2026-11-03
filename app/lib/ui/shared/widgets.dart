@@ -468,11 +468,17 @@ class PageNavigation extends StatelessWidget {
   );
 }
 
-/// A full page window, clamping a stale offset after the collection shrank.
-(int, int) pageBounds(int total, int offset, {int pageSize = 50}) {
-  final last = total <= 0 ? 0 : (total - 1) ~/ pageSize * pageSize;
-  final start = offset.clamp(0, last);
-  return (start, (start + pageSize).clamp(0, total));
+/// A list longer than this offers to find rows in it.
+const findableRows = 8;
+
+/// Scrolls a list of [count] equally tall rows to the one at [row]. A header
+/// above the rows only makes this land a little further down.
+void scrollToRow(ScrollController controller, int row, int count) {
+  if (!controller.hasClients || row <= 0 || count <= 0) return;
+  final position = controller.position;
+  final extent =
+      (position.maxScrollExtent + position.viewportDimension) / count;
+  controller.jumpTo((extent * row).clamp(0.0, position.maxScrollExtent));
 }
 
 /// Cross-fades between destinations with a slight rise. Give each

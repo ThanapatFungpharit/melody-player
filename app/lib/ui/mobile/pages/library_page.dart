@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../controllers/library_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/widgets.dart";
@@ -33,11 +34,7 @@ class _MobileLibraryState extends State<MobileLibrary> {
     return Watch(
       [library, app.libraryRevision, app.playbackState],
       builder: (context) {
-        final (tracks, hasMore) = library.page();
-        final details = app.services.library.detailsMany(
-          tracks.map((track) => track.id),
-        );
-        final paged = library.pageOffset > 0 || hasMore;
+        final ids = library.visibleIds();
         final header = [
           MobileHeading(
             "Library",
@@ -51,6 +48,12 @@ class _MobileLibraryState extends State<MobileLibrary> {
                     "Add local audio files",
                     Icons.library_add_rounded,
                     () => pickLocalFiles(app),
+                  ),
+                  MenuAction(
+                    "Select tracks",
+                    Icons.checklist_rounded,
+                    library.startSelecting,
+                    enabled: ids.isNotEmpty,
                   ),
                   MenuAction(
                     "Export library playlist",
@@ -78,13 +81,9 @@ class _MobileLibraryState extends State<MobileLibrary> {
               MoreButton(
                 "Sort tracks",
                 () => [
-                  for (final (key, label) in const [
-                    ("recent", "Recently added"),
-                    ("oldest", "Oldest first"),
-                    ("title", "Title"),
-                  ])
+                  for (final MapEntry(:key, :value) in librarySorts.entries)
                     MenuAction(
-                      label,
+                      value,
                       key == library.sortKey
                           ? Icons.check_rounded
                           : Icons.sort_rounded,
@@ -95,64 +94,55 @@ class _MobileLibraryState extends State<MobileLibrary> {
               ),
             ],
           ),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(48),
-                  ),
-                  onPressed: tracks.isEmpty ? null : library.playVisible,
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text("Play all"),
+          if (library.selecting)
+            Row(
+              children: [
+                TouchIconButton(
+                  Icons.close_rounded,
+                  "Stop selecting",
+                  library.stopSelecting,
                 ),
-              ),
-              TouchIconButton(
-                Icons.shuffle_rounded,
-                "Shuffle these tracks",
-                tracks.isEmpty ? null : library.shuffleVisible,
-              ),
-            ],
-          ),
+                Expanded(child: Text("${library.selectedIds.length} selected")),
+                TouchIconButton(
+                  Icons.select_all_rounded,
+                  "Select all",
+                  library.toggleSelectAll,
+                ),
+                for (final action in selectedTracksActions(context, app))
+                  TouchIconButton(
+                    action.icon,
+                    action.label,
+                    action.enabled ? action.onSelected : null,
+                  ),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(48),
+                    ),
+                    onPressed: ids.isEmpty ? null : library.playVisible,
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text("Play all"),
+                  ),
+                ),
+                TouchIconButton(
+                  Icons.shuffle_rounded,
+                  "Shuffle these tracks",
+                  ids.isEmpty ? null : library.shuffleVisible,
+                ),
+              ],
+            ),
         ];
         const empty = EmptyState(
           Icons.library_music_rounded,
           "Nothing matches this view. Search for music or add local files.",
         );
-        final count = tracks.length + (paged ? 1 : 0);
-        Widget separator(BuildContext context, int index) =>
-            const SizedBox(height: 6);
-        Widget row(BuildContext context, int index) => index == tracks.length
-            ? Row(
-                children: [
-                  TextButton.icon(
-                    onPressed: library.pageOffset == 0
-                        ? null
-                        : () => library.changePage(-1),
-                    icon: const Icon(Icons.chevron_left_rounded),
-                    label: const Text("Previous"),
-                  ),
-                  Expanded(
-                    child: Text(
-                      "${library.pageOffset + 1}–${library.pageOffset + tracks.length}",
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: hasMore ? () => library.changePage(1) : null,
-                    icon: const Icon(Icons.chevron_right_rounded),
-                    label: const Text("Next"),
-                    iconAlignment: IconAlignment.end,
-                  ),
-                ],
-              )
-            : libraryTrackRow(
-                context,
-                app,
-                tracks[index],
-                library.pageOffset + index,
-                details: details[tracks[index].id],
-              );
+        Widget row(BuildContext context, int index) =>
+            libraryTrackRow(context, app, ids[index], index);
         // A short screen, such as a landscape phone, has no room for a fixed
         // header above the tracks, so there it scrolls away with them. The
         // screen size ignores the keyboard, so typing never swaps layouts.
@@ -168,14 +158,10 @@ class _MobileLibraryState extends State<MobileLibrary> {
                     ),
                 ],
               ),
-              if (tracks.isEmpty)
+              if (ids.isEmpty)
                 const SliverToBoxAdapter(child: empty)
               else
-                SliverList.separated(
-                  itemCount: count,
-                  separatorBuilder: separator,
-                  itemBuilder: row,
-                ),
+                SliverList.builder(itemCount: ids.length, itemBuilder: row),
             ],
           );
         }
@@ -185,13 +171,9 @@ class _MobileLibraryState extends State<MobileLibrary> {
           children: [
             ...header,
             Expanded(
-              child: tracks.isEmpty
+              child: ids.isEmpty
                   ? empty
-                  : ListView.separated(
-                      itemCount: count,
-                      separatorBuilder: separator,
-                      itemBuilder: row,
-                    ),
+                  : ListView.builder(itemCount: ids.length, itemBuilder: row),
             ),
           ],
         );

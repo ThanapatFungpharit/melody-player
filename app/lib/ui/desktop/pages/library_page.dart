@@ -1,20 +1,13 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
-import "../../../application/models.dart";
-import "../../../core/library/models.dart";
+import "../../controllers/library_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/format.dart";
 import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
 import "../controls.dart";
-
-const _sortLabels = {
-  "recent": "Recently added",
-  "oldest": "Oldest added",
-  "title": "Title",
-};
 
 class LibraryPage extends StatefulWidget {
   const LibraryPage(this.app, {super.key});
@@ -47,7 +40,7 @@ class _LibraryPageState extends State<LibraryPage> {
         app.playbackState,
       ]),
       builder: (context, _) {
-        final (tracks, hasMore) = library.page();
+        final ids = library.visibleIds();
         final total = app.services.manager.counts().$1;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -77,169 +70,199 @@ class _LibraryPageState extends State<LibraryPage> {
               ],
             ),
             const SizedBox(height: 22),
-            Row(
-              spacing: 6,
-              children: [
-                PlayCircle(
-                  onPressed: tracks.isEmpty ? null : library.playVisible,
-                  tooltip: "Play all",
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  onPressed: tracks.isEmpty ? null : library.shuffleVisible,
-                  tooltip: "Shuffle these tracks",
-                  icon: const Icon(Icons.shuffle_rounded),
-                ),
-                const Spacer(),
-                SizedBox(
-                  width: 260,
-                  child: TextField(
-                    controller: _query,
-                    onChanged: library.setQuery,
-                    decoration: const InputDecoration(
-                      hintText: "Find in your library",
-                      prefixIcon: Icon(Icons.search_rounded, size: 20),
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(vertical: 12),
+            if (library.selecting)
+              _SelectionBar(app)
+            else
+              Row(
+                spacing: 6,
+                children: [
+                  PlayCircle(
+                    onPressed: ids.isEmpty ? null : library.playVisible,
+                    tooltip: "Play all",
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: ids.isEmpty ? null : library.shuffleVisible,
+                    tooltip: "Shuffle these tracks",
+                    icon: const Icon(Icons.shuffle_rounded),
+                  ),
+                  IconButton(
+                    onPressed: ids.isEmpty ? null : library.startSelecting,
+                    tooltip: "Select tracks",
+                    icon: const Icon(Icons.checklist_rounded),
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    width: 260,
+                    child: TextField(
+                      controller: _query,
+                      onChanged: library.setQuery,
+                      decoration: const InputDecoration(
+                        hintText: "Find in your library",
+                        prefixIcon: Icon(Icons.search_rounded, size: 20),
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(vertical: 12),
+                      ),
                     ),
                   ),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: "Sort tracks",
-                  initialValue: library.sortKey,
-                  position: PopupMenuPosition.under,
-                  onSelected: library.setSort,
-                  itemBuilder: (context) => [
-                    for (final MapEntry(:key, :value) in _sortLabels.entries)
-                      PopupMenuItem(value: key, height: 40, child: Text(value)),
-                  ],
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      spacing: 6,
-                      children: [
-                        Text(
-                          _sortLabels[library.sortKey] ?? "Sort",
-                          style: context.text.labelLarge!.copyWith(
+                  PopupMenuButton<String>(
+                    tooltip: "Sort tracks",
+                    initialValue: library.sortKey,
+                    position: PopupMenuPosition.under,
+                    onSelected: library.setSort,
+                    itemBuilder: (context) => [
+                      for (final MapEntry(:key, :value) in librarySorts.entries)
+                        PopupMenuItem(
+                          value: key,
+                          height: 40,
+                          child: Text(value),
+                        ),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        spacing: 6,
+                        children: [
+                          Text(
+                            librarySorts[library.sortKey] ?? "Sort",
+                            style: context.text.labelLarge!.copyWith(
+                              color: context.colors.onSurfaceVariant,
+                            ),
+                          ),
+                          Icon(
+                            Icons.sort_rounded,
+                            size: 18,
                             color: context.colors.onSurfaceVariant,
                           ),
-                        ),
-                        Icon(
-                          Icons.sort_rounded,
-                          size: 18,
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
             const SizedBox(height: 20),
             Expanded(
-              child: tracks.isEmpty
+              child: ids.isEmpty
                   ? const EmptyState(
                       Icons.library_music_rounded,
                       "Nothing matches this view. Search for music or add local files.",
                     )
-                  : _tracks(context, tracks, hasMore),
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TrackListHeader(
+                          numbered: !library.selecting,
+                          leadingWidth: library.selecting ? 48 : 0,
+                          trailingWidth: 48 + 40 + 8,
+                        ),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: ListView.builder(
+                            itemCount: ids.length,
+                            prototypeItem: TrackListRow(
+                              app: app,
+                              number: 1,
+                              title: LazyShelf.sampleText,
+                              subtitle: LazyShelf.sampleText,
+                              artwork: "",
+                              favorite: false,
+                              trailing: [ActionMenu(() => const [])],
+                            ),
+                            itemBuilder: (context, index) =>
+                                LibraryTrackRow(app, ids[index], index),
+                          ),
+                        ),
+                      ],
+                    ),
             ),
           ],
         );
       },
     );
   }
+}
 
-  Widget _tracks(BuildContext context, List<Track> tracks, bool hasMore) {
-    final app = widget.app;
+/// What can be done with the selected tracks.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar(this.app);
+
+  final MelodyApp app;
+
+  @override
+  Widget build(BuildContext context) {
     final library = app.library;
-    final details = app.services.library.detailsMany(
-      tracks.map((track) => track.id),
-    );
-    final paged = library.pageOffset > 0 || hasMore;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Row(
+      spacing: 6,
       children: [
-        const TrackListHeader(trailingWidth: 48 + 40 + 8),
-        const SizedBox(height: 8),
-        Expanded(
-          child: ListView.builder(
-            itemCount: tracks.length + (paged ? 1 : 0),
-            itemBuilder: (context, index) {
-              if (index == tracks.length) {
-                return Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: library.pageOffset == 0
-                          ? null
-                          : () => library.changePage(-1),
-                      icon: const Icon(Icons.chevron_left_rounded),
-                      label: const Text("Previous"),
-                    ),
-                    Expanded(
-                      child: Text(
-                        "${library.pageOffset + 1}–${library.pageOffset + tracks.length}",
-                        textAlign: TextAlign.center,
-                        style: context.text.bodySmall,
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: hasMore ? () => library.changePage(1) : null,
-                      icon: const Icon(Icons.chevron_right_rounded),
-                      label: const Text("Next"),
-                      iconAlignment: IconAlignment.end,
-                    ),
-                  ],
-                );
-              }
-              final track = tracks[index];
-              return LibraryTrackRow(
-                app,
-                track,
-                library.pageOffset + index,
-                details[track.id]!,
-              );
-            },
-          ),
+        IconButton(
+          onPressed: library.stopSelecting,
+          tooltip: "Stop selecting",
+          icon: const Icon(Icons.close_rounded),
         ),
+        Text(
+          "${library.selectedIds.length} selected",
+          style: context.text.titleSmall,
+        ),
+        const SizedBox(width: 8),
+        TextButton(
+          onPressed: library.toggleSelectAll,
+          child: const Text("Select all"),
+        ),
+        const Spacer(),
+        for (final action in selectedTracksActions(context, app))
+          IconButton(
+            onPressed: action.enabled ? action.onSelected : null,
+            tooltip: action.label,
+            icon: Icon(action.icon),
+          ),
       ],
     );
   }
 }
 
 class LibraryTrackRow extends StatelessWidget {
-  const LibraryTrackRow(
-    this.app,
-    this.track,
-    this.index,
-    this.details, {
-    super.key,
-  });
+  const LibraryTrackRow(this.app, this.trackId, this.index, {super.key});
 
   final MelodyApp app;
-  final Track track;
+  final String trackId;
+
+  /// Where the track is among the visible ones.
   final int index;
-  final TrackDetails details;
 
   @override
-  Widget build(BuildContext context) => TrackListRow(
-    app: app,
-    number: index + 1,
-    title: track.displayTitle,
-    subtitle: details.credit,
-    artwork: app.services.library.artwork(track.id),
-    duration: formatDuration(details.duration),
-    favorite: details.favorite,
-    onFavorite: () => app.toggleFavorite(track.id),
-    onPlay: () => app.library.playFrom(index),
-    playTooltip: "Play from here",
-    current: app.playback.currentTrackId == track.id,
-    trailing: [
-      ActionMenu(() => libraryTrackActions(context, app, track, details)),
-    ],
-  );
+  Widget build(BuildContext context) {
+    // A row may outlive its track for a frame while a deletion finishes.
+    if (!app.services.manager.hasTrack(trackId)) return const SizedBox.shrink();
+    final library = app.library;
+    final track = app.services.manager.getTrack(trackId);
+    final details = app.services.library.details(trackId);
+    final selecting = library.selecting;
+    return TrackListRow(
+      app: app,
+      number: selecting ? null : index + 1,
+      leading: selecting
+          ? Checkbox(
+              value: library.selected.contains(trackId),
+              onChanged: (_) => library.toggleSelected(trackId),
+            )
+          : null,
+      title: track.displayTitle,
+      subtitle: details.credit,
+      artwork: app.services.library.artwork(trackId),
+      duration: formatDuration(details.duration),
+      favorite: details.favorite,
+      onFavorite: () => app.toggleFavorite(trackId),
+      onTap: selecting ? () => library.toggleSelected(trackId) : null,
+      onPlay: selecting ? null : () => library.playFrom(index),
+      playTooltip: "Play from here",
+      current: app.playback.currentTrackId == trackId,
+      trailing: [
+        ActionMenu(() => libraryTrackActions(context, app, track, details)),
+      ],
+    );
+  }
 }

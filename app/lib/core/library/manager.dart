@@ -831,30 +831,13 @@ class MusicManager {
     return id != null && _tracks.containsKey(id);
   }
 
-  /// Tracks whose title holds [query], or whose [artist] does when given.
-  List<Track> searchTracks(
-    String query, {
-    int offset = 0,
-    int? limit,
-    String sort = "recent",
-    String Function(String trackId)? artist,
-  }) {
-    final needle = query.trim().toLowerCase();
-    if (limit != null && limit <= 0) return const [];
-    final start = offset < 0 ? 0 : offset;
-    Iterable<String> matching = _ordered(sort);
-    if (needle.isNotEmpty) {
-      final search = _search;
-      matching = matching.where(
-        (id) =>
-            search[id]!.contains(needle) ||
-            (artist?.call(id).toLowerCase().contains(needle) ?? false),
-      );
-    }
-    var page = matching.skip(start);
-    if (limit != null) page = page.take(limit);
-    return [for (final id in page) _tracks[id]!.copy()];
-  }
+  /// Every track ID in [sort] order: `recent`, `oldest`, or `title`. Pages ask
+  /// on every change, so the list is shared: do not change it.
+  List<String> orderedTrackIds(String sort) => _ordered(sort);
+
+  /// Whether [trackId]'s title holds [needle], in lower case.
+  bool titleContains(String trackId, String needle) =>
+      _search[trackId]?.contains(needle) ?? false;
 
   Track? findTrackBySource(String source) {
     final ids = _sourceIndex[sourceKey(source)];

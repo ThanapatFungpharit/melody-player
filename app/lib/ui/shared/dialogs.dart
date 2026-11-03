@@ -18,7 +18,6 @@ import "../../core/media.dart";
 import "../../platform/folders.dart";
 import "../controllers/search_controller.dart";
 import "format.dart";
-import "widgets.dart";
 
 final _audioExtensions = [
   for (final suffix in audioSuffixes) suffix.substring(1),
@@ -216,18 +215,75 @@ Future<void> showDetailsDialog(
 
 // -- tracks ----------------------------------------------------------------
 
-Future<void> showRenameTrackDialog(
+/// Edits what a track is called in the library; its file stays as it is.
+Future<void> showEditTrackDialog(
   BuildContext context,
   MelodyApp app,
   Track track,
-) => showTextPrompt(
-  context,
-  title: "Edit track title",
-  label: "Track title",
-  initial: track.displayTitle,
-  confirmLabel: "Save",
-  onConfirm: (value) async => app.library.renameTrack(track.id, value),
-);
+) {
+  final title = TextEditingController(text: track.displayTitle);
+  final artist = TextEditingController(
+    text: app.services.library.details(track.id).uploader,
+  );
+  String? error;
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        void submit() {
+          try {
+            app.library.editTrack(
+              track.id,
+              title: title.text,
+              artist: artist.text,
+            );
+            Navigator.of(context).pop();
+          } on FormatException catch (failure) {
+            setState(() => error = failure.message);
+          } on ArgumentError catch (failure) {
+            setState(() => error = "${failure.message}");
+          }
+        }
+
+        return AlertDialog(
+          insetPadding: _dialogInsets,
+          title: const Text("Edit track details"),
+          content: SizedBox(
+            width: _dialogWidth(context),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 14,
+              children: [
+                TextField(
+                  controller: title,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: "Title",
+                    errorText: error,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+                TextField(
+                  controller: artist,
+                  decoration: const InputDecoration(labelText: "Artist"),
+                  onSubmitted: (_) => submit(),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
+            ),
+            FilledButton(onPressed: submit, child: const Text("Save")),
+          ],
+        );
+      },
+    ),
+  );
+}
 
 Future<void> showTrackDetailsDialog(
   BuildContext context,
@@ -243,7 +299,7 @@ Future<void> showTrackDetailsDialog(
   }
   return showDetailsDialog(context, "Track details", [
     ("Title", track.displayTitle),
-    ("Uploader / channel", details.uploader.isEmpty ? "—" : details.uploader),
+    ("Artist", details.uploader.isEmpty ? "—" : details.uploader),
     ("Duration", formatDuration(details.duration)),
     (
       "Source",
@@ -280,14 +336,29 @@ Future<void> showDeleteTrackDialog(
   },
 );
 
+Future<void> showDeleteSelectedTracksDialog(
+  BuildContext context,
+  MelodyApp app,
+) {
+  final count = app.library.selectedIds.length;
+  return showConfirmDialog(
+    context,
+    title: "Delete ${plural(count, "track")}?",
+    message:
+        "${count == 1 ? "This track" : "These tracks"} will be removed from the "
+        "library and every playlist. Files Melody downloaded are deleted; "
+        "imported files stay on disk.",
+    confirmLabel: "Delete",
+    icon: Icons.delete_forever_rounded,
+    onConfirm: () => app.run(app.library.deleteSelected),
+  );
+}
+
 Future<void> showSearchResultDetails(
   BuildContext context,
   SearchResult result,
 ) => showDetailsDialog(context, result.title, [
-  (
-    "Uploader / channel",
-    result.uploader.isEmpty ? "Unknown uploader" : result.uploader,
-  ),
+  ("Artist", result.uploader.isEmpty ? "Unknown artist" : result.uploader),
   ("Source", result.source),
   if (result.duration > 0) ("Duration", formatDuration(result.duration)),
 ], footer: result.url);
@@ -437,22 +508,14 @@ Future<void> showBulkAddTracksDialog(
   );
   final selected = <String>{};
   var query = "";
-  var offset = 0;
   return showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) {
         final matching = [
-          for (final track in app.services.library.tracks(query: query))
-            if (!members.contains(track.id)) track,
+          for (final id in app.services.library.trackIds(query: query))
+            if (!members.contains(id)) id,
         ];
-        final matchingIds = {for (final track in matching) track.id};
-        final (start, end) = pageBounds(matching.length, offset);
-        offset = start;
-        final visible = matching.sublist(start, end);
-        final details = app.services.library.detailsMany(
-          visible.map((track) => track.id),
-        );
         final muted = Theme.of(context).colorScheme.onSurfaceVariant;
         return AlertDialog(
           insetPadding: _dialogInsets,
@@ -468,21 +531,17 @@ Future<void> showBulkAddTracksDialog(
                     labelText: "Find a track",
                     prefixIcon: Icon(Icons.search_rounded),
                   ),
-                  onChanged: (value) => setState(() {
-                    query = value;
-                    offset = 0;
-                  }),
+                  onChanged: (value) => setState(() => query = value),
                 ),
                 CheckboxListTile(
-                  value:
-                      matching.isNotEmpty && selected.containsAll(matchingIds),
+                  value: matching.isNotEmpty && selected.containsAll(matching),
                   onChanged: matching.isEmpty
                       ? null
                       : (value) => setState(() {
                           if (value == true) {
-                            selected.addAll(matchingIds);
+                            selected.addAll(matching);
                           } else {
-                            selected.removeAll(matchingIds);
+                            selected.removeAll(matching);
                           }
                         }),
                   title: Text(
@@ -511,35 +570,30 @@ Future<void> showBulkAddTracksDialog(
                                   : "No tracks match this search.",
                             ),
                           )
-                        : ListView(
-                            children: [
-                              for (final track in visible)
-                                CheckboxListTile(
-                                  value: selected.contains(track.id),
-                                  onChanged: (value) => setState(() {
-                                    value == true
-                                        ? selected.add(track.id)
-                                        : selected.remove(track.id);
-                                  }),
-                                  title: Text(
-                                    "${track.displayTitle} — ${details[track.id]!.credit}",
-                                  ),
-                                  controlAffinity:
-                                      ListTileControlAffinity.leading,
-                                  contentPadding: EdgeInsets.zero,
-                                ),
-                            ],
+                        : ListView.builder(
+                            itemCount: matching.length,
+                            itemBuilder: (context, index) {
+                              final id = matching[index];
+                              final track = app.services.manager.getTrack(id);
+                              final credit = app.services.library
+                                  .details(id)
+                                  .credit;
+                              return CheckboxListTile(
+                                value: selected.contains(id),
+                                onChanged: (value) => setState(() {
+                                  value == true
+                                      ? selected.add(id)
+                                      : selected.remove(id);
+                                }),
+                                title: Text("${track.displayTitle} — $credit"),
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                              );
+                            },
                           ),
                   ),
                 ),
-                if (matching.length > 50)
-                  PageNavigation(
-                    total: matching.length,
-                    start: start,
-                    end: end,
-                    onChange: (direction) =>
-                        setState(() => offset += direction * 50),
-                  ),
                 Text(
                   selected.isEmpty
                       ? "No tracks selected"

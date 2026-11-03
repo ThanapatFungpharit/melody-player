@@ -21,8 +21,11 @@ import "package:melody/application/lyrics.dart";
 import "package:melody/application/package_runtime.dart";
 import "package:melody/core/library/manager.dart";
 import "package:melody/platform/paths.dart";
+import "package:melody/ui/desktop/controls.dart";
+import "package:melody/ui/desktop/pages/library_page.dart";
 import "package:melody/ui/desktop/player_bar.dart";
 import "package:melody/ui/desktop/shell.dart";
+import "package:melody/ui/mobile/controls.dart" show TrackRow;
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
 import "package:melody/ui/shared/dialogs.dart";
@@ -557,6 +560,201 @@ void main() {
     expect(app.services.manager.getTrack(added.single).title, "Weightless");
   });
 
+  /// Adds [count] tracks named "Extra <n>" to the library.
+  Future<List<String>> addTracks(
+    WidgetTester tester,
+    MelodyApp app,
+    int count,
+  ) async => (await tester.runAsync(() async {
+    final manager = app.services.manager;
+    final ids = <String>[];
+    for (var index = 0; index < count; index++) {
+      final path = p.join(manager.musicFolder, "Extra $index.mp3");
+      await File(path).writeAsString("Extra $index");
+      ids.add(await manager.addTrack(path, title: "Extra $index"));
+    }
+    app.touchLibrary();
+    return ids;
+  }))!;
+
+  Future<void> settle(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  testWidgets("a long library scrolls instead of paging", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    await addTracks(tester, app, 120);
+    app.navigate(2);
+    await settle(tester);
+    expect(find.text("Next"), findsNothing);
+    expect(find.byType(LibraryTrackRow).evaluate().length, lessThan(40));
+    // The oldest tracks are last, in view after a long scroll.
+    await tester.dragUntilVisible(
+      find.text("Extra 0"),
+      find.byType(ListView).last,
+      const Offset(0, -2000),
+    );
+    expect(find.text("Extra 0"), findsOneWidget);
+  });
+
+  testWidgets("the library can pick several tracks to act on", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.navigate(2);
+    await settle(tester);
+    final library = app.library;
+    await tester.tap(find.byTooltip("Select tracks"));
+    await settle(tester);
+    expect(library.selecting, isTrue);
+    await tester.tap(find.text("Clair de Lune"));
+    await tester.tap(find.text("Midnight City"));
+    await settle(tester);
+    expect(find.text("2 selected"), findsOneWidget);
+    await tester.tap(find.text("Clair de Lune"));
+    await settle(tester);
+    expect(find.text("1 selected"), findsOneWidget);
+
+    await tester.tap(find.text("Select all"));
+    await settle(tester);
+    expect(find.text("3 selected"), findsOneWidget);
+    final queued = app.playback.queue.items.length;
+    await tester.tap(find.byTooltip("Add to queue"));
+    await settle(tester);
+    expect(app.playback.queue.items, hasLength(queued + 3));
+    expect(library.selecting, isFalse);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  test("deleting the selected tracks removes them and their files", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final manager = app.services.manager;
+    final ids = List.of(app.library.visibleIds());
+    final paths = [for (final id in ids.take(2)) manager.trackPath(id)];
+    app.library
+      ..startSelecting(ids[0])
+      ..toggleSelected(ids[1]);
+
+    await app.library.deleteSelected();
+
+    expect(manager.counts().$1, ids.length - 2);
+    expect(manager.hasTrack(ids[2]), isTrue);
+    for (final path in paths) {
+      expect(File(path).existsSync(), isFalse);
+    }
+    expect(app.library.selecting, isFalse);
+    expect(app.library.selected, isEmpty);
+  });
+
+  testWidgets("a mobile row starts selecting on a long press", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(420, 900),
+    );
+    app.navigate(2);
+    await settle(tester);
+    await tester.longPress(find.text("Clair de Lune"));
+    await settle(tester);
+    expect(app.library.selecting, isTrue);
+    expect(find.text("1 selected"), findsOneWidget);
+    await tester.tap(find.text("Midnight City"));
+    await settle(tester);
+    expect(find.text("2 selected"), findsOneWidget);
+  });
+
+  testWidgets("a track's title and artist can be edited", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final track = app.services.manager.listTracks().first;
+    showEditTrackDialog(tester.element(find.byType(DesktopShell)), app, track);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, "Title"), "");
+    await tester.tap(find.text("Save"));
+    await tester.pumpAndSettle();
+    // An empty title is refused, and the dialog stays open to say so.
+    expect(find.text("Song title cannot be empty"), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, "Title"), "New name");
+    await tester.enterText(find.widgetWithText(TextField, "Artist"), "Someone");
+    await tester.tap(find.text("Save"));
+    await tester.pumpAndSettle();
+    expect(app.services.manager.getTrack(track.id).title, "New name");
+    expect(app.services.library.details(track.id).uploader, "Someone");
+  });
+
+  testWidgets("the queue opens at the current track and finds rows", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final ids = await addTracks(tester, app, 200);
+    final queue = app.playback.queue
+      ..items = ids
+      ..currentIndex = 150;
+    app.openPanel(AppPanel.queue);
+    await settle(tester);
+    await tester.pump();
+    expect(find.widgetWithText(TrackListRow, "Extra 150"), findsOneWidget);
+    expect(find.widgetWithText(TrackListRow, "Extra 0"), findsNothing);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, "Find in the queue"),
+      "Extra 7",
+    );
+    await settle(tester);
+    expect(find.widgetWithText(TrackListRow, "Extra 7"), findsOneWidget);
+    expect(find.widgetWithText(TrackListRow, "Extra 150"), findsNothing);
+    // A found row still plays from its real place in the queue.
+    final row = tester.widget<TrackListRow>(
+      find.widgetWithText(TrackListRow, "Extra 7"),
+    );
+    row.onPlay!();
+    expect(queue.currentIndex, 7);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  testWidgets("a playlist finds rows and keeps their real places", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(420, 900),
+    );
+    final ids = await addTracks(tester, app, 60);
+    final playlist = app.services.manager.createPlaylist("Long");
+    app.services.manager.addTracksToPlaylist(playlist, ids);
+    app.playlists.openPlaylist(playlist);
+    await settle(tester);
+    await tester.enterText(
+      find.widgetWithText(TextFormField, "Find in this playlist"),
+      "Extra 42",
+    );
+    await settle(tester);
+    expect(find.widgetWithText(TrackRow, "Extra 42"), findsOneWidget);
+    expect(find.widgetWithText(TrackRow, "Extra 0"), findsNothing);
+    await tester.tap(find.widgetWithText(TrackRow, "Extra 42"));
+    await settle(tester);
+    expect(app.playback.queue.items, ids);
+    expect(app.playback.queue.currentIndex, 42);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
   testWidgets("a library row plays the list from there", (tester) async {
     final app = await pumpShell(
       tester,
@@ -566,7 +764,7 @@ void main() {
     app.navigate(2);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    final ids = [for (final track in app.library.visibleTracks()) track.id];
+    final ids = app.library.visibleIds();
     app.playback.queue.replace([ids.first]);
 
     app.library.playFrom(1);

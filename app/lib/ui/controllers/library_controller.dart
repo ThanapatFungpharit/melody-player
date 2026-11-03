@@ -6,9 +6,16 @@ import "package:path/path.dart" as p;
 import "../app_state.dart";
 import "../shared/format.dart";
 import "../../core/errors.dart" show failureMessage;
-import "../../core/library/models.dart";
 
-const libraryPageSize = 50;
+/// The orders the library can show, by [LibraryService.trackIds] key.
+const librarySorts = {
+  "recent": "Recently added",
+  "oldest": "Oldest added",
+  "title": "Title",
+  "artist": "Artist",
+  "longest": "Longest",
+  "played": "Most played",
+};
 
 /// Library view state and local-track workflows.
 class LibraryController extends ChangeNotifier {
@@ -19,64 +26,120 @@ class LibraryController extends ChangeNotifier {
   final MelodyApp app;
   String queryText = "";
   String sortKey = "recent";
-  int pageOffset = 0;
   Timer? _debounce;
 
-  /// The visible page and whether another page follows.
-  (List<Track>, bool) page() {
-    var fetched = app.services.library.tracks(
-      query: queryText,
-      sort: sortKey,
-      offset: pageOffset,
-      limit: libraryPageSize + 1,
-    );
-    while (fetched.isEmpty && pageOffset > 0) {
-      pageOffset = (pageOffset - libraryPageSize).clamp(0, pageOffset);
-      fetched = app.services.library.tracks(
-        query: queryText,
-        sort: sortKey,
-        offset: pageOffset,
-        limit: libraryPageSize + 1,
-      );
+  /// Whether rows pick tracks for [selected] instead of playing them.
+  bool selecting = false;
+  final Set<String> selected = {};
+
+  (String, String, int)? _visibleFor;
+  List<String> _visible = const [];
+
+  /// The tracks the view shows, in order. Every rebuild asks, so the answer is
+  /// kept until the query, the sort, or the library changes.
+  List<String> visibleIds() {
+    final key = (queryText, sortKey, app.libraryRevision.value);
+    if (key != _visibleFor) {
+      _visibleFor = key;
+      _visible = app.services.library.trackIds(query: queryText, sort: sortKey);
     }
-    return (
-      fetched.take(libraryPageSize).toList(),
-      fetched.length > libraryPageSize,
-    );
-  }
-
-  List<Track> visibleTracks() =>
-      app.services.library.tracks(query: queryText, sort: sortKey);
-
-  void changePage(int direction) {
-    pageOffset = (pageOffset + direction * libraryPageSize).clamp(0, 1 << 30);
-    notifyListeners();
+    return _visible;
   }
 
   void setSort(String value) {
     sortKey = value;
-    pageOffset = 0;
     notifyListeners();
   }
 
   void setQuery(String value) {
     queryText = value;
-    pageOffset = 0;
     _debounce?.cancel();
     _debounce = Timer(queryDebounce, notifyListeners);
   }
 
-  void playVisible() =>
-      app.playback.playTracks([for (final track in visibleTracks()) track.id]);
+  void playVisible() => app.playback.playTracks(visibleIds());
 
   /// Plays the visible tracks from the one at [index].
-  void playFrom(int index) => app.playback.playTracks([
-    for (final track in visibleTracks()) track.id,
-  ], startIndex: index);
+  void playFrom(int index) =>
+      app.playback.playTracks(visibleIds(), startIndex: index);
 
-  void shuffleVisible() => app.playback.playTracksShuffled([
-    for (final track in visibleTracks()) track.id,
-  ]);
+  void shuffleVisible() => app.playback.playTracksShuffled(visibleIds());
+
+  // -- selection -------------------------------------------------------------
+
+  void startSelecting([String? first]) {
+    selecting = true;
+    selected
+      ..clear()
+      ..addAll([?first]);
+    notifyListeners();
+  }
+
+  void stopSelecting() {
+    selecting = false;
+    selected.clear();
+    notifyListeners();
+  }
+
+  void toggleSelected(String trackId) {
+    if (!selected.remove(trackId)) selected.add(trackId);
+    notifyListeners();
+  }
+
+  /// Selects everything the view shows, or nothing when it all is already.
+  void toggleSelectAll() {
+    final visible = visibleIds();
+    if (selected.containsAll(visible)) {
+      selected.removeAll(visible);
+    } else {
+      selected.addAll(visible);
+    }
+    notifyListeners();
+  }
+
+  /// The selected tracks in the order they show.
+  List<String> get selectedIds => [
+    for (final id in visibleIds())
+      if (selected.contains(id)) id,
+  ];
+
+  void queueSelected() {
+    final count = app.playback.addLastMany(selectedIds);
+    if (count > 0) {
+      app.showMessage("Added ${plural(count, "track")} to the queue.");
+    }
+    stopSelecting();
+  }
+
+  void addSelectedToPlaylist(String playlistId) {
+    final count = app.playlists.addTracks(playlistId, selectedIds);
+    app.showMessage(
+      count > 0
+          ? "Added ${plural(count, "track")} to the playlist."
+          : "Already in this playlist.",
+    );
+    stopSelecting();
+  }
+
+  Future<void> deleteSelected() async {
+    final ids = selectedIds;
+    final failures = <String>[];
+    for (final id in ids) {
+      try {
+        await deleteTrack(id);
+      } on Object catch (error) {
+        failures.add(failureMessage(error));
+      }
+    }
+    stopSelecting();
+    if (failures.isNotEmpty) {
+      app.showError(failures.take(3).join(" • "));
+    } else {
+      app.showMessage("Deleted ${plural(ids.length, "track")}.");
+    }
+  }
+
+  // -- tracks ----------------------------------------------------------------
 
   /// Imports local files one by one and reports failures together.
   Future<void> importLocalFiles(List<String> paths) async {
@@ -102,8 +165,15 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
-  void renameTrack(String trackId, String title) {
-    app.services.library.renameTrack(trackId, title);
+  /// Changes what a track is called in the library; its file stays as it is.
+  void editTrack(
+    String trackId, {
+    required String title,
+    required String artist,
+  }) {
+    app.services.library
+      ..renameTrack(trackId, title)
+      ..setArtist(trackId, artist);
     app.touchLibrary();
     app.playbackState.emit();
     if (app.playback.currentTrackId == trackId) app.syncSystemMedia();

@@ -184,35 +184,19 @@ void main() {
   });
 
   group("tracks", () {
-    test("search matches titles, never links or file names", () async {
-      await add("one.mp3", title: "Blue Song");
-      await add("two.mp3", title: "Blue Note");
-      await add("three.mp3", title: "Red", source: "https://example.com/blue");
-      await add("blue-four.mp3", title: "Green");
+    test("a title test looks at titles, never links or file names", () async {
+      final blue = await add("one.mp3", title: "Blue Song");
+      final red = await add("three.mp3", title: "Red", source: "https://blue");
+      final green = await add("blue-four.mp3", title: "Green");
+      final untitled = await add("untitled-demo.mp3");
 
-      final found = manager.searchTracks("  BLUE ");
-
-      expect(found.map((track) => track.title), ["Blue Note", "Blue Song"]);
-      final page = manager.searchTracks("blue", offset: 1, limit: 1);
-      expect(page.single.title, "Blue Song");
-      expect(manager.searchTracks("blue", limit: 0), isEmpty);
-      expect(manager.searchTracks("https"), isEmpty);
-      expect(manager.searchTracks("mp3"), isEmpty);
-    });
-
-    test("search falls back to a track's file name for its title", () async {
-      await add("untitled-demo.mp3");
-      expect(manager.searchTracks("demo"), hasLength(1));
-    });
-
-    test("search also matches the artist it is given", () async {
-      final adele = await add("hello.mp3", title: "Hello");
-      await add("other.mp3", title: "Other");
-      final found = manager.searchTracks(
-        "adele",
-        artist: (id) => id == adele ? "Adele" : "Someone",
-      );
-      expect(found.single.id, adele);
+      expect(manager.titleContains(blue, "blue"), isTrue);
+      expect(manager.titleContains(red, "blue"), isFalse);
+      expect(manager.titleContains(green, "blue"), isFalse);
+      // A track without a title goes by its file's name.
+      expect(manager.titleContains(untitled, "demo"), isTrue);
+      expect(manager.titleContains(untitled, "mp3"), isFalse);
+      expect(manager.titleContains("not a track", "blue"), isFalse);
     });
 
     test("sorting by title or age", () async {
@@ -221,11 +205,15 @@ void main() {
       await add("untitled.mp3");
 
       expect(
-        manager.searchTracks("", sort: "title").map((t) => t.displayTitle),
+        manager
+            .orderedTrackIds("title")
+            .map((id) => manager.getTrack(id).displayTitle),
         ["Alpha", "beta", "untitled"],
       );
       expect(
-        manager.searchTracks("", sort: "oldest").map((t) => t.displayTitle),
+        manager
+            .orderedTrackIds("oldest")
+            .map((id) => manager.getTrack(id).displayTitle),
         ["beta", "Alpha", "untitled"],
       );
       expect(manager.listTracks().map((t) => t.displayTitle), [
@@ -338,9 +326,10 @@ void main() {
     });
   });
 
-  group("sorted pages", () {
-    List<String> titles(String sort, {String query = ""}) => [
-      for (final track in manager.searchTracks(query, sort: sort)) track.title,
+  group("sorted orders", () {
+    List<String> titles(String sort) => [
+      for (final id in manager.orderedTrackIds(sort))
+        manager.getTrack(id).title,
     ];
 
     test("follow every change to the tracks", () async {
@@ -363,17 +352,13 @@ void main() {
       expect(manager.trackIds, unorderedEquals([a, c]));
     });
 
-    test("filter in sort order and keep ties newest first", () async {
+    test("keep ties newest first", () async {
       await add("a.mp3", title: "Same");
       await Future<void>.delayed(const Duration(milliseconds: 2));
       final newer = await add("b.mp3", title: "same");
       await add("c.mp3", title: "Other");
-      expect(manager.searchTracks("", sort: "title")[1].id, newer);
-      expect(titles("title", query: "sam"), ["same", "Same"]);
-      expect(
-        manager.searchTracks("", sort: "title", offset: 1, limit: 1).single.id,
-        newer,
-      );
+      expect(manager.orderedTrackIds("title")[1], newer);
+      expect(titles("title"), ["Other", "same", "Same"]);
     });
   });
 }

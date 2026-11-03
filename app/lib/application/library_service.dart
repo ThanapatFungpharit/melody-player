@@ -99,9 +99,6 @@ class LibraryService {
     store.saveTrackDetails(trackId, current..duration = seconds);
   }
 
-  Map<String, TrackDetails> detailsMany(Iterable<String> trackIds) =>
-      store.trackDetailsMany(trackIds);
-
   /// Repairs stale secondary metadata and reports ambiguous media. Missing
   /// tracks stay available for source-based repair; files without a download
   /// receipt are never adopted or deleted automatically.
@@ -367,6 +364,14 @@ class LibraryService {
   void renameTrack(String trackId, String title) =>
       manager.updateTrack(trackId, title: title);
 
+  void setArtist(String trackId, String artist) {
+    final current = details(trackId);
+    final name = artist.trim();
+    if (current.uploader != name) {
+      store.saveTrackDetails(trackId, current..uploader = name);
+    }
+  }
+
   /// Copies an existing audio file into the managed folder and registers it.
   Future<String> importLocalFile(String source) =>
       manager.mutation.run(() => _importLocalFile(source));
@@ -505,18 +510,60 @@ class LibraryService {
     }
   }
 
-  List<Track> tracks({
-    String query = "",
-    String sort = "recent",
-    int offset = 0,
-    int? limit,
-  }) => manager.searchTracks(
-    query,
-    offset: offset,
-    limit: limit,
-    sort: sort,
-    artist: (trackId) => details(trackId).uploader,
-  );
+  /// Whether a track's title or artist holds [query].
+  bool matches(String trackId, String query) {
+    final needle = query.trim().toLowerCase();
+    return needle.isEmpty ||
+        manager.titleContains(trackId, needle) ||
+        details(trackId).uploader.toLowerCase().contains(needle);
+  }
+
+  /// The tracks matching [query] in [sort] order. Tracks that compare equal
+  /// stay newest first, or by title for those of one artist.
+  List<String> trackIds({String query = "", String sort = "recent"}) {
+    final ordered = manager.orderedTrackIds(sort == "artist" ? "title" : sort);
+    final matching = query.trim().isEmpty
+        ? ordered
+        : [
+            for (final id in ordered)
+              if (matches(id, query)) id,
+          ];
+    if (!const {"artist", "longest", "played"}.contains(sort)) return matching;
+    final all = {for (final id in matching) id: details(id)};
+    final sorted = List.of(matching);
+    switch (sort) {
+      case "artist":
+        final artists = {
+          for (final MapEntry(key: id, value: item) in all.entries)
+            id: item.uploader.trim().toLowerCase(),
+        };
+        // Tracks without an artist come last.
+        mergeSort(
+          sorted,
+          compare: (a, b) {
+            final (first, second) = (artists[a]!, artists[b]!);
+            if (first.isEmpty != second.isEmpty) return first.isEmpty ? 1 : -1;
+            return first.compareTo(second);
+          },
+        );
+      case "longest":
+        mergeSort(
+          sorted,
+          compare: (a, b) => all[b]!.duration.compareTo(all[a]!.duration),
+        );
+      case "played":
+        mergeSort(
+          sorted,
+          compare: (a, b) {
+            final count = all[b]!.playCount.compareTo(all[a]!.playCount);
+            return count != 0
+                ? count
+                : all[b]!.lastPlayed.compareTo(all[a]!.lastPlayed);
+          },
+        );
+    }
+    return sorted;
+  }
 
   List<Playlist> playlists() => manager.listPlaylists();
 

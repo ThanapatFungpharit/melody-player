@@ -86,9 +86,9 @@ List<MenuAction> libraryTrackActions(
     () => app.toggleFavorite(track.id),
   ),
   MenuAction(
-    "Edit title",
+    "Edit details",
     Icons.edit_rounded,
-    () => showRenameTrackDialog(context, app, track),
+    () => showEditTrackDialog(context, app, track),
   ),
   MenuAction(
     "View details",
@@ -286,7 +286,44 @@ List<MenuAction> sleepTimerActions(MelodyApp app) {
   ];
 }
 
-List<MenuAction> queueRowActions(MelodyApp app, int index) => [
+/// What can be done with the tracks selected in the library.
+List<MenuAction> selectedTracksActions(BuildContext context, MelodyApp app) {
+  final library = app.library;
+  final any = library.selectedIds.isNotEmpty;
+  return [
+    MenuAction(
+      "Add to queue",
+      Icons.add_to_queue_rounded,
+      library.queueSelected,
+      enabled: any,
+    ),
+    MenuAction(
+      addToPlaylistLabel,
+      Icons.playlist_add_rounded,
+      () => showPlaylistPicker(
+        context,
+        app,
+        title: "Add to playlist",
+        onChosen: (playlistId) =>
+            app.run(() => library.addSelectedToPlaylist(playlistId)),
+      ),
+      enabled: any,
+    ),
+    MenuAction(
+      "Delete tracks and files…",
+      Icons.delete_forever_rounded,
+      () => showDeleteSelectedTracksDialog(context, app),
+      enabled: any,
+    ),
+  ];
+}
+
+List<MenuAction> queueRowActions(
+  BuildContext context,
+  MelodyApp app,
+  int index,
+  Track track,
+) => [
   MenuAction(
     "Move up",
     Icons.arrow_upward_rounded,
@@ -303,6 +340,12 @@ List<MenuAction> queueRowActions(MelodyApp app, int index) => [
     "Remove from queue",
     Icons.remove_circle_outline_rounded,
     () => app.removeFromQueue(index),
+  ),
+  _addToPlaylist(context, app, track),
+  MenuAction(
+    "View details",
+    Icons.info_outline_rounded,
+    () => showTrackDetailsDialog(context, app, track),
   ),
 ];
 

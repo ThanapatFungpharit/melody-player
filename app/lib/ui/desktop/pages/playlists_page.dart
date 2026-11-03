@@ -124,11 +124,14 @@ class _PlaylistDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     final favorites = PlaylistsController.isFavorites(playlist.id);
     final tracks = app.playlists.tracks(playlist.id);
-    final (start, end) = app.playlists.visibleRange(tracks.length);
-    final visible = tracks.sublist(start, end);
-    final details = app.services.library.detailsMany(
-      visible.map((track) => track.id),
-    );
+    final query = app.playlists.trackQuery;
+    final filtering = query.trim().isNotEmpty;
+    // Each row's place in the playlist.
+    final rows = [
+      for (final (position, track) in tracks.indexed)
+        if (!filtering || app.services.library.matches(track.id, query))
+          position,
+    ];
     final scheme = context.colors;
     final hue = seedHue(playlist.name);
     final wash = HSLColor.fromAHSL(1, hue, 0.45, 0.5).toColor();
@@ -248,6 +251,20 @@ class _PlaylistDetail extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 18),
+        if (tracks.length > findableRows) ...[
+          TextFormField(
+            key: ValueKey("find:${playlist.id}"),
+            initialValue: query,
+            onChanged: app.playlists.setTrackQuery,
+            decoration: const InputDecoration(
+              hintText: "Find in this playlist",
+              prefixIcon: Icon(Icons.search_rounded, size: 20),
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
         if (tracks.isNotEmpty) ...[
           const TrackListHeader(leadingWidth: 28, trailingWidth: 48 + 40 + 8),
           const SizedBox(height: 8),
@@ -265,28 +282,41 @@ class _PlaylistDetail extends StatelessWidget {
                       )
               : ReorderableListView.builder(
                   buildDefaultDragHandles: false,
-                  itemCount: visible.length,
+                  itemCount: rows.length,
+                  prototypeItem: TrackListRow(
+                    app: app,
+                    number: 1,
+                    leading: const SizedBox(width: 28, height: 40),
+                    title: LazyShelf.sampleText,
+                    subtitle: LazyShelf.sampleText,
+                    artwork: "",
+                    favorite: false,
+                    trailing: [ActionMenu(() => const [])],
+                  ),
                   // onReorderItem reports the index after removal; the
                   // controller takes the drop slot, as the queue does.
                   onReorderItem: (oldIndex, newIndex) => app.run(
                     () => app.playlists.reorder(
                       playlist.id,
-                      start + oldIndex,
-                      start + (newIndex > oldIndex ? newIndex + 1 : newIndex),
+                      oldIndex,
+                      newIndex > oldIndex ? newIndex + 1 : newIndex,
                     ),
                   ),
                   itemBuilder: (context, index) {
-                    final track = visible[index];
-                    final position = start + index;
-                    final info = details[track.id]!;
+                    final position = rows[index];
+                    final track = tracks[position];
+                    final info = app.services.library.details(track.id);
                     return TrackListRow(
                       key: ValueKey("${playlist.id}:$position:${track.id}"),
                       app: app,
                       number: position + 1,
                       leading: ReorderableDragStartListener(
                         index: index,
+                        enabled: !filtering,
                         child: MouseRegion(
-                          cursor: SystemMouseCursors.grab,
+                          cursor: filtering
+                              ? MouseCursor.defer
+                              : SystemMouseCursors.grab,
                           child: Tooltip(
                             message: "Drag to reorder",
                             child: SizedBox(
@@ -328,13 +358,6 @@ class _PlaylistDetail extends StatelessWidget {
                   },
                 ),
         ),
-        if (tracks.length > 50)
-          PageNavigation(
-            total: tracks.length,
-            start: start,
-            end: end,
-            onChange: app.playlists.changePage,
-          ),
       ],
     );
   }

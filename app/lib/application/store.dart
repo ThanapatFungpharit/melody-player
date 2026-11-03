@@ -240,12 +240,6 @@ class ApplicationStore {
   TrackDetails trackDetails(String trackId) =>
       TrackDetails.fromJson(_detailsJson(trackId));
 
-  /// One metadata snapshot for a multi-row render.
-  Map<String, TrackDetails> trackDetailsMany(Iterable<String> trackIds) => {
-    for (final id in trackIds)
-      if (id.isNotEmpty) id: TrackDetails.fromJson(_detailsJson(id)),
-  };
-
   bool hasTrackDetails(String trackId) => _details.containsKey(trackId);
 
   Set<String> favoriteTrackIds() => {
