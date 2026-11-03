@@ -235,7 +235,8 @@ class _LyricsViewState extends State<LyricsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(child: body),
+        // The active line changes every few seconds; only lyrics repaint.
+        Expanded(child: RepaintBoundary(child: body)),
         Row(
           children: [
             Expanded(

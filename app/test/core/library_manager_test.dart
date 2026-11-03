@@ -276,4 +276,74 @@ void main() {
       expect((await manager.checkTrackIntegrity(modified))?.kind, "modified");
     });
   });
+
+  group("IDs", () {
+    test("canonical IDs pass through and others are normalized", () {
+      const id = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+      expect(normalizeUuid(id), id);
+      expect(normalizeUuid(id.toUpperCase()), id);
+      expect(normalizeUuid(" $id "), id);
+      for (final bad in ["", "not-a-uuid", "${id}0", id.replaceAll("-", "_")]) {
+        expect(normalizeUuid(bad), isNull, reason: bad);
+      }
+    });
+
+    test("formatting an ID's bytes round-trips", () {
+      const id = "00ff10ab-2fa1-11d2-883f-0016d3cca427";
+      expect(uuidString(uuidBytes(id)), id);
+    });
+
+    test("tracks can be found by an uppercase ID", () async {
+      final id = await add("a.mp3");
+      expect(manager.hasTrack(id.toUpperCase()), isTrue);
+      expect(manager.getTrack(id.toUpperCase()).id, id);
+    });
+
+    test("IDs and content hashes survive a reopen", () async {
+      final id = await add("a.mp3");
+      final hash = manager.getTrack(id).contentHash;
+      expect(hash, matches(RegExp(r"^[0-9a-f]{64}$")));
+      await reopen();
+      expect(manager.getTrack(id).contentHash, hash);
+    });
+  });
+
+  group("sorted pages", () {
+    List<String> titles(String sort, {String query = ""}) => [
+      for (final track in manager.searchTracks(query, sort: sort)) track.title,
+    ];
+
+    test("follow every change to the tracks", () async {
+      final b = await add("b.mp3", title: "Bravo");
+      final a = await add("a.mp3", title: "alpha");
+      expect(titles("title"), ["alpha", "Bravo"]);
+      expect(titles("oldest"), ["Bravo", "alpha"]);
+      expect(titles("recent"), ["alpha", "Bravo"]);
+
+      manager.updateTrack(a, title: "Zulu");
+      expect(titles("title"), ["Bravo", "Zulu"]);
+
+      final c = await add("c.mp3", title: "Charlie");
+      expect(titles("title"), ["Bravo", "Charlie", "Zulu"]);
+      expect(titles("oldest"), ["Bravo", "Zulu", "Charlie"]);
+
+      manager.deleteTrack(b);
+      expect(titles("title"), ["Charlie", "Zulu"]);
+      expect(titles("oldest"), ["Zulu", "Charlie"]);
+      expect(manager.trackIds, unorderedEquals([a, c]));
+    });
+
+    test("filter in sort order and keep ties newest first", () async {
+      await add("a.mp3", title: "Same");
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      final newer = await add("b.mp3", title: "same");
+      await add("c.mp3", title: "Other");
+      expect(manager.searchTracks("", sort: "title")[1].id, newer);
+      expect(titles("title", query: "sam"), ["same", "Same"]);
+      expect(
+        manager.searchTracks("", sort: "title", offset: 1, limit: 1).single.id,
+        newer,
+      );
+    });
+  });
 }

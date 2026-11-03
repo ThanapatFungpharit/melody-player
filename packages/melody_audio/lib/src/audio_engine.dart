@@ -713,7 +713,11 @@ class AudioEngine {
   }
 
   AudioSource _source(String source) {
-    final uri = Uri.tryParse(source);
+    // Most sources are file paths, one per queue row: parse only likely URLs.
+    final uri =
+        source.length > 5 && source.substring(0, 4).toLowerCase() == "http"
+        ? Uri.tryParse(source)
+        : null;
     return uri?.scheme == "http" || uri?.scheme == "https"
         ? AudioSource.uri(uri!)
         : AudioSource.file(source);
@@ -1020,13 +1024,12 @@ class AudioEngine {
     AudioRepeatMode repeatMode,
   ) async {
     final old = _queue;
-    final unchanged =
-        old.length == items.length &&
-        List.generate(old.length, (index) => index).every(
-          (index) =>
-              old[index].trackId == items[index].trackId &&
-              old[index].source == items[index].source,
-        );
+    var unchanged = old.length == items.length;
+    for (var index = 0; unchanged && index < old.length; index++) {
+      unchanged =
+          old[index].trackId == items[index].trackId &&
+          old[index].source == items[index].source;
+    }
     final player = _player;
     if (unchanged && player != null && !_playlistQueueIndexes.contains(-1)) {
       _queue = items;

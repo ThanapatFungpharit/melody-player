@@ -256,21 +256,24 @@ class NowPlaying extends StatelessWidget {
           ),
           if (info.thumbnail.isNotEmpty)
             Positioned.fill(
-              child: Opacity(
-                opacity: dark ? 0.35 : 0.3,
-                child: ImageFiltered(
-                  imageFilter: ImageFilter.blur(sigmaX: 60, sigmaY: 60),
-                  child: ShaderMask(
-                    shaderCallback: (bounds) => const LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.white, Colors.transparent],
-                    ).createShader(bounds),
-                    blendMode: BlendMode.dstIn,
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      alignment: Alignment.topCenter,
-                      child: Artwork(app, info.thumbnail, size: 400),
+              child: RepaintBoundary(
+                child: Opacity(
+                  opacity: dark ? 0.35 : 0.3,
+                  child: ImageFiltered(
+                    imageFilter: ImageFilter.blur(sigmaX: 60, sigmaY: 60),
+                    child: ShaderMask(
+                      shaderCallback: (bounds) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.white, Colors.transparent],
+                      ).createShader(bounds),
+                      blendMode: BlendMode.dstIn,
+                      // The blur leaves no detail, so a small decode is enough.
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        alignment: Alignment.topCenter,
+                        child: Artwork(app, info.thumbnail, size: 64),
+                      ),
                     ),
                   ),
                 ),

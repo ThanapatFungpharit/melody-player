@@ -109,9 +109,17 @@ class MediaIdentity {
   int get hashCode => Object.hash(provider, mediaId);
 }
 
+/// The form Melody stores YouTube Music sources in.
+final _storedMusicUrl = RegExp(
+  r"^https://music\.youtube\.com/watch\?v=([A-Za-z0-9_-]+)$",
+);
+
 /// The deduplication key for a source: its media identity when known,
 /// otherwise a normalized URL without tracking parameters.
 String sourceKey(String source) {
+  // Opening the library keys every track; most need no URL parsing.
+  final stored = _storedMusicUrl.firstMatch(source);
+  if (stored != null) return "$youtubeProviderId:${stored[1]}";
   final identity = MediaIdentity.fromUrl(source);
   if (identity != null) return identity.key;
   final trimmed = source.trim();

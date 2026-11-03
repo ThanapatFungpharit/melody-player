@@ -333,7 +333,6 @@ class MelodyApp {
         artist: artist,
         album: album,
         artworkUri: artworkUri,
-        automaticFocalPoint: settings.autoFocalPointLiveNotifications,
         duration: Duration(milliseconds: playback.durationMs),
         position: Duration(milliseconds: playback.positionMs),
         playing: playback.playing,

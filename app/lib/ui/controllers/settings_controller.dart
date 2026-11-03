@@ -209,10 +209,7 @@ class SettingsController extends ChangeNotifier {
     app.settings = settings;
     app.services.downloads.historyDays = settings.downloadHistoryDays;
     _applyLoudness(settings);
-    if (settings.autoFocalPointLiveNotifications !=
-        old.autoFocalPointLiveNotifications) {
-      app.syncSystemMedia(refreshMetadata: true);
-    } else if (settings.notificationActionPair != old.notificationActionPair) {
+    if (settings.notificationActionPair != old.notificationActionPair) {
       app.syncSystemMedia(refreshMetadata: false);
     }
     app.appearance.value = (settings.theme, settings.accentColor);
@@ -356,11 +353,7 @@ class SettingsController extends ChangeNotifier {
     app.settings = defaults;
     app.playback.applySettings(defaults);
     _applyLoudness(defaults);
-    if (current.autoFocalPointLiveNotifications !=
-        defaults.autoFocalPointLiveNotifications) {
-      app.syncSystemMedia(refreshMetadata: true);
-    } else if (current.notificationActionPair !=
-        defaults.notificationActionPair) {
+    if (current.notificationActionPair != defaults.notificationActionPair) {
       app.syncSystemMedia(refreshMetadata: false);
     }
     app.appearance.value = (defaults.theme, defaults.accentColor);

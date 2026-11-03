@@ -13,7 +13,6 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Feature | Windows | macOS | Linux | Android |
 | --- | --- | --- | --- | --- |
 | System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | No | Yes |
-| Center notification artwork on its subject | Yes | Yes | Disabled | Yes (model) |
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
 | Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |
@@ -42,8 +41,6 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - System controls offer only their built-in buttons. Shuffle and repeat map
   to those buttons; favorite has no counterpart, and the Android shortcut
   setting is disabled.
-- Artwork focal points use the built-in edge detector instead of the
-  Android saliency model.
 
 ### Android
 

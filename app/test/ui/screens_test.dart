@@ -2,6 +2,7 @@ import "../support/temp.dart";
 import "dart:io";
 
 import "package:flutter/material.dart";
+import "package:flutter/rendering.dart";
 import "package:flutter/services.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
 import "package:flutter_test/flutter_test.dart";
@@ -546,8 +547,15 @@ void main() {
       expect(app.positionAdvancing, isTrue);
       // A per-frame ticker would already have asked for the next frame.
       expect(tester.binding.hasScheduledFrame, isFalse);
+      // The position's update repaints its own layer, not the window.
+      var painted = 0;
+      debugProfilePaintsEnabled = true;
+      debugOnProfilePaint = (_) => painted++;
       app.playback.onPosition(65000);
       await tester.pump();
+      debugProfilePaintsEnabled = false;
+      debugOnProfilePaint = null;
+      expect(painted, lessThan(60));
       expect(find.text("1:05"), findsWidgets);
       expect(tester.binding.hasScheduledFrame, isFalse);
     });

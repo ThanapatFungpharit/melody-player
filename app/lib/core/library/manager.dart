@@ -1,6 +1,7 @@
 import "dart:async";
 import "dart:convert";
 import "dart:io";
+import "dart:typed_data";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
@@ -42,10 +43,50 @@ const _zeroHash =
 Uint8List uuidBytes(String id) => Uint8List.fromList(
   Uuid.parse(id, validationMode: ValidationMode.nonStrict),
 );
-String uuidString(List<int> bytes) => Uuid.unparse(bytes);
+
+/// Lowercase hex digits of every byte, as ASCII code units. Loading the
+/// library formats two values per track.
+final Uint16List _hexPairs = Uint16List.fromList([
+  for (var byte = 0; byte < 256; byte++)
+    _hexDigit(byte >> 4) << 8 | _hexDigit(byte & 15),
+]);
+
+int _hexDigit(int value) => value < 10 ? 0x30 + value : 0x61 + value - 10;
+
+const _dash = 0x2d;
+
+String uuidString(List<int> bytes) {
+  if (bytes.length != 16) return Uuid.unparse(bytes);
+  final text = Uint8List(36);
+  var at = 0;
+  for (var i = 0; i < 16; i++) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) text[at++] = _dash;
+    final pair = _hexPairs[bytes[i]];
+    text[at++] = pair >> 8;
+    text[at++] = pair & 255;
+  }
+  return String.fromCharCodes(text);
+}
+
+/// Whether [value] is already canonical UUID text, which nearly every ID
+/// is. Library reads check an ID for each row, so this avoids parsing it.
+bool _isCanonicalUuid(String value) {
+  if (value.length != 36) return false;
+  for (var i = 0; i < 36; i++) {
+    final unit = value.codeUnitAt(i);
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (unit != _dash) return false;
+    } else if (!(unit >= 0x30 && unit <= 0x39) &&
+        !(unit >= 0x61 && unit <= 0x66)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /// Canonical lowercase UUID text, or null when [value] is not a UUID.
 String? normalizeUuid(String value) {
+  if (_isCanonicalUuid(value)) return value;
   try {
     return Uuid.unparse(
       Uuid.parse(value.trim(), validationMode: ValidationMode.nonStrict),
@@ -74,8 +115,15 @@ Uint8List _hashBytes(Track track) {
   ]);
 }
 
-String _hex(List<int> bytes) =>
-    bytes.map((byte) => byte.toRadixString(16).padLeft(2, "0")).join();
+String _hex(List<int> bytes) {
+  final text = Uint8List(bytes.length * 2);
+  for (var i = 0; i < bytes.length; i++) {
+    final pair = _hexPairs[bytes[i]];
+    text[i * 2] = pair >> 8;
+    text[i * 2 + 1] = pair & 255;
+  }
+  return String.fromCharCodes(text);
+}
 
 List<Object?> _trackRow(Track track) => [
   uuidBytes(track.id),
@@ -114,8 +162,9 @@ class MusicManager {
   Map<String, Set<String>> _contentIndex = {};
   List<String>? _newest;
   Map<String, int>? _newestRank;
+  List<String>? _byTitle;
+  List<String>? _oldest;
   Map<String, String>? _searchText;
-  Map<String, String>? _titleKeys;
   final Map<String, String> _validatedPaths = {};
 
   /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
@@ -490,8 +539,9 @@ class MusicManager {
   void _invalidateTrackViews() {
     _newest = null;
     _newestRank = null;
+    _byTitle = null;
+    _oldest = null;
     _searchText = null;
-    _titleKeys = null;
   }
 
   static void _writePlaylistTracks(Database db, Playlist playlist) {
@@ -720,16 +770,37 @@ class MusicManager {
     };
   }
 
-  Map<String, String> get _titles {
-    return _titleKeys ??= {
-      for (final track in _tracks.values)
-        track.id:
-            (track.title.isNotEmpty
-                    ? track.title
-                    : p.basenameWithoutExtension(track.filename))
-                .toLowerCase(),
-    };
-  }
+  /// Every track ID in [sort] order. Pages ask on every rebuild, so the
+  /// orders are kept until the tracks change. The sorts are stable: tracks
+  /// that compare equal stay newest first.
+  List<String> _ordered(String sort) => switch (sort) {
+    "title" => _byTitle ??= () {
+      final titles = {
+        for (final track in _tracks.values)
+          track.id:
+              (track.title.isNotEmpty
+                      ? track.title
+                      : p.basenameWithoutExtension(track.filename))
+                  .toLowerCase(),
+      };
+      final ids = List.of(_newestIds);
+      mergeSort(ids, compare: (a, b) => titles[a]!.compareTo(titles[b]!));
+      return ids;
+    }(),
+    "oldest" => _oldest ??= () {
+      final ids = List.of(_newestIds);
+      mergeSort(
+        ids,
+        compare: (a, b) => _tracks[a]!.addedAt.compareTo(_tracks[b]!.addedAt),
+      );
+      return ids;
+    }(),
+    _ => _newestIds,
+  };
+
+  /// Every track's canonical ID, for callers that need no track details.
+  /// A live view: do not change the library while iterating it.
+  Iterable<String> get trackIds => _tracks.keys;
 
   /// Tracks newest first.
   List<Track> listTracks({int? limit}) {
@@ -771,23 +842,10 @@ class MusicManager {
     final needle = query.trim().toLowerCase();
     if (limit != null && limit <= 0) return const [];
     final start = offset < 0 ? 0 : offset;
-    final search = needle.isEmpty ? const <String, String>{} : _search;
-    Iterable<String> matching = _newestIds.where(
-      (id) => needle.isEmpty || search[id]!.contains(needle),
-    );
-    if (sort == "title" || sort == "oldest") {
-      final ordered = matching.toList();
-      if (sort == "title") {
-        final titles = _titles;
-        // A stable sort keeps newest-first order between equal titles.
-        mergeSort(ordered, compare: (a, b) => titles[a]!.compareTo(titles[b]!));
-      } else {
-        mergeSort(
-          ordered,
-          compare: (a, b) => _tracks[a]!.addedAt.compareTo(_tracks[b]!.addedAt),
-        );
-      }
-      matching = ordered;
+    Iterable<String> matching = _ordered(sort);
+    if (needle.isNotEmpty) {
+      final search = _search;
+      matching = matching.where((id) => search[id]!.contains(needle));
     }
     var page = matching.skip(start);
     if (limit != null) page = page.take(limit);

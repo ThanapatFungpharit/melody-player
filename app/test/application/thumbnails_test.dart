@@ -87,4 +87,27 @@ void main() {
     await File(path).delete();
     expect(cache.cachedPath(_url), path);
   });
+
+  test("an entry's URI is the file URI of its path", () async {
+    expect(await cache.storeBytes(_url, _png), isTrue);
+    expect(
+      cache.artworkUri(_url),
+      Uri.file(File(cache.cachedPath(_url)!).absolute.path).toString(),
+    );
+  });
+
+  test("a queue longer than the old key bound stays remembered", () async {
+    expect(await cache.storeBytes(_url, _png), isTrue);
+    expect(cache.cachedPath(_url), isNotNull);
+    for (var i = 0; i < 4096; i++) {
+      cache.cachedPath("https://i.ytimg.com/vi/$i/hq.jpg");
+    }
+    expect(cache.artworkUri(_url), startsWith("file:"));
+  });
+
+  test("a remote URL with no entry and a missing local file stay as given", () {
+    expect(cache.artworkUri(_url), _url);
+    expect(cache.artworkUri("/no/such/cover.jpg"), "/no/such/cover.jpg");
+    expect(cache.artworkUri(""), "");
+  });
 }

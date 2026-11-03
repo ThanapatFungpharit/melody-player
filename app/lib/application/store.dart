@@ -35,7 +35,8 @@ bool _sameJson(Object? a, Object? b) => _encode(a) == _encode(b);
 /// SQLite persistence for state outside MusicManager's domain: preferences,
 /// playback session, enriched metadata, favorites, histories, and download
 /// history. Each top-level value is one JSON row and each track's details
-/// another, so a position save rewrites one small row.
+/// another, so a change rewrites one row. The periodic position save has a
+/// small row of its own ([_positionKey]), so it never rewrites the queue.
 ///
 /// Commits survive application crashes; a power loss can drop only the most
 /// recent commits (`synchronous=NORMAL`).
@@ -49,8 +50,8 @@ class ApplicationStore {
 
   /// The JSON last written for each top-level row (except the per-track
   /// details), so a commit encodes each value once instead of re-encoding
-  /// the stored copy to compare it. `_data` is only ever replaced, never
-  /// changed in place, which keeps these current.
+  /// the stored copy to compare it. Top-level values are only ever replaced,
+  /// never changed in place, which keeps these current.
   final Map<String, String> _written = {};
 
   /// The most download history entries kept.
@@ -63,6 +64,10 @@ class ApplicationStore {
   ];
 
   static const _searchHistoryKey = "search_history";
+
+  /// Where playback has reached since the `playback` row was last written,
+  /// laid over it when read. Writing that row empties this one.
+  static const _positionKey = "playback_position";
 
   /// How many earlier searches the search history keeps.
   static const _searchHistoryLimit = 20;
@@ -301,8 +306,16 @@ class ApplicationStore {
     _deletedTrackIds.addAll(removed);
   }
 
-  Object? get(String key, [Object? fallback]) =>
-      _data.containsKey(key) ? _clone(_data[key]) : fallback;
+  Object? get(String key, [Object? fallback]) {
+    if (!_data.containsKey(key)) return fallback;
+    if (key == "playback") {
+      final playback = _data[key];
+      if (playback is Map && _hasNewerPosition) {
+        return _clone({...playback, ...(_data[_positionKey] as Map)});
+      }
+    }
+    return _clone(_data[key]);
+  }
 
   void set(String key, Object? value) => _commit({key: _clone(value)});
 
@@ -390,6 +403,8 @@ class ApplicationStore {
     final updates = <String, Object?>{};
     if (changes.containsKey("playback")) {
       updates["playback"] = changes["playback"];
+    } else if (changes.containsKey("position")) {
+      updates[_positionKey] = changes["position"];
     }
     if (changes["volume"] case final Map volume) {
       updates["settings"] = {
@@ -435,7 +450,12 @@ class ApplicationStore {
     for (final MapEntry(:key, :value) in changes.entries) {
       if (trackDetails.isNotEmpty && key == "track_details") continue;
       final json = _encode(value);
-      if (_data.containsKey(key) && json == _storedJson(key)) continue;
+      // A rewind to the stored position must still clear the newer one.
+      if (_data.containsKey(key) &&
+          json == _storedJson(key) &&
+          !(key == "playback" && _hasNewerPosition)) {
+        continue;
+      }
       updates[key] = value;
       encoded[key] = json;
     }
@@ -449,11 +469,16 @@ class ApplicationStore {
           entry.key: entry.value,
     };
     if (updates.isEmpty && changedDetails.isEmpty) return;
-    final candidate = {..._data, ...updates};
+    if (updates.containsKey("playback") && _hasNewerPosition) {
+      // The new row carries its own position.
+      updates[_positionKey] = const <String, Object?>{};
+      encoded[_positionKey] = "{}";
+    }
+    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
+    // Committed. A failure above leaves the model as it was.
+    _data = {..._data, ...updates};
     if (changedDetails.isNotEmpty) {
-      final details = Map<String, Object?>.of(
-        (candidate["track_details"] as Map).cast<String, Object?>(),
-      );
+      final details = _data["track_details"] as Map;
       for (final entry in changedDetails.entries) {
         if (identical(entry.value, _missing)) {
           details.remove(entry.key);
@@ -461,13 +486,15 @@ class ApplicationStore {
           details[entry.key] = entry.value;
         }
       }
-      candidate["track_details"] = details;
     }
-    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
-    _data = candidate;
     encoded.remove("track_details");
     _written.addAll(encoded);
   }
+
+  bool get _hasNewerPosition => switch (_data[_positionKey]) {
+    final Map position => position.isNotEmpty,
+    _ => false,
+  };
 
   String _storedJson(String key) => key == "track_details"
       ? _encode(_data[key])

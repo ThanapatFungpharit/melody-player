@@ -28,7 +28,7 @@ enum LoudnessChange {
 typedef _Fingerprint = ({int size, int modified});
 
 class _Entry {
-  const _Entry(this.file, {this.measurement, this.error});
+  _Entry(this.file, {this.measurement, this.error});
 
   final _Fingerprint file;
   final LoudnessMeasurement? measurement;
@@ -69,7 +69,11 @@ class _Entry {
     return error is String ? _Entry(file, error: error) : null;
   }
 
-  Map<String, Object?> toJson() => {
+  /// This entry's cache text. Kept, because the whole cache is written
+  /// every few seconds during a library pass while only new entries differ.
+  late final String json = jsonEncode(_toJson());
+
+  Map<String, Object?> _toJson() => {
     "size": file.size,
     "modified": file.modified,
     if (measurement case final measured?) ...{
@@ -263,7 +267,7 @@ class LoudnessNormalizer {
       _typicalGainDb = null;
       _scheduleSave();
     }
-    final paths = _trackPaths(_manager.listTracks().map((track) => track.id));
+    final paths = _trackPaths(_manager.trackIds);
     final Map<String, _Fingerprint?> files;
     try {
       files = await _fingerprintAll(paths);
@@ -280,8 +284,8 @@ class LoudnessNormalizer {
   /// Queues tracks the library has but the cache has never seen, such as
   /// new downloads and imports. Needs no disk access.
   void analyzeNew() => analyze([
-    for (final track in _manager.listTracks())
-      if (!_entries.containsKey(track.id)) track.id,
+    for (final id in _manager.trackIds)
+      if (!_entries.containsKey(id)) id,
   ]);
 
   /// Completes once nothing is queued.
@@ -413,15 +417,19 @@ class LoudnessNormalizer {
   Future<void> _save() async {
     if (!_dirty) return;
     _dirty = false;
-    final json = jsonEncode({
-      "version": 1,
-      "tracks": {
-        for (final MapEntry(:key, :value) in _entries.entries)
-          key: value.toJson(),
-      },
-    });
+    final json = StringBuffer('{"version":1,"tracks":{');
+    var separator = "";
+    for (final MapEntry(:key, :value) in _entries.entries) {
+      json
+        ..write(separator)
+        ..write(jsonEncode(key))
+        ..write(":")
+        ..write(value.json);
+      separator = ",";
+    }
+    json.write("}}");
     try {
-      await atomicWrite(_cachePath, utf8.encode(json));
+      await atomicWrite(_cachePath, utf8.encode(json.toString()));
     } on Object catch (error) {
       // Only a cache: the measurements are taken again next launch.
       debugPrint("Could not save loudness measurements: $error");

@@ -5,6 +5,7 @@ library;
 import "dart:async";
 import "dart:convert";
 import "dart:io";
+import "dart:isolate";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
@@ -324,45 +325,53 @@ class LyricsLibrary {
   /// library's tracks): those saved for a preview, a download that failed,
   /// or a track since removed. Call it before downloads start. Other files
   /// in the folder are left alone. Returns how many were removed.
-  Future<int> retainOnly(Iterable<String> sources) async {
-    final keep = {
-      for (final source in sources)
-        if (_identity(source) case final identity?) p.basename(_path(identity)),
-    };
-    var removed = 0;
-    try {
-      if (!await Directory(directory).exists()) return 0;
-      await for (final entity in Directory(
-        directory,
-      ).list(followLinks: false)) {
-        final name = p.basename(entity.path);
-        if (entity is File &&
-            _savedName.hasMatch(name) &&
-            !keep.contains(name) &&
-            await deleteQuietly(entity.path)) {
-          removed++;
+  /// Runs in a background isolate: it parses every source and lists the
+  /// folder.
+  Future<int> retainOnly(Iterable<String> sources) =>
+      _pruneSaved(directory, sources.toList(growable: false));
+
+  /// Static: the closure must not capture the library's fetch callback.
+  static Future<int> _pruneSaved(String directory, List<String> sources) =>
+      Isolate.run(() async {
+        final keep = {
+          for (final source in sources)
+            if (_identity(source) case final identity?) _fileName(identity),
+        };
+        var removed = 0;
+        try {
+          if (!await Directory(directory).exists()) return 0;
+          await for (final entity in Directory(
+            directory,
+          ).list(followLinks: false)) {
+            final name = p.basename(entity.path);
+            if (entity is File &&
+                _savedName.hasMatch(name) &&
+                !keep.contains(name) &&
+                await deleteQuietly(entity.path)) {
+              removed++;
+            }
+          }
+        } on FileSystemException catch (error) {
+          debugPrint("Could not prune saved lyrics: $error");
         }
-      }
-    } on FileSystemException catch (error) {
-      debugPrint("Could not prune saved lyrics: $error");
-    }
-    return removed;
-  }
+        return removed;
+      });
 
   static final _savedName = RegExp(r"^[a-z]+_[A-Za-z0-9_-]+\.json$");
 
   /// Whether lyrics can be saved for [source]: YouTube Music tracks.
   bool supports(String source) => _identity(source) != null;
 
-  MediaIdentity? _identity(String source) {
+  static MediaIdentity? _identity(String source) {
     final identity = MediaIdentity.fromUrl(source);
     return identity?.provider == youtubeProviderId ? identity : null;
   }
 
-  String _path(MediaIdentity identity) => p.join(
-    directory,
-    "${identity.provider}_${identity.mediaId.replaceAll(_unsafe, "_")}.json",
-  );
+  String _path(MediaIdentity identity) =>
+      p.join(directory, _fileName(identity));
+
+  static String _fileName(MediaIdentity identity) =>
+      "${identity.provider}_${identity.mediaId.replaceAll(_unsafe, "_")}.json";
 
   /// Lyrics for a library track, from its files first and then, for
   /// YouTube Music tracks, saved or fetched lyrics. [refresh] asks YouTube

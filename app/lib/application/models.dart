@@ -149,7 +149,6 @@ class AppSettings {
     this.resumeSession = true,
     this.notifications = true,
     this.notificationActionPair = "shuffle_favorite",
-    this.autoFocalPointLiveNotifications = false,
     this.accentColor = "violet",
     this.downloadHistoryDays = 30,
     this.normalizeLoudness = true,
@@ -167,7 +166,6 @@ class AppSettings {
   bool resumeSession;
   bool notifications;
   String notificationActionPair;
-  bool autoFocalPointLiveNotifications;
   String accentColor;
 
   /// Days a finished download stays in the history; 0 keeps it forever.
@@ -214,8 +212,6 @@ class AppSettings {
       notificationActionPair: notificationActionPairs.contains(pair)
           ? pair
           : defaults.notificationActionPair,
-      autoFocalPointLiveNotifications:
-          data["auto_focal_point_live_notifications"] == true,
       accentColor: _string(data["accent_color"], defaults.accentColor),
       downloadHistoryDays: switch (data["download_history_days"]) {
         final int days when downloadHistoryChoices.contains(days) => days,
@@ -244,7 +240,6 @@ class AppSettings {
     "resume_session": resumeSession,
     "notifications": notifications,
     "notification_action_pair": notificationActionPair,
-    "auto_focal_point_live_notifications": autoFocalPointLiveNotifications,
     "accent_color": accentColor,
     "download_history_days": downloadHistoryDays,
     "normalize_loudness": normalizeLoudness,

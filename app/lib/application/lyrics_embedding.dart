@@ -3,7 +3,9 @@
 library;
 
 import "dart:async";
+import "dart:convert";
 import "dart:io";
+import "dart:isolate";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
@@ -12,7 +14,7 @@ import "../core/artwork.dart" show readEmbeddedLyrics;
 import "../core/errors.dart" show WorkerFailure;
 import "../core/id3_lyrics.dart";
 import "../core/library/manager.dart";
-import "../core/storage.dart" show deleteQuietly, temporarySibling;
+import "../core/storage.dart" show atomicWrite, deleteQuietly, temporarySibling;
 import "lyrics.dart";
 import "store.dart";
 
@@ -41,13 +43,32 @@ enum _Outcome { embedded, unchanged, unsupported, busy }
 /// copy, such as Opus with cover art) is left as it is and not tried again
 /// until its content changes; its lyrics still show from [LyricsLibrary]'s
 /// saved copy.
+///
+/// [carryingCache] remembers the content hashes of files known to hold
+/// lyrics, so the pass at launch opens only files it has not seen. Deleting
+/// the cache only makes the next pass read every file again.
 class LyricsEmbedder {
-  LyricsEmbedder(this._manager, this._lyrics, this._store, this._copyWithTags);
+  LyricsEmbedder(
+    this._manager,
+    this._lyrics,
+    this._store,
+    this._copyWithTags, {
+    this._carryingCache,
+  });
 
   final MusicManager _manager;
   final LyricsLibrary _lyrics;
   final ApplicationStore _store;
   final TagCopier _copyWithTags;
+  final String? _carryingCache;
+
+  /// Read when the first pass starts.
+  Set<String>? _carrying;
+  int _unsavedCarrying = 0;
+
+  /// New hashes between saves, so a pass the app closes during keeps most
+  /// of what it learned.
+  static const _carryingSaveInterval = 256;
 
   /// Whether a track's file is in use by playback, so it is left until
   /// playback moves on.
@@ -112,6 +133,7 @@ class LyricsEmbedder {
   Future<void> _drain() async {
     final draining = _draining = Completer<void>();
     try {
+      _carrying ??= await _readCarrying();
       while (_pending.isNotEmpty && !_closed) {
         final trackId = _pending.first;
         _pending.remove(trackId);
@@ -122,6 +144,7 @@ class LyricsEmbedder {
           debugPrint("Lyrics were not embedded for track $trackId: $error");
         }
       }
+      await _saveCarrying();
     } finally {
       _draining = null;
       draining.complete();
@@ -131,12 +154,14 @@ class LyricsEmbedder {
   Future<void> _embed(String trackId) async {
     if (!_manager.hasTrack(trackId)) return;
     final track = _manager.getTrack(trackId);
+    if (_carrying!.contains(track.contentHash)) return;
     if (!_lyrics.supports(track.source)) return;
     if (_unsupported()[trackId] == track.contentHash) return;
     final path = _manager.trackPath(trackId);
     if (!await File(path).exists()) return;
     if ((await readEmbeddedLyrics(path)).isNotEmpty) {
       await LyricsLibrary.removeMelodySidecar(path);
+      await _rememberCarrying(track.contentHash);
       return;
     }
     final lyrics = await _lyrics.load(track.source);
@@ -152,12 +177,55 @@ class LyricsEmbedder {
     switch (outcome) {
       case _Outcome.embedded:
         await LyricsLibrary.removeMelodySidecar(path);
+        if (_manager.hasTrack(trackId)) {
+          await _rememberCarrying(_manager.getTrack(trackId).contentHash);
+        }
       case _Outcome.unsupported:
         _saveUnsupported(trackId, track.contentHash);
       case _Outcome.busy when attempts < _maxAttempts:
         _deferred.add(trackId);
       case _Outcome.busy || _Outcome.unchanged:
         break;
+    }
+  }
+
+  Future<Set<String>> _readCarrying() async {
+    final path = _carryingCache;
+    if (path == null) return {};
+    try {
+      return await Isolate.run(() {
+        final file = File(path);
+        if (!file.existsSync()) return <String>{};
+        final data = jsonDecode(file.readAsStringSync());
+        return data is List ? data.whereType<String>().toSet() : <String>{};
+      });
+    } on Object catch (error) {
+      // Only a cache: the next pass reads the files again.
+      debugPrint("Could not read which files hold lyrics: $error");
+      return {};
+    }
+  }
+
+  Future<void> _rememberCarrying(String contentHash) async {
+    if (_carrying!.add(contentHash) &&
+        ++_unsavedCarrying >= _carryingSaveInterval) {
+      await _saveCarrying();
+    }
+  }
+
+  /// Writes what the library still uses, dropping replaced and removed files.
+  Future<void> _saveCarrying() async {
+    final path = _carryingCache;
+    if (path == null || _unsavedCarrying == 0) return;
+    _unsavedCarrying = 0;
+    final current = {
+      for (final track in _manager.listTracks()) track.contentHash,
+    };
+    final carrying = _carrying!..retainAll(current);
+    try {
+      await atomicWrite(path, utf8.encode(jsonEncode(carrying.toList())));
+    } on Object catch (error) {
+      debugPrint("Could not save which files hold lyrics: $error");
     }
   }
 

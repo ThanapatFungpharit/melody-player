@@ -1,4 +1,5 @@
 import "../support/temp.dart";
+import "dart:convert";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
@@ -210,6 +211,65 @@ void main() {
     }
     // Only the audio files: the rewrites' copies are gone.
     expect(Directory(music).listSync(), hasLength(2));
+  });
+
+  group("files known to hold lyrics", () {
+    late String cache;
+
+    LyricsEmbedder remembering() => LyricsEmbedder(
+      manager,
+      lyrics,
+      store,
+      (source, target, tags) => copier(source, target, tags),
+      carryingCache: cache,
+    );
+
+    Future<List<Object?>> remembered() async =>
+        jsonDecode(await File(cache).readAsString()) as List<Object?>;
+
+    setUp(() => cache = p.join(root.path, "lyrics-embedded.json"));
+
+    test("a rewritten file is remembered by its new content", () async {
+      final id = await track("Song.mp3");
+      final before = manager.getTrack(id).contentHash;
+      final embedding = remembering()..embed([id]);
+      await embedding.idle;
+      final after = manager.getTrack(id).contentHash;
+      expect(after, isNot(before));
+      expect(await remembered(), [after]);
+    });
+
+    test("the next launch does not open a file it knows", () async {
+      final id = await track("Song.mp3");
+      await File(
+        cache,
+      ).writeAsString(jsonEncode([manager.getTrack(id).contentHash]));
+      final path = manager.trackPath(id);
+      final before = await File(path).readAsBytes();
+      final embedding = remembering()..embedLibrary();
+      await embedding.idle;
+      // Without lyrics of its own, the file would otherwise have been rewritten.
+      expect(await File(path).readAsBytes(), before);
+      expect(fetched, isEmpty);
+    });
+
+    test("a changed file is read again", () async {
+      final id = await track("Song.mp3");
+      await File(cache).writeAsString(jsonEncode(["0" * 64]));
+      final embedding = remembering()..embedLibrary();
+      await embedding.idle;
+      expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
+      // The stale hash is gone with the save.
+      expect(await remembered(), [manager.getTrack(id).contentHash]);
+    });
+
+    test("an unreadable cache only costs a fresh pass", () async {
+      final id = await track("Song.mp3");
+      await File(cache).writeAsString("not json");
+      final embedding = remembering()..embedLibrary();
+      await embedding.idle;
+      expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
+    });
   });
 
   test("other formats are copied by FFmpeg with a lyrics tag", () async {

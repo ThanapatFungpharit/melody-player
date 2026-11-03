@@ -144,6 +144,7 @@ class AppServices {
               metadata: tags,
               options: sharedOptions(),
             ),
+            carryingCache: paths.lyricsCarryingCache,
           );
     final library = LibraryService(
       manager,

@@ -142,4 +142,21 @@ void main() {
       expect(sourceKey("local/song.mp3"), "local/song.mp3");
     });
   });
+
+  test("stored YouTube Music URLs key like any other form of the URL", () {
+    for (final id in ["abc", "abcdefghijk", "a_b-c"]) {
+      final stored = "https://music.youtube.com/watch?v=$id";
+      expect(sourceKey(stored), MediaIdentity.fromUrl(stored)!.key);
+      expect(sourceKey(stored), sourceKey("https://youtu.be/$id"));
+    }
+    // Not the stored form: these still go through URL parsing.
+    expect(
+      sourceKey("https://music.youtube.com/watch?v=abc&list=PL1"),
+      "youtube:abc",
+    );
+    expect(
+      sourceKey("https://music.youtube.com/watch?v=a%20b"),
+      MediaIdentity.fromUrl("https://music.youtube.com/watch?v=a%20b")!.key,
+    );
+  });
 }

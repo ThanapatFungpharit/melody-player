@@ -840,6 +840,28 @@ void main() {
     expect(saved()["position_ms"], 500);
   });
 
+  test("position updates save without rewriting the queue row", () async {
+    final [id] = await tracks(["song.mp3"]);
+    final playback = controller()
+      ..playTrack(id)
+      ..onLoaded()
+      ..onDuration(100000)
+      ..onPosition(1000);
+    await Future<void>.delayed(Duration.zero);
+    final persistence = playback.persistence
+      ..savePosition(42000, 100000)
+      ..flush();
+    expect(saved()["position_ms"], 42000);
+    expect(saved()["queue"], [id]);
+    // A snapshot in the same flush carries the newer position.
+    persistence
+      ..save(playback: {...saved(), "position_ms": 50000})
+      ..savePosition(60000, 100000)
+      ..flush();
+    expect(saved()["position_ms"], 60000);
+    expect(saved()["queue"], [id]);
+  });
+
   test("mute restores the exact previous volume", () {
     final playback = controller()
       ..setVolume(41)

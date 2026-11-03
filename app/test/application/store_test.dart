@@ -166,6 +166,84 @@ void main() {
     expect(reopened.hasTrackDetails("first"), isFalse);
     expect(reopened.hasTrackDetails("second"), isFalse);
   });
+
+  group("playback position", () {
+    Map<String, Object?> session() =>
+        (store.get("playback") as Map).cast<String, Object?>();
+
+    void saveSession(int positionMs) => store.savePlaybackUpdates({
+      "playback": {
+        "queue": ["a", "b"],
+        "current_index": 1,
+        "position_ms": positionMs,
+        "duration_ms": 9000,
+        "repeat": "off",
+      },
+    }, const {});
+
+    void savePosition(int positionMs) => store.savePlaybackUpdates({
+      "position": {"position_ms": positionMs, "duration_ms": 9000},
+    }, const {});
+
+    test("is saved without the queue and read back over it", () async {
+      saveSession(1000);
+      savePosition(5000);
+      expect(session()["position_ms"], 5000);
+      expect(session()["queue"], ["a", "b"]);
+
+      await reopen();
+      expect(session()["position_ms"], 5000);
+      expect(session()["queue"], ["a", "b"]);
+    });
+
+    test("gives way to a later session save", () async {
+      saveSession(1000);
+      savePosition(5000);
+      saveSession(2000);
+      expect(session()["position_ms"], 2000);
+      await reopen();
+      expect(session()["position_ms"], 2000);
+    });
+
+    test("seeking back to the saved value is not lost", () async {
+      saveSession(1000);
+      savePosition(5000);
+      // The same session row as stored, so it needs no rewrite, but the
+      // newer position must still go.
+      saveSession(1000);
+      expect(session()["position_ms"], 1000);
+      await reopen();
+      expect(session()["position_ms"], 1000);
+    });
+
+    test("is cleared with the library", () async {
+      saveSession(1000);
+      savePosition(5000);
+      store.clearLibraryData();
+      expect(session()["position_ms"], 0);
+      await reopen();
+      expect(session()["position_ms"], 0);
+      expect(session()["queue"], isEmpty);
+    });
+  });
+
+  test("a failed commit leaves track details as they were", () async {
+    store.saveTrackDetails("a", TrackDetails(uploader: "One"));
+    store.saveTrackDetails("b", TrackDetails(uploader: "Two"));
+    store.removeTrackDetails("a");
+    expect(store.hasTrackDetails("a"), isFalse);
+    expect(store.trackDetails("b").uploader, "Two");
+
+    await store.close();
+    expect(
+      () => store.saveTrackDetails("b", TrackDetails(uploader: "Three")),
+      throwsA(anything),
+    );
+    expect(store.trackDetails("b").uploader, "Two");
+    store = open();
+    expect(store.trackDetails("b").uploader, "Two");
+    expect(store.hasTrackDetails("a"), isFalse);
+  });
 }
 
 Map<String, Object?> _session(List<String> queue) => {

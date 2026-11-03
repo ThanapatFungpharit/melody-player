@@ -78,7 +78,8 @@ _INFO_FIELDS = (
     "extractor_key",
 )
 _THUMBNAIL_FIELDS = ("url", "width", "height", "preference")
-_PROGRESS_INTERVAL = 0.1
+# Matches how often the app publishes progress (DownloadCoordinator).
+_PROGRESS_INTERVAL = 0.2
 # Network-bound extraction and FFmpeg-bound downloads. The app enforces the
 # user's download concurrency; this only bounds the worker's own threads.
 _MAX_THREADS = 12

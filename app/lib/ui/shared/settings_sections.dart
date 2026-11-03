@@ -528,24 +528,6 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           ),
           contentPadding: EdgeInsets.zero,
         ),
-        SwitchListTile(
-          value: draft.autoFocalPointLiveNotifications,
-          onChanged: PlatformFeatures.systemMediaControls
-              ? (value) => settings.update(
-                  (draft) => draft.autoFocalPointLiveNotifications = value,
-                )
-              : null,
-          title: const Text("Center notification artwork on its subject"),
-          subtitle: PlatformFeatures.systemMediaControls
-              ? const Text(
-                  "Crop cover art around its main subject instead of the "
-                  "middle.",
-                )
-              : const Text(
-                  "Not available: Linux has no system media controls.",
-                ),
-          contentPadding: EdgeInsets.zero,
-        ),
         _dropdown(
           "Android notification shortcuts",
           draft.notificationActionPair,

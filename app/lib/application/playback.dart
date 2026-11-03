@@ -1,4 +1,5 @@
 import "dart:async";
+import "dart:math";
 
 import "package:flutter/foundation.dart";
 import "package:melody_audio/melody_audio.dart"
@@ -29,6 +30,22 @@ class PlaybackPersistence {
     if (_closed) return;
     if (playback != null) _pending["playback"] = playback;
     if (volume != null) _pending["volume"] = volume;
+    _schedule();
+  }
+
+  /// Records how far playback has reached, without the queue. A session
+  /// snapshot written together with it carries the position instead.
+  void savePosition(int positionMs, int durationMs) {
+    if (_closed) return;
+    final position = {
+      "position_ms": max(0, positionMs),
+      "duration_ms": max(0, durationMs),
+    };
+    if (_pending["playback"] case final Map<String, Object?> snapshot) {
+      _pending["playback"] = {...snapshot, ...position};
+    } else {
+      _pending["position"] = position;
+    }
     _schedule();
   }
 
@@ -737,7 +754,7 @@ class PlaybackController {
     positionMs = durationMs > 0 && clamped > durationMs ? durationMs : clamped;
     final now = DateTime.now();
     if (now.difference(_lastPersistedPosition) >= const Duration(seconds: 5)) {
-      _persist();
+      persistence.savePosition(positionMs, durationMs);
       _lastPersistedPosition = now;
     }
     _notify(PlaybackChange.progress);

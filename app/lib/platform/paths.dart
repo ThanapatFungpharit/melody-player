@@ -82,6 +82,9 @@ class AppPaths {
   /// Loudness measurements of library tracks (LoudnessNormalizer).
   String get loudnessCache => p.join(cache, "loudness.json");
 
+  /// Content hashes of library files known to hold lyrics (LyricsEmbedder).
+  String get lyricsCarryingCache => p.join(cache, "lyrics-embedded.json");
+
   /// Folders holding files Melody writes atomically, where a crash can
   /// leave a temporary file behind.
   List<String> get atomicWriteFolders => [

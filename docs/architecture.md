@@ -40,7 +40,7 @@ flowchart TD
 | Python code | `worker/src/melody_worker/` (entry point `worker/src/main.py`) |
 | Native runner projects | `app/{android,linux,macos,windows}/` |
 | Tests | `app/test/`, `packages/melody_audio/test/`, `worker/tests/`, `tools/tests/` |
-| Assets | `packages/melody_audio/assets/` (saliency model); app icons in the runner projects |
+| App icons | The runner projects |
 | Build, development, and validation tooling (`uv run melody-*`) | `tools/{build,dev,checks}/`, `.github/workflows/` |
 
 Generated files are not committed: the Flutter `ephemeral/` folders, the
@@ -179,12 +179,16 @@ them to the playback controller.
 | Runtime ytmusicapi and yt-dlp selection | `worker/src/melody_worker/updater/`, once per launch before import | `PackageRuntime` (one per package) schedules updates and reports status |
 | Saved lyrics, keyed by media identity | `LyricsLibrary` (`lyrics/<provider>_<id>.json`) | Saved on download completion, first play, and the library pass at launch; keeps lyrics showing until they are embedded (and on mobile); tracks without lyrics are rechecked weekly |
 | Lyrics embedded in downloaded audio | The media file, written in staging before artwork verification and hashing | MP3 gets a `USLT` frame from `core/id3_lyrics.dart` (FFmpeg can only write a non-standard `TXXX`); other formats get FFmpeg's tag through the worker |
-| Lyrics embedded in library audio (desktop) | `LyricsEmbedder`, at launch for the whole library, after downloads, and on play | Written into a `.melody-tmp-*` copy, swapped in under the library mutation lock, then rehashed; a playing file waits until playback moves on; files that cannot take lyrics are recorded by content hash in `state.db` (`lyrics_not_embedded`) |
+| Lyrics embedded in library audio (desktop) | `LyricsEmbedder`, at launch for the whole library, after downloads, and on play | Written into a `.melody-tmp-*` copy, swapped in under the library mutation lock, then rehashed; a playing file waits until playback moves on; files that cannot take lyrics are recorded by content hash in `state.db` (`lyrics_not_embedded`); files known to hold lyrics are recorded by content hash in `cache/lyrics-embedded.json`, so the pass at launch does not open them again |
 | Loudness measurements and normalization gains | `LoudnessNormalizer` (`application/loudness.dart`), cached in `cache/loudness.json` by track ID with the file's size and modification time | FFmpeg's `ebur128` filter measures integrated loudness and true peak (`core/loudness.dart`), one file at a time in its own process, from 10 seconds after launch, for new tracks, and for what plays next; a file whose size or time changed is hashed first (its audio packets, with FFmpeg's `streamhash`, no decoding), so a rewrite of only tags, lyrics, or cover art keeps its measurement and only new audio is measured again; a corrupted or unsupported one is recorded so it is not retried until it changes; each `AudioQueueItem` carries its gain, which the engine multiplies with the volume |
 | `.lrc` files beside library audio | Read by `LyricsLibrary`; no longer written | Melody's old ones (marked `[re:Melody]`) are removed once the audio carries the lyrics; a user's `.lrc` is never changed; deleting or replacing the audio removes it; imports copy a `.lrc` beside the original |
 
 Both SQLite schemas are unchanged since the first SQLite release, and fixtures
-written by earlier releases are part of the test suite. Pre-SQLite
+written by earlier releases are part of the test suite. The periodic position
+save writes its own small `playback_position` row in `state`, laid over the
+`playback` row when read, so it never rewrites the queue; writing `playback`
+empties it. An earlier release ignores the row and resumes from the last
+`playback` save. Pre-SQLite
 `library.mmdb` and `state.json` files are still imported once and kept with a
 `.migrated` suffix.
 
@@ -203,8 +207,8 @@ while a replacement source prepares, and a load watchdog reports a decoder that
 never becomes ready.
 
 The controller must not independently advance a native completion. Queue
-mutations replace or update the engine's queue atomically. Pause keeps the
-media session; only Stop releases the decoder, keep-alive resources, and system
+mutations replace or update the engine's queue atomically. Pause keeps
+the media session; only Stop releases the decoder, keep-alive resources, and system
 controls. On Android the launcher activity is `singleTask` and caches its
 Flutter engine, so removing the task does not destroy the decoder while the
 foreground media service keeps the process alive. Full process death still
@@ -294,6 +298,7 @@ installs upgrade in place; inside it:
 | `cache/yt-dlp/` | yt-dlp's player and signature cache (`cachedir`) | yt-dlp; pruned by `pruneYtDlpCache` |
 | `cache/notification-artwork/` | Square crops for the system media controls | melody_audio; the 64 most recently used are kept |
 | `cache/loudness.json` | Loudness measurements of library tracks | `LoudnessNormalizer`; removed tracks are dropped at launch |
+| `cache/lyrics-embedded.json` | Content hashes of library files known to hold lyrics | `LyricsEmbedder`; hashes no track uses are dropped when it saves |
 
 Rules that keep it predictable:
 
@@ -447,6 +452,15 @@ work stays out of builds and event handlers:
 - Widgets do not touch the filesystem while building: a missing local
   artwork file shows the placeholder through the image's error path, and
   the cookie file's presence is checked when settings are opened.
+- Playback position updates repaint only their own layer: `LivePosition` is a
+  repaint boundary, and the seek bar's times sit in fixed boxes, because text
+  that changes every second would otherwise lay out, and so repaint, everything
+  above it. `screens_test.dart` counts what one update paints.
+- Library reads stay cheap per row, because queue activation and pages make
+  thousands of them: canonical IDs skip UUID parsing, and sorted track orders
+  are kept until the tracks change.
+- Launch cleanup of cached artwork and saved lyrics runs in a background
+  isolate, since it hashes or parses a URL for every library track.
 
 Known limits: opening the two databases (an integrity quick check and loading
 the library model) is synchronous during the loading view, and a SQLite
@@ -455,6 +469,11 @@ isolate. Both are bounded by the size of the databases, not by the music.
 
 ## Remaining engineering work
 
+- Every structural queue edit prepares a new decoder with the whole queue
+  (`AudioEngine._select`), so its cost grows with the queue. A native playlist
+  holding only a window around the current row, slid on each transition, would
+  bound it, but needs physical-device testing of gapless transitions and
+  background playback.
 - Physical-device lifecycle tests for background playback, notification
   reattachment, and interpreter reuse on Android.
 - macOS bundles copy FFmpeg into `Contents/Resources/ffmpeg` after

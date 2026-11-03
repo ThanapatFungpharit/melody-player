@@ -48,9 +48,16 @@ class ThumbnailCache {
 
   /// Entry keys by URL. Artwork widgets ask on every build and queue
   /// activation asks for every item, so the hash is remembered. Bounded
-  /// because search results add URLs.
+  /// because search results add URLs, but well above a large library: a
+  /// queue longer than the bound would empty it again on every pass.
   final Map<String, String?> _keys = {};
-  static const _maxKeys = 1024;
+  static const _maxKeys = 1 << 16;
+
+  /// The directory as a file URI ending in a slash; entry names need no
+  /// escaping, so every entry's URI is this plus its name.
+  late final String _directoryUri = Uri.directory(
+    File(directory).absolute.path,
+  ).toString();
 
   static String? _key(String url) {
     final trimmed = url.trim();
@@ -106,14 +113,17 @@ class ThumbnailCache {
   /// Artwork for an operating-system media session, as a file URI when a
   /// cached or local copy exists.
   String artworkUri(String source) {
-    var path = cachedPath(source);
-    if (path == null && source.isNotEmpty && _key(source) == null) {
-      // Reattached native sessions report local paths.
-      if (p.isAbsolute(source) && File(source).existsSync()) path = source;
+    if (cachedPath(source) != null) {
+      return "$_directoryUri${_keyFor(source)}.thumb";
     }
-    return path != null
-        ? Uri.file(File(path).absolute.path).toString()
-        : source;
+    // Reattached native sessions report local paths.
+    if (source.isNotEmpty &&
+        _keyFor(source) == null &&
+        p.isAbsolute(source) &&
+        File(source).existsSync()) {
+      return Uri.file(File(source).absolute.path).toString();
+    }
+    return source;
   }
 
   /// Drops the entry for a remote URL. Failures only log.
@@ -133,15 +143,27 @@ class ThumbnailCache {
 
   /// Deletes cached entries for every URL not in [urls], such as artwork of
   /// a download whose registration reused an existing track. Other files in
-  /// the folder are left alone. Returns how many entries were removed.
+  /// the folder are left alone. Returns how many entries were removed. Runs
+  /// in a background isolate: it hashes every URL and lists the folder.
   Future<int> retainOnly(Iterable<String> urls) async {
+    final list = urls.toList(growable: false);
+    final removed = await _pruneEntries(directory, list);
+    removed.forEach(_forget);
+    return removed.length;
+  }
+
+  /// Top-level in effect: the closure must not capture the cache.
+  static Future<List<String>> _pruneEntries(
+    String directory,
+    List<String> urls,
+  ) => Isolate.run(() {
     final keep = {
       for (final url in urls)
         if (_key(url) case final key?) "$key.thumb",
     };
-    var removed = 0;
+    final removed = <String>[];
     try {
-      await for (final entity in Directory(directory).list()) {
+      for (final entity in Directory(directory).listSync(followLinks: false)) {
         final name = p.basename(entity.path);
         if (entity is! File ||
             !_entryName.hasMatch(name) ||
@@ -149,9 +171,8 @@ class ThumbnailCache {
           continue;
         }
         try {
-          await entity.delete();
-          removed++;
-          _forget(p.basenameWithoutExtension(name));
+          entity.deleteSync();
+          removed.add(p.basenameWithoutExtension(name));
         } on FileSystemException catch (error) {
           debugPrint("Could not remove a cached thumbnail: $error");
         }
@@ -160,7 +181,7 @@ class ThumbnailCache {
       debugPrint("Could not prune cached thumbnails: $error");
     }
     return removed;
-  }
+  });
 
   static final _entryName = RegExp(r"^[0-9a-f]{64}\.thumb$");
 
