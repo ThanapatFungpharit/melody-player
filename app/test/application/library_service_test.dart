@@ -11,6 +11,7 @@ import "package:melody/application/owned_files.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 const _thumbnail = "https://i.ytimg.com/vi/abcdefghijk/hq.jpg";
@@ -282,7 +283,7 @@ void main() {
     await library.restoreLocalFile(id);
 
     expect(await File(path).readAsString(), "original");
-    expect(await manager.checkTrackIntegrity(id), isNull);
+    expect(manager.getTrack(id).contentHash, await sha256File(path));
     expect((await library.reconcile()).missingTrackIds, isEmpty);
 
     await File(path).delete();
@@ -454,6 +455,41 @@ void main() {
       "",
     ]);
   });
+
+  test(
+    "an export leaves out what a stored link picked up when pasted",
+    () async {
+      final id = await downloaded(
+        "pasted.mp3",
+        source: "https://youtu.be/abcdefghijk?si=tracking&list=PLabc",
+      );
+      final playlist = manager.createPlaylist("Pasted");
+      manager.addToPlaylist(playlist, id);
+
+      final m3u8 = utf8.decode(library.exportPlaylistM3u8(playlist));
+
+      expect(m3u8, contains(_source));
+      expect(m3u8, isNot(contains("tracking")));
+      expect(m3u8, isNot(contains("list=")));
+    },
+  );
+
+  test(
+    "a playlist link in a playlist file is skipped, not downloaded",
+    () async {
+      final first = await downloaded("first.mp3");
+      final match = await library.matchPlaylistM3u(
+        utf8.encode(
+          "#EXTM3U\n$_source\nhttps://music.youtube.com/playlist?list=PLabc\n",
+        ),
+        fallbackName: "Mixed",
+      );
+
+      expect(match.trackIds, [first]);
+      expect(match.entries.last.url, isNull);
+      expect(match.skipped, 1);
+    },
+  );
 
   test("linked tracks missing from the library are left to download", () async {
     final first = await downloaded("first.mp3");

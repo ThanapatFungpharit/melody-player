@@ -808,8 +808,9 @@ SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
                       ],
                     ),
                     Text(
-                      "Clear the library and playlists, empty the playback queue, and restore all "
-                      "settings. Audio files, download history, and search history are preserved.",
+                      "Clear the library and playlists, delete every downloaded and imported audio "
+                      "file in the library, empty the playback queue, and restore all settings. "
+                      "Download history and search history are kept.",
                       style: TextStyle(
                         fontSize: 12,
                         color: scheme.onErrorContainer,

@@ -14,6 +14,7 @@ import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:melody/worker/transport.dart";
 import "package:melody/worker/worker_client.dart";
 import "package:path/path.dart" as p;
@@ -140,7 +141,7 @@ void main() {
       expect(p.extension(path), ".mp3");
       expect(await readEmbeddedArtwork(path), isNotEmpty);
       expect(thumbnails.cachedPath(result.thumbnail), isNotNull);
-      expect(await manager.checkTrackIntegrity(track.id), isNull);
+      expect(track.contentHash, await sha256File(path));
       // yt-dlp's intermediate files went with the staging folder.
       expect([
         for (final entity in Directory(music).listSync())
@@ -205,7 +206,7 @@ void main() {
         expect(embedded.synced, isTrue);
         expect(embedded.lines.length, greaterThan(10));
         expect(await readEmbeddedArtwork(path), isNotEmpty);
-        expect(await manager.checkTrackIntegrity(id), isNull);
+        expect(manager.getTrack(id).contentHash, await sha256File(path));
         manager.close();
         store.close();
       },

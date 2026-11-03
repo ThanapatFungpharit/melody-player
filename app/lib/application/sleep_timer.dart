@@ -8,7 +8,7 @@ const sleepTimerChoices = [15, 30, 45, 60, 90];
 /// Pauses playback after a chosen time, or when the playing track ends.
 ///
 /// The timer lives only in memory: it ends with the app or once it pauses.
-/// Waiting for the end of a track also ends when nothing is left to play.
+/// Waiting for the end of a track also ends when playback is stopped.
 class SleepTimer {
   SleepTimer(
     this.playback, {
@@ -86,8 +86,10 @@ class SleepTimer {
 
   void _playbackChanged(PlaybackChange change) {
     if (!_endOfTrack || change == PlaybackChange.volume) return;
-    // The queue ran out or was stopped: there is nothing left to pause.
-    if (!playback.playing && !playback.loading && !playback.hasMedia) {
+    // Playback was stopped: there is nothing left to pause.
+    if (!playback.playing &&
+        !playback.loading &&
+        !playback.mediaSessionActive) {
       cancel();
       return;
     }

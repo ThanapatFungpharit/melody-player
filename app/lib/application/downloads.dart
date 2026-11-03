@@ -65,6 +65,19 @@ class DuplicateDownloadError implements Exception {
   String toString() => "This track is already downloading.";
 }
 
+const _notASongLink =
+    "Only links to single songs can be downloaded here. To save a playlist, "
+    "use Import playlist on the Playlists page.";
+
+const _lostFileError =
+    "The downloaded library file is missing. Retry to restore it.";
+
+/// The form Melody stores a song's link in, without playlist or tracking
+/// parameters. Any other link stays as it is, for [DownloadCoordinator] to
+/// refuse.
+String _canonicalSource(String url) =>
+    isYoutubeUrl(url) ? youtubeMusicTrackUrl(url) : url;
+
 /// What [DownloadCoordinator.request] did with a result: found an intact
 /// library [track], or joined or started the download [task].
 class DownloadRequest {
@@ -119,6 +132,9 @@ Map<String, Object?> downloadOptions(
 ) => {
   "format": "bestaudio/best",
   "outtmpl": "%(title)s.%(ext)s",
+  // One task is one song: the files of a task are registered under one source,
+  // so a song link's playlist must not come along.
+  "noplaylist": true,
   "quiet": true,
   "noprogress": true,
   "postprocessors": [
@@ -217,19 +233,26 @@ class DownloadCoordinator extends ChangeNotifier {
       debugPrint("Removed $abandoned abandoned download staging folder(s)");
     }
     await _recoverHandoffs();
-    final available = await _availableTrackIds();
+    final lost = await _lostTrackIds();
     var recovered = false;
     for (final record in _records.values) {
-      if (record.status == DownloadStatus.completed &&
-          record.trackIds.isNotEmpty &&
-          !record.trackIds.every(available.contains)) {
+      final lostFile = record.trackIds.any(lost.contains);
+      if (record.status == DownloadStatus.completed && lostFile) {
         recovered = true;
         record
           ..status = DownloadStatus.failed
-          ..error =
-              "The downloaded library file is missing. Retry to restore it."
+          ..error = _lostFileError
           ..errorKind = "disk"
           ..recovery = "retry";
+      } else if (_flaggedLost(record) && !lostFile) {
+        // Earlier releases flagged tracks the user removed too, and retrying
+        // would bring those back.
+        recovered = true;
+        record
+          ..status = DownloadStatus.completed
+          ..error = ""
+          ..errorKind = ""
+          ..recovery = "";
       }
       if (record.status.isActive) {
         recovered = true;
@@ -295,13 +318,13 @@ class DownloadCoordinator extends ChangeNotifier {
 
   int activeCount() => _activeBySource.length;
 
-  /// The canonical intact library track for [url], if one exists.
+  /// The library track for [url] whose file is there, if one exists.
   Future<Track?> availableTrack(String url) async {
     if (url.isEmpty) return null;
     final existing = manager.findTrackBySource(url);
     if (existing == null) return null;
     try {
-      return await manager.checkTrackIntegrity(existing.id) == null
+      return await manager.checkTrackFile(existing.id) == null
           ? existing
           : null;
     } on Object {
@@ -336,6 +359,9 @@ class DownloadCoordinator extends ChangeNotifier {
       if (source.isEmpty || !seen.add(source)) continue;
       if (!isYoutubeUrl(source)) {
         throw ArgumentError("Only $youtubeMusicName URLs are supported.");
+      }
+      if (MediaIdentity.fromUrl(source) == null) {
+        throw ArgumentError(_notASongLink);
       }
       sources.add(source);
     }
@@ -411,6 +437,7 @@ class DownloadCoordinator extends ChangeNotifier {
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
+    if (MediaIdentity.fromUrl(url) == null) throw ArgumentError(_notASongLink);
     if (_activeRecordForSource(url) != null) throw DuplicateDownloadError();
     String? task;
     final lyrics = this.lyrics;
@@ -745,25 +772,26 @@ class DownloadCoordinator extends ChangeNotifier {
     return (trackId, manager.trackPath(trackId));
   });
 
-  /// Keeps intact audio, or repairs the file without replacing the record.
+  /// Keeps the file the track has, which may have been edited since, or
+  /// repairs a missing or empty one without replacing the record.
   Future<String> _reuseLibraryTrack(
     Track track,
     String path,
     String source,
   ) async {
     final previousPath = manager.trackPath(track.id);
-    final problem = await manager.checkTrackIntegrity(track.id);
+    final problem = await manager.checkTrackFile(track.id);
     String stored;
     if (problem == null) {
-      // The library already has this audio intact: the new copy goes.
+      // The library already has this song: the new copy goes.
       stored = previousPath;
       if (!samePath(path, stored)) {
         _files.mark([path]);
         await _files.release([path]);
       }
     } else {
-      // The damaged file goes once the track points at the new one, if
-      // Melody downloaded it.
+      // An empty file goes once the track points at the new one, if Melody
+      // downloaded it.
       final superseded = [
         if (!samePath(previousPath, path) && LibraryService.ownsFile(track))
           previousPath,
@@ -866,25 +894,34 @@ class DownloadCoordinator extends ChangeNotifier {
     return id == null ? null : _records[id];
   }
 
-  /// Completed downloads' tracks whose files exist and are not empty. Cheap
-  /// startup availability, checked in one batch off the UI isolate; full
-  /// hashes remain explicit checks.
-  Future<Set<String>> _availableTrackIds() async {
+  static bool _flaggedLost(DownloadRecord record) =>
+      record.status == DownloadStatus.failed && record.error == _lostFileError;
+
+  /// Library tracks of finished downloads whose files are gone or empty,
+  /// checked in one batch off the UI isolate. A track the library no longer
+  /// has is not lost: the user removed it.
+  Future<Set<String>> _lostTrackIds() async {
     final paths = <String, String>{};
+    final lost = <String>{};
     for (final record in _records.values) {
-      if (record.status != DownloadStatus.completed) continue;
+      if (record.status != DownloadStatus.completed && !_flaggedLost(record)) {
+        continue;
+      }
       for (final trackId in record.trackIds) {
+        if (!manager.hasTrack(trackId)) continue;
         try {
           paths[trackId] ??= manager.trackPath(trackId);
-        } on Object {
-          // An unknown track or invalid path counts as unavailable.
+        } on ArgumentError {
+          // Its stored path is outside the music folders: not playable.
+          lost.add(trackId);
         }
       }
     }
     final existing = await existingFiles(paths.values, nonEmpty: true);
     return {
+      ...lost,
       for (final MapEntry(key: id, value: path) in paths.entries)
-        if (existing.contains(path)) id,
+        if (!existing.contains(path)) id,
     };
   }
 }
@@ -922,7 +959,7 @@ class _DownloadMetadata {
   /// A search result, with the details YouTube Music listed for it.
   factory _DownloadMetadata.fromResult(SearchResult result) =>
       _DownloadMetadata(
-        url: result.url,
+        url: _canonicalSource(result.url),
         title: result.title,
         uploader: result.uploader,
         thumbnail: result.thumbnail,
@@ -933,28 +970,28 @@ class _DownloadMetadata {
 
   /// A bare URL, under a placeholder [title] until yt-dlp reports the
   /// song's own details.
-  const _DownloadMetadata.url(
+  factory _DownloadMetadata.url(
     String url, {
     required String title,
     double? createdAt,
     String batchId = "",
     int batchPosition = 0,
     int batchSize = 0,
-  }) : this(
-         url: url,
-         title: title,
-         resolveMetadata: true,
-         createdAt: createdAt,
-         batchId: batchId,
-         batchPosition: batchPosition,
-         batchSize: batchSize,
-       );
+  }) => _DownloadMetadata(
+    url: _canonicalSource(url),
+    title: title,
+    resolveMetadata: true,
+    createdAt: createdAt,
+    batchId: batchId,
+    batchPosition: batchPosition,
+    batchSize: batchSize,
+  );
 
   /// A new attempt at [original], with the details it already has.
   factory _DownloadMetadata.retrying(DownloadRecord original) {
     final batched = original.batchId.isNotEmpty;
     return _DownloadMetadata(
-      url: original.url,
+      url: _canonicalSource(original.url),
       title: original.title,
       uploader: original.uploader,
       thumbnail: original.thumbnail,

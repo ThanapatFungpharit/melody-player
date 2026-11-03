@@ -9,6 +9,7 @@ import "package:melody/application/store.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/errors.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 const _source = "https://music.youtube.com/watch?v=abcdefghijk";
@@ -83,7 +84,7 @@ void main() {
     expect(embedded.lines.map((line) => line.text), ["Hello", "World"]);
     expect(await readEmbeddedArtwork(path), artwork);
     expect(manager.getTrack(id).contentHash, isNot(before));
-    expect(await manager.checkTrackIntegrity(id), isNull);
+    expect(manager.getTrack(id).contentHash, await sha256File(path));
     expect(Directory(music).listSync().map((entry) => p.basename(entry.path)), [
       "Song.mp3",
     ]);
@@ -94,6 +95,20 @@ void main() {
     await embedding.idle;
     expect(fetched, hasLength(1));
     expect(manager.getTrack(id).contentHash, hash);
+  });
+
+  test("a file edited elsewhere takes lyrics and keeps the edit", () async {
+    final id = await track("Song.mp3");
+    final path = manager.trackPath(id);
+    const edit = [1, 2, 3];
+    await File(path).writeAsBytes(edit, mode: FileMode.append);
+
+    await (embedder()..embed([id])).idle;
+
+    expect(await readEmbeddedLyrics(path), isNotEmpty);
+    final bytes = await File(path).readAsBytes();
+    expect(bytes.sublist(bytes.length - edit.length), edit);
+    expect(manager.getTrack(id).contentHash, await sha256File(path));
   });
 
   test("replaces Melody's .lrc but never a user's", () async {
@@ -164,7 +179,6 @@ void main() {
     await (embedder()..embed([id])).idle;
     expect(copied, ["Song.opus"]);
     expect(manager.getTrack(id).contentHash, hash);
-    expect(await manager.checkTrackIntegrity(id), isNull);
 
     // Remembered across launches while the file stays the same.
     await (embedder()..embed([id])).idle;
@@ -293,7 +307,7 @@ void main() {
     final embedded = Lyrics.parse(await readEmbeddedLyrics(path));
     expect(embedded.lines.map((line) => line.startMs), [0, 900]);
     expect(await readEmbeddedArtwork(path), artwork);
-    expect(await manager.checkTrackIntegrity(id), isNull);
+    expect(manager.getTrack(id).contentHash, await sha256File(path));
   }, skip: _hasFfmpeg() ? false : "needs FFmpeg on PATH");
 }
 

@@ -30,8 +30,8 @@ class MusicSearchController extends ChangeNotifier {
   String? status;
   String? error;
 
-  /// Result URL → intact library track, captured when the page loaded so
-  /// rendering never hashes audio files.
+  /// Result URL → library track with its file, captured when the page loaded
+  /// so rendering never touches the disk.
   Map<String, Track?> localTracks = {};
 
   /// Result URL → library record id when [localTracks] was last checked, so
@@ -115,7 +115,7 @@ class MusicSearchController extends ChangeNotifier {
           if (!item.isPlaylist) item,
       ];
       final ids = _recordIds(tracks);
-      // Each check may hash a library file; run a page's checks together.
+      // Each check asks the disk about a library file; run them together.
       final available = await Future.wait([
         for (final item in tracks)
           app.services.downloads.availableTrack(item.url),

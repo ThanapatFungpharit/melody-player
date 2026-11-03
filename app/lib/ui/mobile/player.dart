@@ -502,7 +502,9 @@ class NowPlaying extends StatelessWidget {
                                 TouchIconButton(
                                   Icons.stop_rounded,
                                   "Stop playback and clear notification",
-                                  hasMedia ? playback.stop : null,
+                                  playback.mediaSessionActive
+                                      ? playback.stop
+                                      : null,
                                 ),
                                 // Five controls leave no room for the
                                 // label on the narrowest phones.

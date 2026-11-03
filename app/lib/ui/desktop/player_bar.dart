@@ -220,7 +220,9 @@ class DesktopPlayerBar extends StatelessWidget {
                         ),
                         _SleepTimerButton(app),
                         IconButton(
-                          onPressed: hasMedia ? playback.stop : null,
+                          onPressed: playback.mediaSessionActive
+                              ? playback.stop
+                              : null,
                           tooltip: "Stop playback and clear notification",
                           iconSize: 20,
                           icon: const Icon(Icons.stop_rounded),

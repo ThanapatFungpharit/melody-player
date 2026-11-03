@@ -174,12 +174,14 @@ void main() {
       expect(playback.loading, isTrue);
       expect(saved()["current_index"], 1);
 
+      // A system Stop releases the same things as the in-app one.
       playback.onStopped();
       expect(playback.playing, isFalse);
       expect(playback.mediaSessionActive, isFalse);
       expect(playback.positionMs, 0);
-      expect(playback.currentTrackId, isNull);
-      expect(playback.queue.items, isEmpty);
+      expect(playback.currentTrackId, ids[1]);
+      expect(playback.queue.items, ids);
+      expect(saved()["queue"], ids);
     },
   );
 
@@ -241,7 +243,7 @@ void main() {
     expect(playback.positionMs, 9000);
   });
 
-  test("stop is distinct from pause and unloads the music", () async {
+  test("stop is distinct from pause and releases the music", () async {
     final [id] = await tracks(["song.mp3"]);
     final playback = controller()
       ..playTrack(id)
@@ -253,11 +255,33 @@ void main() {
     expect(playback.mediaSessionActive, isFalse);
     expect(playback.playing, isFalse);
     expect(playback.loading, isFalse);
-    expect(playback.currentTrackId, isNull);
-    expect(playback.queue.items, isEmpty);
     expect(playback.positionMs, 0);
     expect(backend.discardedSources, 1);
-    expect(saved()["queue"], isEmpty);
+  });
+
+  test("stop keeps the queue, and Play starts its current track", () async {
+    final ids = await tracks(["one.mp3", "two.mp3", "three.mp3"]);
+    final playback = controller()
+      ..playTracks(ids, startIndex: 1)
+      ..onLoaded()
+      ..onDuration(200000)
+      ..onPosition(60000);
+
+    playback.stop();
+    expect(playback.queue.items, ids);
+    expect(playback.currentTrackId, ids[1]);
+    expect(saved()["queue"], ids);
+    expect(saved()["current_index"], 1);
+    expect(saved()["position_ms"], 0);
+
+    playback.toggle();
+    expect(playback.playing, isTrue);
+    expect(playback.mediaSessionActive, isTrue);
+    expect(backend.queues, hasLength(2));
+    final (items, index, _) = backend.queues.last;
+    expect(items.map((item) => item.trackId), ids);
+    expect(index, 1);
+    expect(backend.playedAt.last, 0);
   });
 
   test("stop releases a selection that is still preparing", () async {

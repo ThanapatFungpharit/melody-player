@@ -7,7 +7,7 @@ import "package:path/path.dart" as p;
 import "../core/errors.dart" show failureMessage;
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
-import "../core/media.dart" show isHttpUrl, isYoutubeUrl;
+import "../core/media.dart" show MediaIdentity, isHttpUrl, youtubeMusicTrackUrl;
 import "../core/storage.dart";
 import "lyrics.dart";
 import "models.dart";
@@ -496,7 +496,9 @@ class LibraryService {
     for (final track in tracks) {
       final String location;
       if (isHttpUrl(track.source)) {
-        location = track.source.trim();
+        // Sources saved by earlier releases may still carry a pasted link's
+        // playlist and tracking parameters.
+        location = youtubeMusicTrackUrl(track.source.trim());
       } else if (_pathOf(track) case final path?) {
         location = Uri.file(p.normalize(p.absolute(path))).toString();
       } else {
@@ -512,8 +514,8 @@ class LibraryService {
 
   /// Matches each entry of an M3U or M3U8 file to a library track by its
   /// path, its source (a URL, or the file a local track was imported from),
-  /// its contents, or a file name only one track has. An unmatched
-  /// YouTube link is left for the caller to download.
+  /// its contents, or a file name only one track has. An unmatched link to a
+  /// YouTube song is left for the caller to download.
   /// [baseDirectory] resolves relative entries.
   Future<PlaylistFileMatch> matchPlaylistM3u(
     List<int> bytes, {
@@ -551,7 +553,7 @@ class LibraryService {
         }
       } else if (Uri.tryParse(location)?.hasScheme ?? false) {
         id = manager.findTrackBySource(location)?.id;
-        if (id == null && isYoutubeUrl(location)) {
+        if (id == null && MediaIdentity.fromUrl(location) != null) {
           matched.add(PlaylistFileEntry.download(location, title ?? location));
           continue;
         }

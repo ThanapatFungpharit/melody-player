@@ -300,6 +300,27 @@ void main() {
     expect(app.services.manager.musicFolder, defaultMusic);
   });
 
+  test("Reset everything deletes library audio, not originals", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final manager = app.services.manager;
+    final downloaded = manager.trackPath(manager.listTracks().first.id);
+    final original = p.join(root.path, "Original.mp3");
+    await File("test/fixtures/artwork/cover.mp3").copy(original);
+    await File(original).writeAsBytes([9], mode: FileMode.append);
+    final imported = manager.trackPath(
+      await app.services.library.importLocalFile(original),
+    );
+    expect(File(downloaded).existsSync(), isTrue);
+    expect(File(imported).existsSync(), isTrue);
+
+    await app.settingsDraft.runDataAction("everything");
+
+    expect(File(downloaded).existsSync(), isFalse);
+    expect(File(imported).existsSync(), isFalse);
+    expect(File(original).existsSync(), isTrue);
+  });
+
   test(
     "a playlist import finishes when a download leaves the history unseen",
     () async {
@@ -417,6 +438,56 @@ void main() {
       app.openPanel(panel);
       await shoot(tester, "desktop_${panel.name}");
     }
+  });
+
+  testWidgets("Stop is offered only while something is loaded", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    IconButton stop() => tester.widget(
+      find.ancestor(
+        of: find.byIcon(Icons.stop_rounded),
+        matching: find.byType(IconButton),
+      ),
+    );
+    final queue = List.of(app.playback.queue.items);
+    expect(queue, isNotEmpty);
+    expect(stop().onPressed, isNull);
+
+    app.playback.beginPendingTrack("Song");
+    await tester.pump();
+    expect(stop().onPressed, isNotNull);
+
+    app.playback.stop();
+    await tester.pump();
+    expect(stop().onPressed, isNull);
+    expect(app.playback.queue.items, queue);
+  });
+
+  testWidgets("Reset everything says it deletes the library's audio", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(
+      find.textContaining(
+        "delete every downloaded and imported audio file",
+        skipOffstage: false,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining("Audio files", skipOffstage: false),
+      findsNothing,
+    );
   });
 
   testWidgets("scrolling lyrics by hand stops following playback", (

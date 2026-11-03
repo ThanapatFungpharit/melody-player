@@ -234,7 +234,7 @@ class LyricsEmbedder {
     // The track may have been removed, moved, or repaired meanwhile.
     if (!_manager.hasTrack(trackId) ||
         !p.equals(_manager.trackPath(trackId), path) ||
-        await _manager.checkTrackIntegrity(trackId) != null) {
+        await _manager.checkTrackFile(trackId) != null) {
       return _Outcome.unchanged;
     }
     final copy = temporarySibling(path);

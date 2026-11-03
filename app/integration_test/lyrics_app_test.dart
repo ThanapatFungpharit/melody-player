@@ -21,6 +21,7 @@ import "package:flutter_test/flutter_test.dart";
 import "package:integration_test/integration_test.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/core/artwork.dart";
+import "package:melody/core/storage.dart";
 import "package:melody/main.dart" as melody;
 import "package:melody/ui/app_state.dart";
 import "package:melody/ui/desktop/shell.dart";
@@ -135,7 +136,10 @@ void main() {
       isFalse,
       reason: "lyrics live inside the MP3, with no .lrc beside it",
     );
-    expect(await app.services.manager.checkTrackIntegrity(trackId), isNull);
+    expect(
+      app.services.manager.getTrack(trackId).contentHash,
+      await sha256File(audioPath),
+    );
 
     // -- Offline: the worker is gone, so YouTube Music cannot be reached. ---
     // Without even Melody's saved copy, the MP3's own tag has the lyrics.

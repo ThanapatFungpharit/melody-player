@@ -6,6 +6,7 @@ import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/store.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 /// The fixtures were written by earlier Melody releases (`library.db`,
@@ -82,7 +83,10 @@ void main() {
       ids["beta"],
     );
     // Hashes written by an earlier release verify against the files.
-    expect(await manager.checkTrackIntegrity(ids["alpha"]!), isNull);
+    expect(
+      manager.getTrack(ids["alpha"]!).contentHash,
+      await sha256File(manager.trackPath(ids["alpha"]!)),
+    );
     final copy = File(p.join(root.path, "copy.mp3"))
       ..writeAsBytesSync(utf8.encode("alpha audio"));
     expect((await manager.findTrackByContent(copy.path))?.id, ids["alpha"]);

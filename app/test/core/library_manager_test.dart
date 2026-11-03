@@ -3,6 +3,7 @@ import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 void main() {
@@ -253,7 +254,10 @@ void main() {
         expect(manager.isPathReferenced("new.mp3"), isTrue);
         expect(manager.isPathReferenced("new.mp3", excluding: id), isFalse);
         expect(manager.isPathReferenced("old.mp3"), isFalse);
-        expect(await manager.checkTrackIntegrity(id), isNull);
+        expect(
+          manager.getTrack(id).contentHash,
+          await sha256File(manager.trackPath(id)),
+        );
         expect((await reopen()).getPlaylist(playlist).trackIds, [id]);
       },
     );
@@ -266,15 +270,23 @@ void main() {
       expect(() => manager.addTrack("../outside.mp3"), throwsArgumentError);
     });
 
-    test("integrity checks report missing and modified files", () async {
-      final missing = await add("missing.mp3");
-      final modified = await add("modified.mp3");
-      File(p.join(music, "missing.mp3")).deleteSync();
-      File(p.join(music, "modified.mp3")).writeAsStringSync("other bytes");
+    test(
+      "file checks report missing and empty files, not edited ones",
+      () async {
+        final missing = await add("missing.mp3");
+        final empty = await add("empty.mp3");
+        final edited = await add("edited.mp3");
+        File(p.join(music, "missing.mp3")).deleteSync();
+        File(p.join(music, "empty.mp3")).writeAsBytesSync(const []);
+        File(
+          p.join(music, "edited.mp3"),
+        ).writeAsStringSync("new tags, same song");
 
-      expect((await manager.checkTrackIntegrity(missing))?.kind, "missing");
-      expect((await manager.checkTrackIntegrity(modified))?.kind, "modified");
-    });
+        expect((await manager.checkTrackFile(missing))?.kind, "missing");
+        expect((await manager.checkTrackFile(empty))?.kind, "empty");
+        expect(await manager.checkTrackFile(edited), isNull);
+      },
+    );
   });
 
   group("IDs", () {

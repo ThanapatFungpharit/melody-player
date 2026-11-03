@@ -3,6 +3,7 @@ import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/downloads.dart";
+import "package:melody/application/library_service.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/store.dart";
@@ -213,7 +214,7 @@ void main() {
     expect(File(p.setExtension(after, ".lrc")).existsSync(), isTrue);
     expect(File(before).existsSync(), isFalse);
     expect(lyrics.existsSync(), isFalse);
-    expect(await manager.checkTrackIntegrity(trackId), isNull);
+    expect(manager.getTrack(trackId).contentHash, await sha256File(after));
     // The moved track is still found instead of downloading again.
     expect((await coordinator.request(_result())).track?.id, trackId);
   });
@@ -632,6 +633,202 @@ void main() {
     );
   });
 
+  Iterable<Map<String, Object?>> downloadFrames() =>
+      transport.sent.where((frame) => frame["op"] == "download");
+
+  group("a download is one song:", () {
+    const playlistLink = "https://music.youtube.com/playlist?list=PLabc";
+
+    test("a link inside a playlist fetches and stores only its song", () async {
+      final coordinator = await open();
+      final batch = await coordinator.startUrls([
+        "https://www.youtube.com/watch?v=abcdefghijk&list=PLabc&si=tracking",
+      ]);
+      final record = await terminal(coordinator, batch.tasks.single);
+
+      final frame = downloadFrames().single;
+      expect(frame["url"], _url);
+      expect((frame["options"] as Map)["noplaylist"], isTrue);
+      expect(record.url, _url);
+      expect(manager.getTrack(record.trackIds.single).source, _url);
+    });
+
+    test("a shared link loses its tracking parameters", () async {
+      final coordinator = await open();
+      final batch = await coordinator.startUrls([
+        "https://youtu.be/abcdefghijk?si=tracking",
+      ]);
+      final record = await terminal(coordinator, batch.tasks.single);
+
+      expect(manager.getTrack(record.trackIds.single).source, _url);
+    });
+
+    test("a playlist link cannot join a batch", () async {
+      final coordinator = await open();
+      await expectLater(
+        coordinator.startUrls([_url, playlistLink]),
+        throwsArgumentError,
+      );
+      expect(downloadFrames(), isEmpty);
+      expect(coordinator.list(), isEmpty);
+    });
+
+    test("a playlist link saved in the history cannot be retried", () async {
+      const id = "88888888-8888-4888-8888-888888888880";
+      store.saveDownloads([
+        DownloadRecord(
+          id: id,
+          url: playlistLink,
+          title: "Mix",
+          status: DownloadStatus.failed,
+        ),
+      ]);
+      final coordinator = await open();
+      await expectLater(coordinator.retry(id), throwsArgumentError);
+      expect(downloadFrames(), isEmpty);
+    });
+  });
+
+  group("the history of a finished download", () {
+    const task = "88888888-8888-4888-8888-888888888881";
+
+    /// A library track and the completed download that brought it.
+    Future<String> finished() async {
+      final path = p.join(music, "Song.mp3");
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      final id = await manager.addTrack(path, source: _url, title: "Song");
+      store.saveDownloads([
+        DownloadRecord(
+          id: task,
+          url: _url,
+          title: "Song",
+          status: DownloadStatus.completed,
+          trackIds: [id],
+        ),
+      ]);
+      return id;
+    }
+
+    test("leaves a track the user removed gone", () async {
+      final id = await finished();
+      await LibraryService(manager, store).deleteTrack(id);
+
+      final coordinator = await open();
+
+      expect(coordinator.get(task)!.status, DownloadStatus.completed);
+      expect(await coordinator.retryFailed(), 0);
+      expect(downloadFrames(), isEmpty);
+      expect(manager.counts().$1, 0);
+    });
+
+    test("offers to restore a track whose file was lost", () async {
+      final id = await finished();
+      await File(manager.trackPath(id)).delete();
+
+      final coordinator = await open();
+
+      final flagged = coordinator.get(task)!;
+      expect(flagged.status, DownloadStatus.failed);
+      expect(flagged.error, contains("Retry to restore"));
+      final retry = await coordinator.retry(task);
+      final repaired = await terminal(coordinator, retry);
+      expect(repaired.status, DownloadStatus.completed);
+      expect(repaired.trackIds, [id]);
+      expect(File(manager.trackPath(id)).existsSync(), isTrue);
+    });
+
+    test("offers to restore a track whose file was emptied", () async {
+      final id = await finished();
+      await File(manager.trackPath(id)).writeAsBytes(const []);
+
+      final coordinator = await open();
+
+      expect(coordinator.get(task)!.status, DownloadStatus.failed);
+    });
+
+    test("undoes what an earlier release flagged after a removal", () async {
+      store.saveDownloads([
+        DownloadRecord(
+          id: task,
+          url: _url,
+          title: "Song",
+          status: DownloadStatus.failed,
+          error: "The downloaded library file is missing. Retry to restore it.",
+          errorKind: "disk",
+          recovery: "retry",
+          trackIds: ["99999999-9999-4999-8999-999999999999"],
+        ),
+      ]);
+
+      final coordinator = await open();
+
+      final record = coordinator.get(task)!;
+      expect(record.status, DownloadStatus.completed);
+      expect(record.error, isEmpty);
+      expect(await coordinator.retryFailed(), 0);
+      // The correction is saved, not worked out again at every launch.
+      expect(store.downloads().single.status, DownloadStatus.completed);
+    });
+  });
+
+  group("a track's file", () {
+    Future<String> saved(String name) async {
+      final path = p.join(music, name);
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      return manager.addTrack(path, source: _url, title: name);
+    }
+
+    test("edited elsewhere is still the track's", () async {
+      final id = await saved("Song.mp3");
+      final path = manager.trackPath(id);
+      await File(path).writeAsString("new tags", mode: FileMode.append);
+      final edited = await File(path).readAsBytes();
+
+      final coordinator = await open();
+
+      expect((await coordinator.availableTrack(_url))?.id, id);
+      final request = await coordinator.request(_result());
+      expect(request.task, isNull);
+      expect(request.track?.id, id);
+      expect(downloadFrames(), isEmpty);
+      expect(await File(path).readAsBytes(), edited);
+    });
+
+    test("edited elsewhere survives a download of the same song", () async {
+      final coordinator = await open();
+      transport.downloadGate = Completer();
+      final task = (await coordinator.request(_result())).task!;
+      await Future<void>.delayed(Duration.zero);
+      final path = p.join(music, "Edited.mp3");
+      await File(path).writeAsString("audio");
+      final id = await manager.addTrack(path, source: _url, title: "Edited");
+      await File(path).writeAsString(" with new tags", mode: FileMode.append);
+
+      transport.downloadGate!.complete();
+      final record = await terminal(coordinator, task);
+
+      expect(record.trackIds, [id]);
+      expect(manager.trackPath(id), path);
+      expect(await File(path).readAsString(), "audio with new tags");
+      expect(Directory(music).listSync().map((entry) => entry.path), [path]);
+    });
+
+    test("left empty is replaced, keeping the track", () async {
+      final id = await saved("Song.mp3");
+      final path = manager.trackPath(id);
+      await File(path).writeAsBytes(const []);
+
+      final coordinator = await open();
+
+      expect(await coordinator.availableTrack(_url), isNull);
+      final request = await coordinator.request(_result());
+      final record = await terminal(coordinator, request.task!);
+      expect(record.trackIds, [id]);
+      expect(await File(manager.trackPath(id)).length(), greaterThan(0));
+      expect(Directory(music).listSync(), hasLength(1));
+    });
+  });
+
   test("retrying a batch song still resolves its placeholder title", () async {
     // Scheduling failed, so yt-dlp never reported the song's title.
     store.saveDownloads([
@@ -817,7 +1014,7 @@ void main() {
       final path = manager.trackPath(id);
       expect(readEmbeddedLyricsSync(path), "[00:00.00]Hello\n[00:01.50]World");
       expect(readEmbeddedArtworkSync(path), isNotEmpty);
-      expect(await manager.checkTrackIntegrity(id), isNull);
+      expect(manager.getTrack(id).contentHash, await sha256File(path));
       final download = transport.sent.singleWhere(
         (frame) => frame["op"] == "download",
       );

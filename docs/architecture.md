@@ -239,7 +239,8 @@ The decoder's playlist is linear and changes only after the playing row:
 
 The controller must not independently advance a native completion. Pause keeps
 the media session; only Stop releases the decoder, keep-alive resources, and system
-controls. On Android the launcher activity is `singleTask` and caches its
+controls. Stop keeps the queue, rewound to the start of its current row, so Play
+starts that row again. On Android the launcher activity is `singleTask` and caches its
 Flutter engine, so removing the task does not destroy the decoder while the
 foreground media service keeps the process alive. Full process death still
 loses decoder identity; the persisted queue can be restored, but automatic
@@ -280,6 +281,11 @@ authoritative in `MusicManager`; reordering a playlist never replaces the
 active queue.
 
 ### Downloads
+
+A download is one song. Its options set `noplaylist`, its source is stored as
+`https://music.youtube.com/watch?v=<id>` whatever form the link took, and a link
+that names no song (a playlist page) is refused. Playlists are imported instead,
+which downloads each song as its own task.
 
 Coordinator reservations use canonical source keys; requests for one source
 share active work. File allocation, duplicate lookup, and registration are
@@ -422,6 +428,11 @@ watch, short, live, embed, and youtu.be URLs normalize to `youtube:<id>`.
 Titles and filenames never determine remote equality; local files use a
 content hash.
 
+A track counts as available while its file exists and is not empty. The recorded
+hash only finds duplicates by content: a file edited elsewhere (new tags, say)
+stays the track's own and is never replaced. Only a missing or empty file is
+repaired by downloading the song again.
+
 | File class | Owner and lifecycle |
 | --- | --- |
 | Preview stream | Ephemeral URL; never creates a library track |
@@ -455,8 +466,9 @@ artwork are written to a `.melody-tmp-*` file, flushed, and renamed; a
 temporary file a crash leaves behind is removed at a later launch.
 
 The two databases are not a distributed transaction. Startup marks completed
-history with missing audio as repairable, replays verified receipts, and
-filters the restored queue by file availability. `LibraryService.reconcile`
+downloads whose library track lost its file as repairable (a track the user
+removed is not lost), replays verified receipts, and filters the restored queue
+by file availability. `LibraryService.reconcile`
 (Settings → Maintenance) removes stale secondary references and lists
 unregistered files without deleting them.
 

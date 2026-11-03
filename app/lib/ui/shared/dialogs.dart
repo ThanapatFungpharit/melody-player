@@ -537,8 +537,9 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  "Add multiple $youtubeMusicName URLs. Melody will queue them together "
-                  "and show progress for each song.",
+                  "Add links to several songs on $youtubeMusicName. Melody will queue "
+                  "them together and show progress for each song. To save a "
+                  "playlist, use Import playlist on the Playlists page.",
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -551,8 +552,7 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
                   maxLines: 12,
                   decoration: InputDecoration(
                     labelText: "$youtubeMusicName URLs",
-                    hintText:
-                        "Paste one $youtubeMusicName track or playlist URL per line",
+                    hintText: "Paste one $youtubeMusicName song link per line",
                     errorText: error,
                     alignLabelWithHint: true,
                   ),

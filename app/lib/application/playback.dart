@@ -479,12 +479,13 @@ class PlaybackController {
     }
   }
 
-  /// Unloads the music: releases the source and system controls and empties
-  /// the queue, so the player shows nothing until the next selection. Pause
-  /// keeps everything loaded.
+  /// Stops the music: releases the source and system controls and rewinds,
+  /// keeping the queue, so Play starts its current track again. Pause keeps
+  /// everything loaded.
   void stop() {
     _release();
-    _unload();
+    _persist();
+    _notify(PlaybackChange.track);
   }
 
   /// Releases the decoder and system controls while keeping the queue.
@@ -501,13 +502,6 @@ class PlaybackController {
     positionMs = 0;
     durationMs = 0;
     _forgetStream();
-  }
-
-  void _unload() {
-    queue.clear();
-    _persist();
-    _notify(PlaybackChange.queue);
-    _notify(PlaybackChange.track);
   }
 
   void seek(int position) {
@@ -862,8 +856,8 @@ class PlaybackController {
     _notify(PlaybackChange.track);
   }
 
-  /// Adopts Stop after the native player handled a system action; it unloads
-  /// like the in-app Stop button.
+  /// Adopts Stop after the native player handled a system action; it keeps the
+  /// queue like the in-app Stop button.
   void onStopped() {
     if (_closed) return;
     // The engine already released its decoders; only supersede pending work.
@@ -872,7 +866,8 @@ class PlaybackController {
     _playerLoading = false;
     _pendingPlayRecordId = null;
     _resetSource();
-    _unload();
+    _persist();
+    _notify(PlaybackChange.track);
   }
 
   /// Reconciles optimistic state after a decoder failure.

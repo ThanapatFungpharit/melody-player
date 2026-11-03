@@ -482,8 +482,8 @@ class MusicManager {
       final filename = reader.string();
       final source = reader.string();
       final title = version >= 2 ? reader.string() : "";
-      // A durable placeholder lets integrity checks report an unavailable
-      // legacy file without trusting its current contents.
+      // A durable placeholder for a legacy file that was not hashed: it matches
+      // no real file when looking for duplicates.
       final hash = version >= 3 ? _hex(reader.bytes(32)) : _zeroHash;
       tracks[id] = Track(
         id: id,
@@ -524,7 +524,6 @@ class MusicManager {
         final path = _pathForFilename(track.filename);
         if (File(path).existsSync()) track.contentHash = sha256FileSync(path);
       } on Object catch (error) {
-        // A later integrity check reports files that cannot be read.
         debugPrint("Could not hash legacy track ${track.id}: $error");
       }
     }
@@ -882,14 +881,17 @@ class MusicManager {
     );
   }
 
-  // -- integrity -----------------------------------------------------------
-  Future<IntegrityProblem?> checkTrackIntegrity(String trackId) async {
+  // -- file checks ---------------------------------------------------------
+  /// Why [trackId] has no usable file, or null when its file is there and not
+  /// empty. The recorded hash plays no part: it finds duplicates, and a file
+  /// edited elsewhere (new tags, say) is still this track's.
+  Future<TrackFileProblem?> checkTrackFile(String trackId) async {
     final track = getTrack(trackId);
     final String path;
     try {
       path = _pathForFilename(track.filename);
     } on ArgumentError catch (error) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "invalid_path",
@@ -900,7 +902,7 @@ class MusicManager {
     try {
       status = await File(path).stat();
     } on FileSystemException catch (error) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "unreadable",
@@ -908,7 +910,7 @@ class MusicManager {
       );
     }
     if (status.type == FileSystemEntityType.notFound) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "missing",
@@ -916,7 +918,7 @@ class MusicManager {
       );
     }
     if (status.type != FileSystemEntityType.file) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "missing",
@@ -924,32 +926,11 @@ class MusicManager {
       );
     }
     if (status.size <= 0) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "empty",
         "Audio file is empty: $path",
-      );
-    }
-    final String actual;
-    try {
-      actual = await sha256File(path);
-    } on FileSystemException catch (error) {
-      return IntegrityProblem(
-        track.id,
-        track.filename,
-        "unreadable",
-        "Cannot read $path: $error",
-      );
-    }
-    if (actual != track.contentHash) {
-      return IntegrityProblem(
-        track.id,
-        track.filename,
-        "modified",
-        "File content differs from recorded SHA-256: $path",
-        expectedHash: track.contentHash,
-        actualHash: actual,
       );
     }
     return null;
