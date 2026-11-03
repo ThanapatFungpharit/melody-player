@@ -136,6 +136,12 @@ class _MobileSearchState extends State<MobileSearch> {
                 "Search $youtubeMusicName or paste a playlist link.",
             style: TextStyle(fontSize: 12, color: muted),
           ),
+          if (search.showsPlaylist)
+            OutlinedButton.icon(
+              onPressed: search.importPastedPlaylist,
+              icon: const Icon(Icons.playlist_add_rounded),
+              label: const Text("Import this playlist"),
+            ),
           results,
           if (search.results.isNotEmpty || search.pageNumber > 1)
             Row(

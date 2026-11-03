@@ -12,7 +12,7 @@ import "../media.dart";
 import "../storage.dart";
 import "models.dart";
 
-const _schemaVersion = 1;
+const _schemaVersion = 2;
 // Row order (rowid) preserves insertion order for tracks and playlists.
 const _schema = """
 CREATE TABLE library_meta (key TEXT PRIMARY KEY, value ANY) STRICT;
@@ -24,7 +24,11 @@ CREATE TABLE tracks (
     added_at REAL NOT NULL,
     content_hash BLOB NOT NULL
 ) STRICT;
-CREATE TABLE playlists (id BLOB PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE playlists (
+    id BLOB PRIMARY KEY,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT ''
+) STRICT;
 CREATE TABLE playlist_tracks (
     playlist_id BLOB NOT NULL REFERENCES playlists (id) ON DELETE CASCADE,
     position INTEGER NOT NULL,
@@ -402,6 +406,7 @@ class MusicManager {
     } else {
       // A crash after the import committed but before the rename.
       if (legacyPath != null) retireLegacyFile(legacyPath);
+      _addPlaylistSources();
       _load();
     }
     _rebuildIndexes();
@@ -423,14 +428,29 @@ class MusicManager {
         insert.close();
       }
       for (final playlist in _playlists.values) {
-        db.execute("INSERT INTO playlists (id, name) VALUES (?, ?)", [
-          uuidBytes(playlist.id),
-          playlist.name,
-        ]);
+        db.execute(
+          "INSERT INTO playlists (id, name, source) VALUES (?, ?, ?)",
+          [uuidBytes(playlist.id), playlist.name, playlist.source],
+        );
         _writePlaylistTracks(db, playlist);
       }
     });
     if (legacyPath != null) retireLegacyFile(legacyPath);
+  }
+
+  /// Schema 1 had no `source` column. Adding one with a default leaves the
+  /// database readable by releases that name only the columns they know.
+  void _addPlaylistSources() {
+    final columns = _db.query("PRAGMA table_info(playlists)");
+    if (columns.any((column) => column["name"] == "source")) return;
+    _db.transaction((db) {
+      db.execute(
+        "ALTER TABLE playlists ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+      );
+      db.execute("UPDATE library_meta SET value = ? WHERE key = 'schema'", [
+        _schemaVersion,
+      ]);
+    });
   }
 
   void _load() {
@@ -451,10 +471,14 @@ class MusicManager {
     }
     final playlists = <String, Playlist>{};
     for (final row in _db.query(
-      "SELECT id, name FROM playlists ORDER BY rowid",
+      "SELECT id, name, source FROM playlists ORDER BY rowid",
     )) {
       final id = uuidString(row["id"] as List<int>);
-      playlists[id] = Playlist(id: id, name: row["name"] as String);
+      playlists[id] = Playlist(
+        id: id,
+        name: row["name"] as String,
+        source: row["source"] as String,
+      );
     }
     for (final row in _db.query(
       "SELECT playlist_id, track_id FROM playlist_tracks "
@@ -936,19 +960,27 @@ class MusicManager {
     return id != null && _playlists.containsKey(id);
   }
 
-  String createPlaylist(String name) {
+  /// The playlist imported from [source], if any.
+  Playlist? findPlaylistBySource(String source) {
+    for (final playlist in _playlists.values) {
+      if (playlist.source == source) return playlist.copy();
+    }
+    return null;
+  }
+
+  String createPlaylist(String name, {String source = ""}) {
     final trimmed = name.trim();
     if (trimmed.isEmpty) {
       throw const FormatException("Playlist name cannot be empty");
     }
-    final playlist = Playlist(id: _uuid.v4(), name: trimmed);
+    final playlist = Playlist(id: _uuid.v4(), name: trimmed, source: source);
     _playlists[playlist.id] = playlist;
     try {
       _commit((db) {
-        db.execute("INSERT INTO playlists (id, name) VALUES (?, ?)", [
-          uuidBytes(playlist.id),
-          trimmed,
-        ]);
+        db.execute(
+          "INSERT INTO playlists (id, name, source) VALUES (?, ?, ?)",
+          [uuidBytes(playlist.id), trimmed, source],
+        );
       }, tracksChanged: false);
     } catch (_) {
       _playlists.remove(playlist.id);

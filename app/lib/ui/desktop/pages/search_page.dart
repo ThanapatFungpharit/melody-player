@@ -141,6 +141,15 @@ class _SearchPageState extends State<SearchPage> {
             Row(
               children: [
                 Expanded(child: Text(status, style: context.text.bodySmall)),
+                if (search.showsPlaylist)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: OutlinedButton.icon(
+                      onPressed: search.importPastedPlaylist,
+                      icon: const Icon(Icons.playlist_add_rounded, size: 20),
+                      label: const Text("Import playlist"),
+                    ),
+                  ),
                 SegmentedButton<String>(
                   segments: const [
                     ButtonSegment(

@@ -468,6 +468,51 @@ class PageNavigation extends StatelessWidget {
   );
 }
 
+/// How far the import into a playlist has come, with a way to stop it. Takes no
+/// room while nothing is being imported into it.
+class ImportProgress extends StatelessWidget {
+  const ImportProgress(this.app, this.playlistId, {super.key});
+
+  final MelodyApp app;
+  final String playlistId;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = app.playlists.importProgress(playlistId);
+    if (progress == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        spacing: 12,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 6,
+              children: [
+                Text(
+                  "Importing ${progress.done} of ${progress.total}",
+                  style: context.text.bodySmall,
+                ),
+                LinearProgressIndicator(
+                  value: progress.total > 0
+                      ? progress.done / progress.total
+                      : null,
+                  minHeight: 4,
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: () => app.playlists.cancelImport(playlistId),
+            child: const Text("Stop"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// A list longer than this offers to find rows in it.
 const findableRows = 8;
 

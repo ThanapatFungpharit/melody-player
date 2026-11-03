@@ -45,6 +45,16 @@ class MusicSearchController extends ChangeNotifier {
 
   Track? availableTrack(SearchResult result) => localTracks[result.url];
 
+  /// Whether the results are the tracks of a pasted playlist link.
+  bool get showsPlaylist =>
+      isYoutubePlaylistUrl(queryText) && results.isNotEmpty;
+
+  /// Imports the playlist whose link was pasted.
+  Future<void> importPastedPlaylist() async {
+    app.showMessage("Loading the $youtubeMusicName playlist…");
+    await app.playlists.importFromUrl(queryText);
+  }
+
   /// Library record ids for track results, keyed by URL.
   Map<String, String?> _recordIds(Iterable<SearchResult> tracks) => {
     for (final item in tracks)

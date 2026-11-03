@@ -251,6 +251,7 @@ class _PlaylistDetail extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 18),
+        ImportProgress(app, playlist.id),
         if (tracks.length > findableRows) ...[
           TextFormField(
             key: ValueKey("find:${playlist.id}"),

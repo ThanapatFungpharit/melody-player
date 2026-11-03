@@ -183,8 +183,10 @@ them to the playback controller.
 | Loudness measurements and normalization gains | `LoudnessNormalizer` (`application/loudness.dart`), cached in `cache/loudness.json` by track ID with the file's size and modification time | FFmpeg's `ebur128` filter measures integrated loudness and true peak (`core/loudness.dart`), one file at a time in its own process, from 10 seconds after launch, for new tracks, and for what plays next; a file whose size or time changed is hashed first (its audio packets, with FFmpeg's `streamhash`, no decoding), so a rewrite of only tags, lyrics, or cover art keeps its measurement and only new audio is measured again; a corrupted or unsupported one is recorded so it is not retried until it changes; each `AudioQueueItem` carries its gain, which the engine multiplies with the volume |
 | `.lrc` files beside library audio | Read by `LyricsLibrary`; no longer written | Melody's old ones (marked `[re:Melody]`) are removed once the audio carries the lyrics; a user's `.lrc` is never changed; deleting or replacing the audio removes it; imports copy a `.lrc` beside the original |
 
-Both SQLite schemas are unchanged since the first SQLite release, and fixtures
-written by earlier releases are part of the test suite. The periodic position
+Both SQLite schemas are compatible with the first SQLite release: the only change
+since is `playlists.source`, added with a default so earlier releases can still
+read and write the table. Fixtures written by earlier releases are part of the
+test suite. The periodic position
 save writes its own small `playback_position` row in `state`, laid over the
 `playback` row when read, so it never rewrites the queue; writing `playback`
 empties it. An earlier release ignores the row and resumes from the last
@@ -287,6 +289,12 @@ authoritative in `MusicManager`; reordering a playlist never replaces the
 active queue.
 
 ### Downloads
+
+An imported playlist keeps its link (`playlists.source`), in one canonical form.
+Importing that link again, or Update on the playlist, fills the same playlist:
+songs added there join it in their order, what failed or was interrupted gets
+another try, and a name or tracks given here stay. Stopping an import keeps what
+it has so far.
 
 A download is one song. Its options set `noplaylist`, its source is stored as
 `https://music.youtube.com/watch?v=<id>` whatever form the link took, and a link

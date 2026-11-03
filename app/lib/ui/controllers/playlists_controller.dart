@@ -17,6 +17,7 @@ class _ImportSession {
   _ImportSession(
     this.playlistId,
     this.name,
+    this.source,
     this.order,
     this.tracks, {
     Map<String, String> resolved = const {},
@@ -30,6 +31,9 @@ class _ImportSession {
 
   final String playlistId;
   final String name;
+
+  /// The link the playlist can be updated from; empty for others.
+  final String source;
 
   /// Every key, in playlist order.
   final List<String> order;
@@ -73,6 +77,16 @@ class PlaylistsController extends ChangeNotifier {
   Completer<void> _wakeup = Completer();
 
   bool get importing => importLoading || _session != null;
+
+  /// How far the running import into [playlistId] has come, if there is one.
+  ({int done, int total})? importProgress(String playlistId) {
+    final session = _session;
+    if (session == null || session.playlistId != playlistId) return null;
+    return (
+      done: session.reused + session.downloaded + session.failed,
+      total: session.total,
+    );
+  }
 
   void openPlaylist(String playlistId) {
     selectedPlaylistId = playlistId;
@@ -287,7 +301,9 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
     try {
       final remote = await app.services.catalog.loadPlaylist(url);
-      if (generation == _generation) await _import(remote, generation);
+      if (generation == _generation) {
+        await _import(remote, youtubePlaylistUrl(url) ?? "", generation);
+      }
     } catch (error) {
       app.reportFailure(error);
     } finally {
@@ -296,24 +312,45 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  Future<void> _import(RemotePlaylist remote, int generation) {
-    final name = remote.title.trim().isNotEmpty
-        ? remote.title.trim()
-        : "Imported $youtubeMusicName playlist";
+  /// Fills the playlist imported from [source], or a new one the first time.
+  Future<void> _import(RemotePlaylist remote, String source, int generation) {
+    final existing = source.isEmpty
+        ? null
+        : app.services.manager.findPlaylistBySource(source);
+    final name =
+        existing?.name ??
+        (remote.title.trim().isNotEmpty
+            ? remote.title.trim()
+            : "Imported $youtubeMusicName playlist");
     final unique = <String, SearchResult>{
       for (final item in remote.tracks)
         if (item.url.isNotEmpty) sourceKey(item.url): item,
     };
-    return _run(name, unique.keys.toList(), unique, generation);
+    return _run(
+      name,
+      unique.keys.toList(),
+      unique,
+      generation,
+      into: existing?.id,
+      source: source,
+    );
   }
 
-  /// Creates a playlist of [order]: the [resolved] library tracks, and the
-  /// [tracks] reused from the library or downloaded.
+  /// Fetches a playlist's link again: songs added there join it, and what
+  /// failed or was interrupted last time gets another try. Tracks added here
+  /// stay, after those of the link.
+  Future<void> updateFromSource(Playlist playlist) =>
+      importFromUrl(playlist.source);
+
+  /// Fills the playlist [into], or a new one, with [order]: the [resolved]
+  /// library tracks, and the [tracks] reused from the library or downloaded.
   Future<void> _run(
     String name,
     List<String> order,
     Map<String, SearchResult> tracks,
     int generation, {
+    String? into,
+    String source = "",
     Map<String, String> resolved = const {},
     bool resolveMetadata = false,
     int skipped = 0,
@@ -322,7 +359,8 @@ class PlaylistsController extends ChangeNotifier {
       app.showError("A playlist import is already in progress.");
       return;
     }
-    final playlistId = app.services.manager.createPlaylist(name);
+    final playlistId =
+        into ?? app.services.manager.createPlaylist(name, source: source);
     if (resolved.isNotEmpty) {
       app.services.manager.mergeTracksIntoPlaylist(playlistId, [
         for (final key in order) ?resolved[key],
@@ -333,6 +371,7 @@ class PlaylistsController extends ChangeNotifier {
     final session = _ImportSession(
       playlistId,
       name,
+      source,
       order,
       tracks,
       resolved: resolved,
@@ -342,7 +381,11 @@ class PlaylistsController extends ChangeNotifier {
     _session = session;
     selectedPlaylistId = playlistId;
     notifyListeners();
-    app.showMessage("Importing ${session.total} tracks into “$name”…");
+    app.showMessage(
+      into == null
+          ? "Importing ${session.total} tracks into “$name”…"
+          : "Updating “$name”…",
+    );
     try {
       while ((session.pending.isNotEmpty ||
               session.activeDownloads.isNotEmpty) &&
@@ -419,6 +462,7 @@ class PlaylistsController extends ChangeNotifier {
           ]);
           app.touchLibrary();
         }
+        if (changed || terminalSeen) notifyListeners();
         if (session.pending.isEmpty && session.activeDownloads.isEmpty) break;
         if (terminalSeen) continue;
         if (session.activeDownloads.isNotEmpty) await _wakeup.future;
@@ -428,6 +472,18 @@ class PlaylistsController extends ChangeNotifier {
       if (identical(_session, session)) _session = null;
       notifyListeners();
     }
+  }
+
+  /// Stops the running import of [playlistId], keeping what it has so far.
+  void cancelImport(String playlistId) {
+    final session = _session;
+    if (!abandonImport(playlistId)) return;
+    notifyListeners();
+    app.showMessage(
+      session != null && session.source.isNotEmpty
+          ? "Import stopped. Update the playlist to carry on."
+          : "Import stopped.",
+    );
   }
 
   /// Whether the running import is waiting for [task]; its summary reports
@@ -471,7 +527,10 @@ class PlaylistsController extends ChangeNotifier {
         "reused ${session.reused}, downloaded ${session.downloaded}."
         "${session.skipped > 0 ? " Skipped ${plural(session.skipped, "track")} not in the library." : ""}";
     if (session.failed > 0) {
-      app.showError("$summary ${session.failed} could not be downloaded.");
+      app.showError(
+        "$summary ${session.failed} could not be downloaded."
+        "${session.source.isNotEmpty ? " Update the playlist to try again." : ""}",
+      );
     } else {
       app.showMessage(summary);
     }

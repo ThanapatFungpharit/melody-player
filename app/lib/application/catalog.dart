@@ -54,6 +54,9 @@ class MusicCatalog {
 
   final WorkerClient _worker;
 
+  /// The playlist link last pasted into a search, and what it loaded.
+  (String, RemotePlaylist)? _pastedPlaylist;
+
   /// Songs matching a search term, or a pasted YouTube URL (a track or a
   /// playlist).
   Future<List<SearchResult>> search(
@@ -72,7 +75,12 @@ class MusicCatalog {
         );
       }
       if (isYoutubePlaylistUrl(term)) {
-        final playlist = await loadPlaylist(term);
+        // Turning the page must not fetch the whole playlist again.
+        final loaded = _pastedPlaylist;
+        final playlist = start > 0 && loaded != null && loaded.$1 == term
+            ? loaded.$2
+            : await loadPlaylist(term);
+        _pastedPlaylist = (term, playlist);
         return playlist.tracks.skip(start).take(count).toList();
       }
       final identity = MediaIdentity.fromUrl(term);

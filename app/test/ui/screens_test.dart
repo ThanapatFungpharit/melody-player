@@ -1,4 +1,5 @@
 import "../support/temp.dart";
+import "dart:async";
 import "dart:io";
 
 import "package:flutter/material.dart";
@@ -20,6 +21,7 @@ import "package:melody/application/thumbnails.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/package_runtime.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/library/models.dart";
 import "package:melody/platform/paths.dart";
 import "package:melody/ui/desktop/controls.dart";
 import "package:melody/ui/desktop/pages/library_page.dart";
@@ -323,6 +325,112 @@ void main() {
     expect(File(downloaded).existsSync(), isFalse);
     expect(File(imported).existsSync(), isFalse);
     expect(File(original).existsSync(), isTrue);
+  });
+
+  group("a playlist imported from a link", () {
+    const link = "https://music.youtube.com/watch?v=x&list=PLroad&si=tracking";
+    const stored = "https://music.youtube.com/playlist?list=PLroad";
+
+    Map<String, Object?> song(String id, String title) => {
+      "videoId": id,
+      "title": title,
+      "artists": [
+        {"name": "Band"},
+      ],
+    };
+
+    late FakeWorkerTransport transport;
+    late MelodyApp app;
+
+    /// Runs one import, or update, through to its end.
+    Future<void> imported() async {
+      await app.playlists.importFromUrl(link);
+      expect(app.playlists.importing, isFalse);
+    }
+
+    setUp(() async {
+      transport = FakeWorkerTransport()
+        ..ytMusicResults["get_playlist"] = {
+          "title": "Road trip",
+          "tracks": [song("roadsong001", "One")],
+        };
+      app = await _app(root, mobile: false, transport: transport);
+      addTearDown(app.close);
+    });
+
+    Playlist road() => app.services.manager.findPlaylistBySource(stored)!;
+
+    test("keeps its link, and importing it again updates it", () async {
+      await imported();
+      final playlist = road();
+      expect(playlist.name, "Road trip");
+      expect(playlist.trackIds, hasLength(1));
+      final before = app.services.manager.counts().$2;
+
+      // The link gained a song; the fake's identical bytes need a new name.
+      transport
+        ..audioFixture = "test/fixtures/artwork/cover_v24.mp3"
+        ..downloadedName = "Two.mp3"
+        ..ytMusicResults["get_playlist"] = {
+          "title": "Road trip",
+          "tracks": [song("roadsong001", "One"), song("roadsong002", "Two")],
+        };
+      await imported();
+
+      expect(app.services.manager.counts().$2, before);
+      expect(road().id, playlist.id);
+      expect(road().trackIds, hasLength(2));
+      expect(road().trackIds.first, playlist.trackIds.first);
+    });
+
+    test("an update keeps a name and tracks given here", () async {
+      await imported();
+      final playlist = road();
+      app.services.manager.renamePlaylist(playlist.id, "My road trip");
+      final mine = app.services.manager.listTracks().last.id;
+      app.services.manager.addToPlaylist(playlist.id, mine);
+
+      await app.playlists.updateFromSource(road());
+
+      expect(road().name, "My road trip");
+      expect(road().trackIds, hasLength(2));
+      expect(road().trackIds.last, mine);
+    });
+
+    test("an update tries again what failed", () async {
+      transport.audioFixture = "missing-file.mp3";
+      await imported();
+      expect(road().trackIds, isEmpty);
+
+      transport.audioFixture = "test/fixtures/artwork/cover_v24.mp3";
+      await app.playlists.updateFromSource(road());
+      expect(road().trackIds, hasLength(1));
+    });
+
+    test("reports its progress and can be stopped", () async {
+      transport.downloadGate = Completer();
+      final import = app.playlists.importFromUrl(link);
+      while (app.playlists.importProgress(
+            app.services.manager.findPlaylistBySource(stored)?.id ?? "",
+          ) ==
+          null) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      final progress = app.playlists.importProgress(road().id)!;
+      expect(progress.done, 0);
+      expect(progress.total, 1);
+
+      app.playlists.cancelImport(road().id);
+      transport.downloadGate!.complete();
+      await import;
+      expect(app.playlists.importing, isFalse);
+      expect(app.playlists.importProgress(road().id), isNull);
+    });
+
+    test("a plain playlist has no link to update from", () async {
+      final id = app.services.manager.createPlaylist("Mine");
+      expect(app.services.manager.getPlaylist(id).source, isEmpty);
+    });
   });
 
   test(

@@ -132,6 +132,16 @@ void main() {
       expect((await reopen()).getPlaylist(playlist).trackIds, [b, c]);
     });
 
+    test("a playlist keeps the link it was imported from", () async {
+      final id = manager.createPlaylist("Road", source: "https://link");
+      final plain = manager.createPlaylist("Plain");
+      final reopened = await reopen();
+      expect(reopened.getPlaylist(id).source, "https://link");
+      expect(reopened.getPlaylist(plain).source, isEmpty);
+      expect(reopened.findPlaylistBySource("https://link")?.id, id);
+      expect(reopened.findPlaylistBySource("https://other"), isNull);
+    });
+
     test("adding to and moving between playlists", () async {
       final a = await add("a.mp3");
       final b = await add("b.mp3");

@@ -36,6 +36,15 @@ bool isYoutubePlaylistUrl(String value) {
   return list != null && list.any((item) => item.isNotEmpty);
 }
 
+/// The canonical link of the playlist [value] names, or null when it names none.
+String? youtubePlaylistUrl(String value) {
+  if (!isYoutubePlaylistUrl(value)) return null;
+  final id = _parse(
+    value,
+  )!.queryParametersAll["list"]!.firstWhere((item) => item.isNotEmpty);
+  return Uri.https(youtubeMusicHost, "/playlist", {"list": id}).toString();
+}
+
 String _musicWatchUrl(String videoId) =>
     Uri.https(youtubeMusicHost, "/watch", {"v": videoId}).toString();
 

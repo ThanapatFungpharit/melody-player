@@ -354,6 +354,13 @@ List<MenuAction> playlistActions(
   MelodyApp app,
   Playlist playlist,
 ) => [
+  if (playlist.source.isNotEmpty)
+    MenuAction(
+      "Update from $youtubeMusicName",
+      Icons.sync_rounded,
+      () => app.playlists.updateFromSource(playlist),
+      enabled: !app.playlists.importing,
+    ),
   MenuAction(
     "Export playlist",
     Icons.ios_share_rounded,
