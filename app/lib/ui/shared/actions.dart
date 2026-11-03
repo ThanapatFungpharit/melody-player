@@ -119,6 +119,20 @@ List<MenuAction> libraryTrackActions(
   ),
 ];
 
+/// What the playing track's menu offers.
+List<MenuAction> currentTrackActions(BuildContext context, MelodyApp app) {
+  final trackId = app.playback.currentTrackId;
+  if (trackId == null || !app.services.manager.hasTrack(trackId)) {
+    return const [];
+  }
+  return libraryTrackActions(
+    context,
+    app,
+    app.services.manager.getTrack(trackId),
+    app.services.library.details(trackId),
+  );
+}
+
 List<MenuAction> searchResultActions(
   BuildContext context,
   MelodyApp app,

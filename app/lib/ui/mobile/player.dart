@@ -321,7 +321,16 @@ class NowPlaying extends StatelessWidget {
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: touchTarget - 12),
+                                if (info.canFavorite)
+                                  Transform.translate(
+                                    offset: const Offset(12, 0),
+                                    child: MoreButton(
+                                      info.title,
+                                      () => currentTrackActions(context, app),
+                                    ),
+                                  )
+                                else
+                                  const SizedBox(width: touchTarget - 12),
                               ],
                             ),
                             const SizedBox(height: 12),

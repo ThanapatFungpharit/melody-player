@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val ENGINE_ID = "melody-player"
         private const val ICON_CHANNEL = "melody/app_icon"
+        private const val DOWNLOADS_CHANNEL = "melody/downloads"
 
         // The accent whose launcher icon waits for Melody to leave the screen.
         // It lives with the process, like the cached engine that sends it, so
@@ -58,6 +59,17 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ICON_CHANNEL)
             .setMethodCallHandler(iconHandler)
+        // The application context: this handler outlives every MainActivity too.
+        val appContext = applicationContext
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setActive" -> result.success(
+                        DownloadService.update(appContext, call.arguments as? Int ?: 0),
+                    )
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     // startActivity and its overloads all end here.

@@ -161,7 +161,7 @@ Map<String, Object?> downloadOptions(
 /// Worker callbacks can arrive many times per second. Listeners hear about
 /// byte progress at most every [progressNotifyInterval]; status changes are
 /// written and published immediately. Byte progress is never persisted: a
-/// download still active at startup is reported as interrupted.
+/// download still active at startup starts over ([resumeInterrupted]).
 class DownloadCoordinator extends ChangeNotifier {
   DownloadCoordinator._(
     this.manager,
@@ -188,6 +188,11 @@ class DownloadCoordinator extends ChangeNotifier {
   final Map<String, String> _activeBySource = {};
   final Stopwatch _clock = Stopwatch()..start();
   Duration _lastNotify = Duration.zero;
+
+  /// What the last run was still downloading.
+  final List<String> _interrupted = [];
+  final Set<String> _cancelRequested = {};
+  bool _closing = false;
 
   /// Called with each published record change (terminal ones included).
   void Function(DownloadRecord record)? onRecord;
@@ -256,6 +261,7 @@ class DownloadCoordinator extends ChangeNotifier {
       }
       if (record.status.isActive) {
         recovered = true;
+        _interrupted.add(record.id);
         record
           ..status = DownloadStatus.failed
           ..error =
@@ -265,6 +271,21 @@ class DownloadCoordinator extends ChangeNotifier {
     if (_removeDuplicates()) recovered = true;
     if (_expire()) recovered = true;
     if (recovered) _persist();
+  }
+
+  /// Starts over what the last run was still downloading. Call it once
+  /// [onRecord] is listening. One that cannot start stays failed, to retry by
+  /// hand.
+  Future<void> resumeInterrupted() async {
+    final interrupted = List.of(_interrupted);
+    _interrupted.clear();
+    for (final id in interrupted) {
+      try {
+        if (_records.containsKey(id)) await retry(id);
+      } catch (error) {
+        debugPrint("Could not resume download $id: $error");
+      }
+    }
   }
 
   /// Days a finished download stays in the history; 0 keeps it forever.
@@ -494,7 +515,11 @@ class DownloadCoordinator extends ChangeNotifier {
     }
   });
 
-  bool cancel(String recordId) => _downloader.cancel(recordId);
+  bool cancel(String recordId) {
+    final cancelled = _downloader.cancel(recordId);
+    if (cancelled) _cancelRequested.add(recordId);
+    return cancelled;
+  }
 
   /// Starts a new attempt, which takes the entry's place in the history.
   Future<String> retry(String recordId) async {
@@ -539,9 +564,15 @@ class DownloadCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
-  void shutdown() => _downloader.shutdown(cancelPending: true);
+  /// Stops every job. Those the user did not cancel stay active in the saved
+  /// history, for the next launch to pick up.
+  void shutdown() {
+    _closing = true;
+    _downloader.shutdown(cancelPending: true);
+  }
 
   void _handleProgress(DownloadProgress progress, _DownloadMetadata metadata) {
+    if (_closing) return;
     final record = _ensureRecord(progress.task, metadata);
     final previous = record.status;
     record
@@ -575,6 +606,12 @@ class DownloadCoordinator extends ChangeNotifier {
     DownloadResult result,
     _DownloadMetadata metadata,
   ) async {
+    if (_closing &&
+        result.status.isUnsuccessful &&
+        !_cancelRequested.contains(result.task)) {
+      return;
+    }
+    _cancelRequested.remove(result.task);
     final record = _ensureRecord(result.task, metadata);
     var status = result.status;
     var error = result.failure?.message ?? friendlyDownloadError(result.error);

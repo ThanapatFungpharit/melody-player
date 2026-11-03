@@ -332,6 +332,14 @@ class _DownloadRow extends StatelessWidget {
                     color: record.error.isNotEmpty ? scheme.error : null,
                   ),
                 ),
+                if (record.needsEngineUpdate)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => app.openPanel(AppPanel.settings),
+                      child: const Text("Open Settings"),
+                    ),
+                  ),
                 if (active) ...[
                   const SizedBox(height: 6),
                   LinearProgressIndicator(

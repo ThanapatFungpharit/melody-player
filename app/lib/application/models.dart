@@ -382,6 +382,10 @@ class DownloadRecord {
   String error;
   String errorKind;
   String recovery;
+
+  /// Whether only a newer download engine can make this download work.
+  bool get needsEngineUpdate =>
+      status.isUnsuccessful && recovery == "update_downloader";
   double createdAt;
   double completedAt;
   List<String> trackIds;

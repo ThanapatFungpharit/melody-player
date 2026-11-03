@@ -361,6 +361,75 @@ void main() {
     },
   );
 
+  test("the next launch starts over what the last run left running", () async {
+    const stuck = "22222222-2222-4222-8222-222222222222";
+    const failed = "44444444-4444-4444-8444-444444444444";
+    store.saveDownloads([
+      DownloadRecord(
+        id: stuck,
+        url: _url,
+        title: "Stuck",
+        status: DownloadStatus.downloading,
+      ),
+      DownloadRecord(
+        id: failed,
+        url: "https://youtu.be/zzzzzzzzzzz",
+        title: "Failed",
+        status: DownloadStatus.failed,
+      ),
+    ]);
+    transport.downloadGate = Completer();
+    final coordinator = await open();
+
+    await coordinator.resumeInterrupted();
+    await coordinator.resumeInterrupted();
+
+    final restarted = coordinator.list().singleWhere((r) => r.url == _url);
+    expect(restarted.id, isNot(stuck));
+    expect(restarted.status.isActive, isTrue);
+    expect(coordinator.get(failed)!.status, DownloadStatus.failed);
+    final finished = terminal(coordinator, restarted.id);
+    transport.downloadGate!.complete();
+    expect((await finished).status, DownloadStatus.completed);
+    expect(manager.counts().$1, 1);
+  });
+
+  test(
+    "closing the app leaves a running download to the next launch",
+    () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      final task = (await coordinator.request(_result())).task!;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      coordinator.shutdown();
+      transport.downloadGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        store.downloads().singleWhere((r) => r.id == task).status.isActive,
+        isTrue,
+      );
+    },
+  );
+
+  test("a download cancelled just before closing stays cancelled", () async {
+    transport.downloadGate = Completer();
+    final coordinator = await open();
+    final task = (await coordinator.request(_result())).task!;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(coordinator.cancel(task), isTrue);
+    coordinator.shutdown();
+    transport.downloadGate!.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(
+      store.downloads().singleWhere((r) => r.id == task).status,
+      DownloadStatus.cancelled,
+    );
+  });
+
   test(
     "a receipt from an earlier music folder brings its file along",
     () async {

@@ -290,6 +290,12 @@ active queue.
 
 ### Downloads
 
+A download still running when Melody closes stays active in `state.db`, and the
+next launch starts it over; only cancelling it ends it. Downloaded bytes are not
+kept, so it starts from the beginning. Off screen, Android runs a `dataSync`
+foreground service for as long as any download is active, reported over the
+`melody/downloads` channel.
+
 An imported playlist keeps its link (`playlists.source`), in one canonical form.
 Importing that link again, or Update on the playlist, fills the same playlist:
 songs added there join it in their order, what failed or was interrupted gets

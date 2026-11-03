@@ -465,6 +465,19 @@ void main() {
     expect(library.favoritesPlaylist().trackIds, [second, third, first]);
   });
 
+  test("a deleted track leaves the saved favorites order", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    library.reorderFavorites([first, second]);
+
+    await library.deleteTrack(first);
+
+    expect(store.favoritesOrder(), [second]);
+  });
+
   test("an exported playlist imports back in order", () async {
     final first = await downloaded("first.mp3");
     final second = await downloaded(

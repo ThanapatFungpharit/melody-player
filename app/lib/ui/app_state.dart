@@ -17,6 +17,7 @@ import "controllers/library_controller.dart";
 import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
+import "../platform/download_keep_alive.dart";
 import "shared/app_icon.dart";
 import "shared/format.dart" show downloadReportMessage, plural;
 
@@ -119,7 +120,12 @@ class MelodyApp {
         ),
       ),
     );
+    services.downloads.addListener(_reportActiveDownloads);
+    unawaited(run(services.downloads.resumeInterrupted));
   }
+
+  void _reportActiveDownloads() =>
+      DownloadKeepAlive.report(services.downloads.activeCount());
 
   final AppServices services;
   final bool isMobile;
@@ -183,16 +189,27 @@ class MelodyApp {
 
   // -- notifications -------------------------------------------------------
 
+  /// Shows a message while the app is on screen. Off screen, an error or a
+  /// message to [keep] waits for the user's return; the rest only mattered
+  /// while they were looking.
   void showMessage(
     String message, {
     bool error = false,
+    bool keep = false,
     (String, VoidCallback)? action,
   }) {
-    // only show when inside the app else drop
-    if (!_messages.isClosed && _inForeground) {
-      _messages.add(AppMessage(message, error: error, action: action));
+    if (_messages.isClosed) return;
+    final shown = AppMessage(message, error: error, action: action);
+    if (_inForeground) {
+      _messages.add(shown);
+    } else if (error || keep) {
+      _heldMessages.add(shown);
+      if (_heldMessages.length > _maxHeldMessages) _heldMessages.removeAt(0);
     }
   }
+
+  static const _maxHeldMessages = 3;
+  final List<AppMessage> _heldMessages = [];
 
   /// Whether the app's window is on screen.
   static bool get _inForeground {
@@ -476,6 +493,8 @@ class MelodyApp {
     unawaited(backend.refreshState());
     backend.invalidateMediaSession();
     syncSystemMedia(refreshMetadata: false);
+    if (!_messages.isClosed) _heldMessages.forEach(_messages.add);
+    _heldMessages.clear();
   }
 
   /// Adopts a decoder retained across a widget-tree rebuild.
@@ -514,6 +533,7 @@ class MelodyApp {
     showMessage(
       downloadReportMessage(report),
       error: report.hasFailures,
+      keep: true,
       action: activePanel.value == AppPanel.downloads
           ? null
           : ("View", () => openPanel(AppPanel.downloads)),
@@ -639,6 +659,8 @@ class MelodyApp {
     libraryRevision.removeListener(services.loudness.analyzeNew);
     unawaited(services.loudness.close());
     // Running jobs observe cancellation at their next yt-dlp callback.
+    services.downloads.removeListener(_reportActiveDownloads);
+    DownloadKeepAlive.report(0);
     services.downloads.shutdown();
     unawaited(_playbackSubscription.cancel());
     unawaited(_messages.close());

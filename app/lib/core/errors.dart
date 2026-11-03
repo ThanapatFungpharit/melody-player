@@ -173,8 +173,8 @@ DownloadFailure classifyDownloadError(Object error) {
   ])) {
     return const DownloadFailure(
       DownloadErrorKind.extractor,
-      "The provider's extractor failed. Install the latest Melody release, "
-          "then retry.",
+      "The download engine needs an update. Update yt-dlp in Settings, under "
+          "Maintenance, then retry.",
       "update_downloader",
     );
   }

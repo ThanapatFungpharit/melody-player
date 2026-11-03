@@ -83,6 +83,8 @@ class DesktopPlayerBar extends StatelessWidget {
                                 : null,
                           ),
                         ),
+                        if (info.canFavorite)
+                          ActionMenu(() => currentTrackActions(context, app)),
                       ],
                     ],
                   ),

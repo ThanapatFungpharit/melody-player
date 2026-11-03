@@ -117,6 +117,7 @@ Future<MelodyApp> _app(
   required bool mobile,
   String? defaultMusic,
   FakeWorkerTransport? transport,
+  List<DownloadRecord> extraDownloads = const [],
 }) async {
   final music = p.join(root.path, "Music");
   final paths = AppPaths(
@@ -179,6 +180,7 @@ Future<MelodyApp> _app(
       status: DownloadStatus.failed,
       error: "The network request failed. Check your connection and retry.",
     ),
+    ...extraDownloads,
   ]);
   final worker = WorkerClient(transport ?? FakeWorkerTransport());
   final thumbnails = ThumbnailCache(paths.artworkCache);
@@ -260,12 +262,18 @@ void main() {
     required Size size,
     String theme = "light",
     FakeWorkerTransport? transport,
+    List<DownloadRecord> extraDownloads = const [],
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final app = (await tester.runAsync(
-      () => _app(root, mobile: mobile, transport: transport),
+      () => _app(
+        root,
+        mobile: mobile,
+        transport: transport,
+        extraDownloads: extraDownloads,
+      ),
     ))!;
     addTearDown(app.close);
     await tester.pumpWidget(
@@ -1126,6 +1134,104 @@ void main() {
     await tester.pump(const Duration(seconds: 15));
     await tester.pumpAndSettle();
   });
+
+  testWidgets("what went wrong off screen waits for the user's return", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(390, 844),
+    );
+    final shown = <String>[];
+    final messages = app.messages.listen((message) => shown.add(message.text));
+    addTearDown(messages.cancel);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+
+    app
+      ..showMessage("Added to the queue.")
+      ..showMessage("3 songs downloaded.", keep: true)
+      ..showError("It failed.");
+    await tester.pump();
+    expect(shown, isEmpty);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    app.resumed();
+    await tester.pump();
+
+    expect(shown, ["3 songs downloaded.", "It failed."]);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  for (final mobile in [false, true]) {
+    testWidgets("the playing track has its actions (mobile: $mobile)", (
+      tester,
+    ) async {
+      await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1440, 900),
+      );
+      await tester.pump();
+      if (mobile) {
+        await tester.tap(find.byTooltip("Open Now Playing"));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.descendant(
+            of: find.byType(NowPlaying),
+            matching: find.byIcon(Icons.more_vert_rounded),
+          ),
+        );
+      } else {
+        await tester.tap(
+          find.descendant(
+            of: find.byType(DesktopPlayerBar),
+            matching: find.byTooltip("More actions"),
+          ),
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(find.text("Edit details"), findsOneWidget);
+      await tester.pump(const Duration(seconds: 15));
+    });
+
+    testWidgets("a download only a newer engine can fix points to Settings "
+        "(mobile: $mobile)", (tester) async {
+      final app = await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1440, 900),
+        extraDownloads: [
+          DownloadRecord(
+            id: "stale",
+            url: "https://youtu.be/yyyyyyyyyyy",
+            title: "Stale engine",
+            status: DownloadStatus.failed,
+            error: "The download engine needs an update.",
+            recovery: "update_downloader",
+          ),
+        ],
+      );
+      await tester.pump();
+      if (mobile) {
+        await tester.tap(find.byTooltip("Downloads"));
+      } else {
+        app.openPanel(AppPanel.downloads);
+      }
+      await tester.pumpAndSettle();
+      expect(find.text("Open Settings"), findsOneWidget);
+
+      await tester.tap(find.text("Open Settings"));
+      await tester.pumpAndSettle();
+      expect(app.activePanel.value, AppPanel.settings);
+      await tester.pump(const Duration(seconds: 15));
+    });
+  }
 
   testWidgets("desktop shortcuts control playback but leave typing alone", (
     tester,

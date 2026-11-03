@@ -261,11 +261,14 @@ class ApplicationStore {
   }
 
   void removeTrackDetails(String trackId) {
-    final histories = {
+    final lists = {
       for (final (name, _) in _playHistories)
         name: _stringList(name).where((item) => item != trackId).toList(),
+      "favorites_order": favoritesOrder()
+          .where((item) => item != trackId)
+          .toList(),
     };
-    _commit(histories, trackDetails: {trackId: _missing});
+    _commit(lists, trackDetails: {trackId: _missing});
     _deletedTrackIds.add(trackId);
   }
 

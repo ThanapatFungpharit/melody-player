@@ -7,6 +7,7 @@ import "../../shared/format.dart";
 import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
 import "../controls.dart";
+import "settings_page.dart";
 
 class MobileDownloads extends StatelessWidget {
   const MobileDownloads(this.app, {super.key});
@@ -175,6 +176,16 @@ class _DownloadCard extends StatelessWidget {
                         color: record.error.isNotEmpty ? scheme.error : null,
                       ),
                     ),
+                    if (record.needsEngineUpdate)
+                      TextButton(
+                        onPressed: () => pushPanel(
+                          context,
+                          app,
+                          AppPanel.settings,
+                          MobileSettings(app),
+                        ),
+                        child: const Text("Open Settings"),
+                      ),
                   ],
                 ),
               ),
