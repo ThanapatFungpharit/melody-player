@@ -24,10 +24,10 @@ void main() {
     }
   }
 
-  group("background flushing", () {
-    test("commits stay atomic and survive reopening", () async {
+  group("commits", () {
+    test("stay atomic and survive reopening", () async {
       final path = p.join(root.path, "flush.db");
-      final store = SqliteStore.open(path, syncInBackground: true);
+      final store = SqliteStore.open(path);
       store.transaction((db) => db.execute("CREATE TABLE t (v INTEGER)"));
       for (var i = 0; i < 50; i++) {
         store.transaction((db) => db.execute("INSERT INTO t VALUES (?)", [i]));
@@ -39,70 +39,45 @@ void main() {
         }),
         throwsStateError,
       );
-      await store.flushed();
       await store.close();
       expect(rows(path), 50);
     });
 
-    test("bursts of commits are flushed once the isolate is ready", () async {
-      final path = p.join(root.path, "burst.db");
-      final store = SqliteStore.open(path, syncInBackground: true);
-      // Commits made before the isolate reported ready are flushed too.
-      store.transaction((db) => db.execute("CREATE TABLE t (v INTEGER)"));
-      await store.flushed();
-      for (var i = 0; i < 200; i++) {
-        store.transaction((db) => db.execute("INSERT INTO t VALUES (?)", [i]));
-      }
-      await store.flushed().timeout(const Duration(seconds: 10));
-      await store.close();
-      expect(rows(path), 200);
-    });
-
-    test("close waits for the isolate and releases every file", () async {
+    test("closing releases every file and refuses more", () async {
       final path = p.join(root.path, "nested", "close.db");
-      final store = SqliteStore.open(path, syncInBackground: true);
+      final store = SqliteStore.open(path);
       store.transaction((db) => db.execute("CREATE TABLE t (v INTEGER)"));
       await store.close();
       expect(
         () => store.transaction((db) => db.execute("SELECT 1")),
         throwsA(isA<DatabaseFailure>()),
       );
-      await store.flushed();
       // Windows refuses to delete a file that is still open.
       await Directory(p.dirname(path)).delete(recursive: true);
       // Closing twice is harmless.
       await store.close();
     });
 
-    test("a commit never waits for the disk once flushing is ready", () async {
-      final path = p.join(root.path, "latency.db");
-      final store = SqliteStore.open(path, syncInBackground: true);
-      store.transaction((db) => db.execute("CREATE TABLE t (v TEXT)"));
-      await store.flushed();
-      // Give the start-up callback a turn to switch the commit mode.
-      await Future<void>.delayed(Duration.zero);
-      final mode = store.query("PRAGMA synchronous").first.values.first;
-      // 1 is NORMAL: no flush inside COMMIT; FULL (2) would wait for it.
-      expect(mode, 1);
-      await store.close();
+    test("wait for the disk unless asked not to", () async {
+      final full = SqliteStore.open(p.join(root.path, "full.db"));
+      // 2 is FULL, 1 is NORMAL.
+      expect(full.query("PRAGMA synchronous").first.values.first, 2);
+      await full.close();
+      final normal = SqliteStore.open(
+        p.join(root.path, "normal.db"),
+        fullSync: false,
+      );
+      expect(normal.query("PRAGMA synchronous").first.values.first, 1);
+      await normal.close();
     });
 
-    test("stores without it keep FULL commits", () async {
-      final store = SqliteStore.open(p.join(root.path, "full.db"));
-      expect(store.query("PRAGMA synchronous").first.values.first, 2);
-      await store.flushed();
-      await store.close();
-    });
-
-    test("the library flushes in the background", () async {
+    test("of the library survive reopening", () async {
       final manager = MusicManager.open(
         p.join(root.path, "library.db"),
         p.join(root.path, "Music"),
-        syncInBackground: true,
       );
       final id = manager.createPlaylist("Road trip");
       manager.renamePlaylist(id, "Road trip 2");
-      await manager.flushed();
       await manager.close();
       final reopened = MusicManager.open(
         p.join(root.path, "library.db"),

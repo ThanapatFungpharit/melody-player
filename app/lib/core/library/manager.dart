@@ -172,9 +172,7 @@ class MusicManager {
   final Map<String, String> _validatedPaths = {};
 
   /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
-  /// imported once in the transaction that creates the schema.
-  /// [syncInBackground] keeps commits from waiting for the disk on the
-  /// calling isolate (see [SqliteStore]). [moveJournal] is where
+  /// imported once in the transaction that creates the schema. [moveJournal] is where
   /// [moveMusicFolder] records a move, so one a crash interrupted is settled
   /// here: its files go to whichever folder [musicFolder] is.
   static MusicManager open(
@@ -182,7 +180,6 @@ class MusicManager {
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
     String? legacyMetadataPath,
-    bool syncInBackground = false,
     String? moveJournal,
   }) {
     Directory(musicFolder).createSync(recursive: true);
@@ -191,10 +188,7 @@ class MusicManager {
     final additional = [
       for (final folder in additionalMusicFolders) _resolve(folder),
     ];
-    final db = SqliteStore.open(
-      metadataPath,
-      syncInBackground: syncInBackground,
-    );
+    final db = SqliteStore.open(metadataPath);
     final manager = MusicManager._(
       metadataPath,
       musicFolder,
@@ -395,9 +389,6 @@ class MusicManager {
   }
 
   static Iterable<String> _noCompanions(String path) => const [];
-
-  /// Completes once every committed change is on durable storage.
-  Future<void> flushed() => _db.flushed();
 
   // -- persistence -------------------------------------------------------
   void _open(String? legacyPath) {

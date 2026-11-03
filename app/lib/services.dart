@@ -93,7 +93,6 @@ class AppServices {
       store.settings.downloadDirectory,
       additionalMusicFolders: [?paths.publicMusicRoot],
       legacyMetadataPath: legacy.libraryMmdb,
-      syncInBackground: true,
       moveJournal: paths.musicMoveJournal,
     );
     await upgradeLegacyState(

@@ -483,14 +483,10 @@ repaired by downloading the song again.
 
 Both databases use write-ahead logging. A change writes only its rows in one
 transaction; a failure rolls back and the owner restores its in-memory model.
-The library's commits are flushed to durable storage; application state uses
-`NORMAL`, which survives application crashes and may lose only the latest
-session saves on power loss. A library commit does not wait for that flush on
-the UI isolate: it runs at `NORMAL` and a background isolate flushes the log
-right after it (`SqliteStore` with `syncInBackground`), so a commit becomes
-power-loss durable within milliseconds of returning instead of before. If that
-isolate cannot start or fails, commits fall back to `FULL`. Each database
-opens with an integrity quick check. Cookies, receipts, saved lyrics, and
+The library's commits are flushed to durable storage before they return
+(`FULL`); application state uses `NORMAL`, which survives application crashes
+and may lose only the latest session saves on power loss. Each database opens
+with an integrity quick check. Cookies, receipts, saved lyrics, and
 artwork are written to a `.melody-tmp-*` file, flushed, and renamed; a
 temporary file a crash leaves behind is removed at a later launch.
 
