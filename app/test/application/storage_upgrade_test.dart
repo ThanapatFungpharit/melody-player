@@ -78,12 +78,17 @@ void main() {
     test("removes files no release reads", () async {
       final saved = write(p.join(paths.lyrics, "youtube_abc.json"));
       write(p.join(paths.lyrics, "not_embedded.json"), "{}");
+      write(p.join(paths.cache, "lyrics-embedded.json"), "[]");
 
       await relocateLegacyFolders(legacy);
 
       expect(Directory(paths.lyrics).listSync().map((e) => e.path), [
         saved.path,
       ]);
+      expect(
+        File(p.join(paths.cache, "lyrics-embedded.json")).existsSync(),
+        isFalse,
+      );
     });
   });
 

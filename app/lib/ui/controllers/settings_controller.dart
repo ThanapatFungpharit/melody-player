@@ -32,6 +32,7 @@ class SettingsController extends ChangeNotifier {
   /// Packages with an update check in progress.
   final Set<String> checkingPackages = {};
   bool cleaningUp = false;
+  bool writingLyrics = false;
   bool _statusRefreshPending = false;
 
   /// Whether the uploaded cookie file exists, checked asynchronously so
@@ -472,6 +473,31 @@ class SettingsController extends ChangeNotifier {
       return null;
     } finally {
       cleaningUp = false;
+      notifyListeners();
+    }
+  }
+
+  /// Writes lyrics into the library files that have none, where Melody can.
+  Future<void> writeLyricsIntoFiles() async {
+    final embedder = app.services.lyricsEmbedder;
+    if (embedder == null || writingLyrics) return;
+    writingLyrics = true;
+    notifyListeners();
+    try {
+      final report = await embedder.embedLibrary();
+      app.showMessage(
+        [
+          report.written > 0
+              ? "Wrote lyrics into ${plural(report.written, "file")}."
+              : "No file took new lyrics.",
+          if (report.failed > 0)
+            "${plural(report.failed, "file")} could not be changed.",
+          if (report.playing > 0) "The playing track was left alone.",
+        ].join(" "),
+        error: report.failed > 0,
+      );
+    } finally {
+      writingLyrics = false;
       notifyListeners();
     }
   }

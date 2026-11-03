@@ -130,7 +130,6 @@ void main() {
 
     final embedded = Lyrics.parse(await readEmbeddedLyrics(audioPath));
     expect(embedded.synced, isTrue, reason: "lyrics embedded in the MP3");
-    await app.services.lyricsEmbedder!.idle;
     expect(
       File(LyricsLibrary.sidecarPath(audioPath)).existsSync(),
       isFalse,

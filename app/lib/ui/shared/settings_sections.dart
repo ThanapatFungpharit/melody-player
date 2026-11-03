@@ -688,6 +688,32 @@ SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
             label: const Text("Clean up library"),
           ),
         ),
+        if (app.services.lyricsEmbedder != null) ...[
+          const Divider(height: 18),
+          const Text(
+            "Lyrics in files",
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          _note(
+            context,
+            "New downloads already carry their lyrics. This adds them to older "
+            "tracks whose files have none, so they travel with the file.",
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: settings.writingLyrics
+                  ? null
+                  : () => app.run(settings.writeLyricsIntoFiles),
+              icon: const Icon(Icons.lyrics_rounded),
+              label: Text(
+                settings.writingLyrics
+                    ? "Writing lyrics…"
+                    : "Write lyrics into files",
+              ),
+            ),
+          ),
+        ],
       ],
     ),
   );

@@ -37,10 +37,6 @@ class _Entry {
   /// the file changes.
   final String? error;
 
-  /// The same result for the file as it is now, when only its tags changed.
-  _Entry movedTo(_Fingerprint file) =>
-      _Entry(file, measurement: measurement, error: error);
-
   static _Entry? fromJson(Object? data) {
     if (data is! Map) return null;
     final size = data["size"];
@@ -58,10 +54,6 @@ class _Entry {
           truePeakDb: peak is num && peak.isFinite
               ? peak.toDouble()
               : double.negativeInfinity,
-          audioHash: switch (data["audio"]) {
-            final String hash => hash,
-            _ => null,
-          },
         ),
       );
     }
@@ -79,7 +71,6 @@ class _Entry {
     if (measurement case final measured?) ...{
       "lufs": measured.integratedLufs,
       if (measured.truePeakDb.isFinite) "peak": measured.truePeakDb,
-      "audio": ?measured.audioHash,
     },
     "error": ?error,
   };
@@ -104,7 +95,6 @@ class LoudnessNormalizer {
     required this._targetLufs,
     this.maxBoostDb = 0,
     this.limiterHeadroomDb = 0,
-    this._hasher,
     this.saveDelay = const Duration(seconds: 3),
     this.notifyDelay = const Duration(seconds: 1),
   });
@@ -118,7 +108,6 @@ class LoudnessNormalizer {
     required double targetLufs,
     double maxBoostDb = 0,
     double limiterHeadroomDb = 0,
-    AudioHasher? hasher,
     Duration saveDelay = const Duration(seconds: 3),
     Duration notifyDelay = const Duration(seconds: 1),
   }) async {
@@ -136,7 +125,6 @@ class LoudnessNormalizer {
       targetLufs: targetLufs,
       maxBoostDb: maxBoostDb,
       limiterHeadroomDb: limiterHeadroomDb,
-      hasher: hasher,
       saveDelay: saveDelay,
       notifyDelay: notifyDelay,
     ).._entries.addAll(entries);
@@ -145,10 +133,6 @@ class LoudnessNormalizer {
   final MusicManager _manager;
   final String _cachePath;
   final LoudnessMeter _meter;
-
-  /// Tells a tag-only rewrite (lyrics, cover art) from new audio, so it is
-  /// not measured again.
-  final AudioHasher? _hasher;
 
   /// How far a quiet track may be raised (the audio engine's limit here).
   final double maxBoostDb;
@@ -339,16 +323,8 @@ class LoudnessNormalizer {
     if (known?.file == file) return;
     _Entry entry;
     try {
-      final hash = known?.measurement?.audioHash;
-      if (hash != null &&
-          _hasher != null &&
-          await _sameAudio(path, hash, _hasher)) {
-        // Only the tags changed: keep the measurement for the new file.
-        entry = known!.movedTo(file);
-      } else {
-        final measurement = await _meter(path, cancel: _closing.future);
-        entry = _Entry(file, measurement: measurement);
-      }
+      final measurement = await _meter(path, cancel: _closing.future);
+      entry = _Entry(file, measurement: measurement);
     } on LoudnessUnmeasurable catch (error) {
       debugPrint("Loudness of $path cannot be measured: ${error.message}");
       entry = _Entry(file, error: error.message);
@@ -368,19 +344,8 @@ class LoudnessNormalizer {
     if (_closed || !_manager.hasTrack(trackId)) return;
     _entries[trackId] = entry;
     _scheduleSave();
-    if (identical(entry.measurement, known?.measurement)) return;
     _typicalGainDb = null;
     _scheduleNotify();
-  }
-
-  /// Whether the file at [path] still holds the audio hashed as [hash]. A
-  /// file whose audio cannot be read is measured, which records why.
-  Future<bool> _sameAudio(String path, String hash, AudioHasher hasher) async {
-    try {
-      return await hasher(path, cancel: _closing.future) == hash;
-    } on LoudnessUnmeasurable {
-      return false;
-    }
   }
 
   Map<String, String> _trackPaths(Iterable<String> trackIds) {

@@ -16,8 +16,7 @@ import "application/store.dart";
 import "application/thumbnails.dart";
 import "core/library/manager.dart";
 import "audio/audio_backend.dart" show audioLimiterHeadroomDb, audioMaxBoostDb;
-import "core/loudness.dart"
-    show ffmpegAudioHasher, ffmpegExecutable, ffmpegLoudnessMeter;
+import "core/loudness.dart" show ffmpegExecutable, ffmpegLoudnessMeter;
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
 import "package:melody_audio/melody_audio.dart"
     show useNotificationArtworkDirectory;
@@ -137,14 +136,12 @@ class AppServices {
         : LyricsEmbedder(
             manager,
             lyrics,
-            store,
             (source, target, tags) => worker.tag(
               source: source,
               target: target,
               metadata: tags,
               options: sharedOptions(),
             ),
-            carryingCache: paths.lyricsCarryingCache,
           );
     final library = LibraryService(
       manager,
@@ -175,7 +172,6 @@ class AppServices {
       manager,
       paths.loudnessCache,
       ffmpegLoudnessMeter(ffmpeg),
-      hasher: ffmpegAudioHasher(ffmpeg),
       enabled: store.settings.normalizeLoudness,
       targetLufs: store.settings.loudnessTarget.toDouble(),
       maxBoostDb: audioMaxBoostDb,

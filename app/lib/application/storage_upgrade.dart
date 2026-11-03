@@ -54,9 +54,9 @@ class LegacyLayout {
 
   /// Files no release reads any more.
   List<String> get obsoleteFiles => [
-    // Files that could not take lyrics; the embedder simply tries them once
-    // more and records them in the state database.
+    // What the lyrics pass that ran at each launch remembered.
     p.join(paths.lyrics, "not_embedded.json"),
+    p.join(paths.cache, "lyrics-embedded.json"),
   ];
 
   /// Folders no release uses any more, with everything in them.

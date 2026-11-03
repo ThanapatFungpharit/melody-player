@@ -1,11 +1,9 @@
 import "../support/temp.dart";
-import "dart:convert";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/lyrics_embedding.dart";
-import "package:melody/application/store.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/errors.dart";
 import "package:melody/core/library/manager.dart";
@@ -23,14 +21,13 @@ void main() {
   late Directory root;
   late String music;
   late MusicManager manager;
-  late ApplicationStore store;
   late LyricsLibrary lyrics;
   late List<String> fetched;
   late List<String> copied;
   late TagCopier copier;
 
   LyricsEmbedder embedder() =>
-      LyricsEmbedder(manager, lyrics, store, (source, target, tags) {
+      LyricsEmbedder(manager, lyrics, (source, target, tags) {
         copied.add(p.basename(source));
         return copier(source, target, tags);
       });
@@ -50,10 +47,6 @@ void main() {
     music = p.join(root.path, "music");
     await Directory(music).create();
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
-    store = ApplicationStore.open(
-      p.join(root.path, "state.db"),
-      defaultDownloadDirectory: music,
-    );
     fetched = [];
     copied = [];
     copier = (source, target, tags) async =>
@@ -66,7 +59,6 @@ void main() {
 
   tearDown(() async {
     await manager.close();
-    await store.close();
     await root.delete(recursive: true);
   });
 
@@ -76,8 +68,8 @@ void main() {
     final before = manager.getTrack(id).contentHash;
     final artwork = await readEmbeddedArtwork(path);
 
-    final embedding = embedder()..embed([id]);
-    await embedding.idle;
+    final embedding = embedder();
+    await embedding.embed([id]);
 
     final embedded = Lyrics.parse(await readEmbeddedLyrics(path));
     expect(embedded.synced, isTrue);
@@ -91,8 +83,7 @@ void main() {
 
     // Already embedded: nothing is fetched or rewritten again.
     final hash = manager.getTrack(id).contentHash;
-    embedding.embed([id]);
-    await embedding.idle;
+    await embedding.embed([id]);
     expect(fetched, hasLength(1));
     expect(manager.getTrack(id).contentHash, hash);
   });
@@ -103,7 +94,7 @@ void main() {
     const edit = [1, 2, 3];
     await File(path).writeAsBytes(edit, mode: FileMode.append);
 
-    await (embedder()..embed([id])).idle;
+    await embedder().embed([id]);
 
     expect(await readEmbeddedLyrics(path), isNotEmpty);
     final bytes = await File(path).readAsBytes();
@@ -124,28 +115,27 @@ void main() {
     await mineLrc.writeAsString("[re:Melody]\n[00:00.00]Hello\n");
     await theirsLrc.writeAsString("My words");
 
-    final embedding = embedder()..embed([mine, theirs]);
-    await embedding.idle;
+    await embedder().embed([mine, theirs]);
 
     expect(mineLrc.existsSync(), isFalse);
     expect(await theirsLrc.readAsString(), "My words");
     expect(await readEmbeddedLyrics(manager.trackPath(theirs)), isNotEmpty);
   });
 
-  test("waits for a playing track to stop", () async {
+  test("leaves a playing track alone and says so", () async {
     final id = await track("Song.mp3");
     var playing = true;
     final embedding = embedder()..isPlaying = (trackId) => playing;
 
-    embedding.embed([id]);
-    await embedding.idle;
+    final report = await embedding.embed([id]);
+    expect(report.playing, 1);
+    expect(report.written, 0);
     expect(await readEmbeddedLyrics(manager.trackPath(id)), isEmpty);
     // The lyrics are saved, so they still show while it plays.
     expect((await lyrics.saved(_source))?.lyrics, isNotNull);
 
     playing = false;
-    embedding.retryDeferred();
-    await embedding.idle;
+    expect((await embedding.embed([id])).written, 1);
     expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
   });
 
@@ -160,8 +150,7 @@ void main() {
       for (final id in [local, none]) manager.getTrack(id).contentHash,
     ];
 
-    final embedding = embedder()..embed([local, none]);
-    await embedding.idle;
+    await embedder().embed([local, none]);
 
     expect(fetched, ["abcdefghijk"]);
     expect([
@@ -169,121 +158,55 @@ void main() {
     ], hashes);
   });
 
-  test("a file FFmpeg cannot copy is left alone and not retried", () async {
+  test("a file FFmpeg cannot copy is left alone and counted", () async {
     final id = await track(
       "Song.opus",
       fixture: "test/fixtures/artwork/cover.opus",
     );
     final hash = manager.getTrack(id).contentHash;
 
-    await (embedder()..embed([id])).idle;
+    final report = await embedder().embed([id]);
+
+    expect(report.failed, 1);
     expect(copied, ["Song.opus"]);
     expect(manager.getTrack(id).contentHash, hash);
-
-    // Remembered across launches while the file stays the same.
-    await (embedder()..embed([id])).idle;
-    expect(copied, ["Song.opus"]);
     expect(Directory(music).listSync().map((entry) => p.basename(entry.path)), [
       "Song.opus",
     ]);
   });
 
-  test("a stopped worker is retried, not remembered as unsupported", () async {
-    final id = await track(
+  test("a stopped worker fails the file and spares the others", () async {
+    final broken = await track(
       "Song.opus",
       fixture: "test/fixtures/artwork/cover.opus",
+    );
+    final fine = await track(
+      "Song.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
     );
     copier = (source, target, tags) async =>
         throw WorkerFailure("The Python worker has stopped.");
 
-    await (embedder()..embed([id])).idle;
-    await (embedder()..embed([id])).idle;
-    expect(copied, ["Song.opus", "Song.opus"]);
+    final report = await embedder().embed([broken, fine]);
 
-    // FFmpeg itself refusing the file is remembered.
-    copier = (source, target, tags) async => throw WorkerFailure(
-      "Conversion failed!",
-      types: ["FFmpegPostProcessorError"],
-    );
-    await (embedder()..embed([id])).idle;
-    await (embedder()..embed([id])).idle;
-    expect(copied, ["Song.opus", "Song.opus", "Song.opus"]);
+    expect(report.failed, 1);
+    expect(report.written, 1);
   });
 
-  test("the whole library is queued at launch", () async {
+  test("the whole library can be written at once", () async {
     final first = await track("First.mp3");
     final second = await track(
       "Second.mp3",
       fixture: "test/fixtures/artwork/cover_v24.mp3",
     );
 
-    final embedding = embedder()..embedLibrary();
-    await embedding.idle;
+    expect((await embedder().embedLibrary()).written, 2);
 
     for (final id in [first, second]) {
       expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
     }
     // Only the audio files: the rewrites' copies are gone.
     expect(Directory(music).listSync(), hasLength(2));
-  });
-
-  group("files known to hold lyrics", () {
-    late String cache;
-
-    LyricsEmbedder remembering() => LyricsEmbedder(
-      manager,
-      lyrics,
-      store,
-      (source, target, tags) => copier(source, target, tags),
-      carryingCache: cache,
-    );
-
-    Future<List<Object?>> remembered() async =>
-        jsonDecode(await File(cache).readAsString()) as List<Object?>;
-
-    setUp(() => cache = p.join(root.path, "lyrics-embedded.json"));
-
-    test("a rewritten file is remembered by its new content", () async {
-      final id = await track("Song.mp3");
-      final before = manager.getTrack(id).contentHash;
-      final embedding = remembering()..embed([id]);
-      await embedding.idle;
-      final after = manager.getTrack(id).contentHash;
-      expect(after, isNot(before));
-      expect(await remembered(), [after]);
-    });
-
-    test("the next launch does not open a file it knows", () async {
-      final id = await track("Song.mp3");
-      await File(
-        cache,
-      ).writeAsString(jsonEncode([manager.getTrack(id).contentHash]));
-      final path = manager.trackPath(id);
-      final before = await File(path).readAsBytes();
-      final embedding = remembering()..embedLibrary();
-      await embedding.idle;
-      // Without lyrics of its own, the file would otherwise have been rewritten.
-      expect(await File(path).readAsBytes(), before);
-      expect(fetched, isEmpty);
-    });
-
-    test("a changed file is read again", () async {
-      final id = await track("Song.mp3");
-      await File(cache).writeAsString(jsonEncode(["0" * 64]));
-      final embedding = remembering()..embedLibrary();
-      await embedding.idle;
-      expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
-      // The stale hash is gone with the save.
-      expect(await remembered(), [manager.getTrack(id).contentHash]);
-    });
-
-    test("an unreadable cache only costs a fresh pass", () async {
-      final id = await track("Song.mp3");
-      await File(cache).writeAsString("not json");
-      final embedding = remembering()..embedLibrary();
-      await embedding.idle;
-      expect(await readEmbeddedLyrics(manager.trackPath(id)), isNotEmpty);
-    });
   });
 
   test("other formats are copied by FFmpeg with a lyrics tag", () async {
@@ -302,7 +225,7 @@ void main() {
     final path = manager.trackPath(id);
     final artwork = await readEmbeddedArtwork(path);
 
-    await (embedder()..embed([id])).idle;
+    await embedder().embed([id]);
 
     final embedded = Lyrics.parse(await readEmbeddedLyrics(path));
     expect(embedded.lines.map((line) => line.startMs), [0, 900]);

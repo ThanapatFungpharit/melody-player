@@ -1,7 +1,6 @@
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
-import "package:melody/core/id3_lyrics.dart";
 import "package:melody/core/loudness.dart";
 import "package:path/path.dart" as p;
 
@@ -280,46 +279,11 @@ void main() {
       expect(measurement.silent, isTrue);
     }, skip: skip);
 
-    test(
-      "the audio hash ignores tags, lyrics included, but not the audio",
-      () async {
-        final path = await generate("song.mp3", "sine=frequency=440");
-        final measured = await ffmpegLoudnessMeter(ffmpeg!)(path);
-        final hasher = ffmpegAudioHasher(ffmpeg);
-        expect(measured.audioHash, matches(RegExp(r"^[0-9a-f]{64}$")));
-        expect(await hasher(path), measured.audioHash);
-
-        // Melody's own lyrics writer, as the desktop lyrics embedder uses it.
-        expect(await writeId3Lyrics(path, "[00:01.00]Hello"), isTrue);
-        expect(await hasher(path), measured.audioHash);
-
-        // An FFmpeg tag copy, as the worker's `tag` operation makes for other
-        // formats.
-        final flac = await generate("song.flac", "sine=frequency=440");
-        final before = await hasher(flac);
-        final tagged = p.join(root.path, "tagged.flac");
-        final copy = await Process.run(ffmpeg, [
-          "-v", "error", "-i", flac, "-map", "0", "-c", "copy", //
-          "-metadata", "lyrics=Hello", tagged,
-        ]);
-        expect(copy.exitCode, 0, reason: "${copy.stderr}");
-        expect(await hasher(tagged), before);
-
-        final other = await generate("other.flac", "sine=frequency=880");
-        expect(await hasher(other), isNot(before));
-      },
-      skip: skip,
-    );
-
     test("rejects a file that is not audio", () async {
       final path = p.join(root.path, "broken.mp3");
       await File(path).writeAsString("not audio at all");
       await expectLater(
         ffmpegLoudnessMeter(ffmpeg!)(path),
-        throwsA(isA<LoudnessUnmeasurable>()),
-      );
-      await expectLater(
-        ffmpegAudioHasher(ffmpeg)(path),
         throwsA(isA<LoudnessUnmeasurable>()),
       );
     }, skip: skip);

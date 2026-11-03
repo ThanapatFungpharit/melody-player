@@ -60,7 +60,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - Only formats the Android audio decoders play can be imported: AIFF, WMA,
   APE, and WavPack need the desktop FFmpeg decoders.
 - Lyrics are written into new downloads, but tracks already in the library
-  are not rewritten in the background. Their lyrics still show in Melody and
-  work offline.
+  are not rewritten: **Write lyrics into files** is desktop only. Their lyrics
+  still show in Melody and work offline.
 - Notification shortcut buttons appear beside the playback controls; choose
   which two in **Settings → Appearance → Notifications**.

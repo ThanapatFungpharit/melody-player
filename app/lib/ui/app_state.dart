@@ -96,11 +96,8 @@ class MelodyApp {
         appearance.value = (settings.theme, settings.accentColor);
       }
     });
-    final embedder = services.lyricsEmbedder;
-    if (embedder != null) {
-      embedder.isPlaying = (trackId) => playback.currentTrackId == trackId;
-      embedder.embedLibrary();
-    }
+    services.lyricsEmbedder?.isPlaying = (trackId) =>
+        playback.currentTrackId == trackId;
     // Measuring waits for the first view to settle; FFmpeg then runs one
     // file at a time in its own process.
     _loudnessStart = Timer(
@@ -269,8 +266,6 @@ class MelodyApp {
       }
     }
     if (change == PlaybackChange.track) {
-      // Files skipped while they played can take their lyrics now.
-      services.lyricsEmbedder?.retryDeferred();
       _saveLyrics([?playback.currentTrackId]);
       _measureUpcoming();
     }
@@ -619,16 +614,10 @@ class MelodyApp {
     ], first: true);
   }
 
-  /// Saves lyrics for library tracks in the background so they show
-  /// offline: inside the audio file where Melody can rewrite it.
+  /// Saves lyrics for library tracks in the background so they show offline.
   void _saveLyrics(Iterable<String> trackIds) {
     if (_closed) return;
-    final embedder = services.lyricsEmbedder;
-    if (embedder != null) {
-      embedder.embed(trackIds);
-    } else {
-      services.lyrics.prefetch([for (final id in trackIds) ?lyricsTrack(id)]);
-    }
+    services.lyrics.prefetch([for (final id in trackIds) ?lyricsTrack(id)]);
   }
 
   /// A library track's source and file, for lyrics lookups.
