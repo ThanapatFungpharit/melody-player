@@ -419,7 +419,7 @@ class MelodyApp {
       case MediaCommand.skipToNext:
         playback.next();
       case MediaCommand.skipToPrevious:
-        playback.previous();
+        playback.previous(resume: false);
       case MediaCommand.seekTo:
         if (seekPositionMs != null) playback.seek(seekPositionMs);
       case MediaCommand.rewind:

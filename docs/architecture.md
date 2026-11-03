@@ -198,16 +198,42 @@ The controller owns durable playback intent and mirrors the engine's live
 queue selection. `playing` reflects requested playback while a load is pending
 and is reconciled by engine events; it is not proof that sound was emitted.
 
-The controller always gives the complete library queue to the engine.
-just_audio owns decoding, buffering, playlist transitions, and repeat;
+The controller gives the engine the whole queue as a list whose rows are built
+when read, and the engine gives its decoder only the playing row and the next
+`AudioEngine.upcomingRows`, so what a selection or an edit costs does not grow
+with the queue. just_audio owns decoding, buffering, and gapless transitions;
 `audio_session` configures focus and interruptions. Events from a superseded
 generation are ignored, and completion is handled once per generation. Source
 and transport commands are serialized separately so Pause stays responsive
 while a replacement source prepares, and a load watchdog reports a decoder that
 never becomes ready.
 
-The controller must not independently advance a native completion. Queue
-mutations replace or update the engine's queue atomically. Pause keeps
+The decoder's playlist is linear and changes only after the playing row:
+
+- **A selection** (a tapped row, Next or Previous in the app) prepares a new
+  decoder with those rows beside the active one and swaps it in when ready, so
+  the old track plays until then.
+- **An edit** (add, remove, reorder, repeat mode) never replaces the decoder or
+  touches the playing row. `AudioEngine._applyRows` compares what follows it
+  with what the queue says should, removes from the first difference, and
+  appends one row at a time, the only insertion every backend does correctly
+  (just_audio_media_kit cannot insert within a playlist). A change past the
+  window needs no native call. Passes run one at a time per decoder; a
+  transition during one is followed by the next.
+- **A transition** slides the window: it appends what is now in range. Played
+  rows stay behind the playing one until the next selection, because removing
+  them would shift its index under the decoder's asynchronous events.
+- **Repeat queue** appends the first rows again instead of using a native loop
+  mode, so the same mechanism wraps. Repeat track uses the decoder's own loop.
+- **System controls:** Next moves along the decoder's playlist. Previous rewinds
+  there, but an earlier row is not in it, so the app selects that row.
+- **A removed playing track** keeps playing, outside the queue (row -1), and is
+  followed by the row after it.
+- **A decoder that runs out of rows** while the queue has more (this isolate
+  fell behind, or an edit removed the row it had just moved to) continues with
+  the next row rather than reporting completion.
+
+The controller must not independently advance a native completion. Pause keeps
 the media session; only Stop releases the decoder, keep-alive resources, and system
 controls. On Android the launcher activity is `singleTask` and caches its
 Flutter engine, so removing the task does not destroy the decoder while the
@@ -469,11 +495,9 @@ isolate. Both are bounded by the size of the databases, not by the music.
 
 ## Remaining engineering work
 
-- Every structural queue edit prepares a new decoder with the whole queue
-  (`AudioEngine._select`), so its cost grows with the queue. A native playlist
-  holding only a window around the current row, slid on each transition, would
-  bound it, but needs physical-device testing of gapless transitions and
-  background playback.
+- Physical-device tests of the decoder window: gapless transitions with rows
+  appended and removed on ExoPlayer and mpv, and playback continuing while the
+  app is backgrounded on Android.
 - Physical-device lifecycle tests for background playback, notification
   reattachment, and interpreter reuse on Android.
 - macOS bundles copy FFmpeg into `Contents/Resources/ffmpeg` after

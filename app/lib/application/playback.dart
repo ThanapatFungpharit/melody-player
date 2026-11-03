@@ -1,4 +1,5 @@
 import "dart:async";
+import "dart:collection";
 import "dart:math";
 
 import "package:flutter/foundation.dart";
@@ -85,6 +86,39 @@ class PlaybackPersistence {
     flush();
     _closed = true;
   }
+}
+
+/// Engine rows built on first read and then kept. A row whose track cannot
+/// be played any more reads as unplayable, so the engine skips it instead of
+/// one stale row failing the whole queue.
+class _LazyQueueItems extends ListBase<AudioQueueItem> {
+  _LazyQueueItems(this._trackIds, this._build)
+    : _built = List.filled(_trackIds.length, null);
+
+  final List<String> _trackIds;
+  final AudioQueueItem Function(int row, String trackId) _build;
+  final List<AudioQueueItem?> _built;
+
+  @override
+  int get length => _trackIds.length;
+
+  @override
+  set length(int value) => throw UnsupportedError("The queue is read-only");
+
+  @override
+  AudioQueueItem operator [](int index) => _built[index] ??= () {
+    final trackId = _trackIds[index];
+    try {
+      return _build(index, trackId);
+    } on Object catch (error) {
+      debugPrint("Queue row $index cannot be played: $error");
+      return AudioQueueItem(trackId: trackId, source: "");
+    }
+  }();
+
+  @override
+  void operator []=(int index, AudioQueueItem value) =>
+      throw UnsupportedError("The queue is read-only");
 }
 
 /// A copy of the queue's rows and selected row.
@@ -433,13 +467,15 @@ class PlaybackController {
     _notify(PlaybackChange.track);
   }
 
-  void previous() {
+  /// Goes to the previous row, starting it unless [resume] is false and
+  /// playback is paused (system controls keep a paused player paused).
+  void previous({bool resume = true}) {
     if (externalTitle.isNotEmpty) {
       seek(0);
     } else if (positionMs > 5000) {
       seek(0);
     } else if (queue.previous() != null) {
-      _loadCurrent(autoplay: true);
+      _loadCurrent(autoplay: resume || _playing);
     }
   }
 
@@ -915,27 +951,30 @@ class PlaybackController {
     return true;
   }
 
+  /// The queue as the engine sees it. Rows are built when the engine reads
+  /// them, which is only those in or near its decoder's playlist.
   List<AudioQueueItem> _queueItems() {
-    final details = library.detailsMany(queue.items);
-    return [
-      for (final (row, trackId) in queue.items.indexed)
-        AudioQueueItem(
-          trackId: trackId,
-          // A native path; the decoder validates existence and format.
-          source: manager.trackPath(trackId),
-          title: manager.getTrack(trackId).displayTitle,
-          artist: details[trackId]?.uploader ?? "",
-          album: details[trackId]?.sourceName ?? "",
-          artworkUri: details[trackId] == null
-              ? ""
-              : _artworkUri(details[trackId]!.thumbnail),
-          gain: _gainFor(trackId, row),
-        ),
-    ];
+    final held = _heldGain;
+    return _LazyQueueItems(List.of(queue.items), (row, trackId) {
+      final details = library.details(trackId);
+      return AudioQueueItem(
+        trackId: trackId,
+        // A native path; the decoder validates existence and format.
+        source: manager.trackPath(trackId),
+        title: manager.getTrack(trackId).displayTitle,
+        artist: details.uploader,
+        album: details.sourceName,
+        artworkUri: _artworkUri(details.thumbnail),
+        gain: _gainFor(trackId, row, held),
+      );
+    });
   }
 
-  double _gainFor(String trackId, int row) {
-    final held = _heldGain;
+  double _gainFor(
+    String trackId,
+    int row,
+    ({String trackId, double gain})? held,
+  ) {
     if (held != null && row == queue.currentIndex && held.trackId == trackId) {
       return held.gain;
     }
@@ -958,6 +997,8 @@ class PlaybackController {
     required bool autoplay,
     required int positionMs,
   }) {
+    // Fails here, with its reason, when the selected track cannot be played.
+    manager.trackPath(trackId);
     _heldGain = null;
     final items = _queueItems();
     // The selected row, not the first copy: the queue may repeat a track.
@@ -991,12 +1032,7 @@ class PlaybackController {
   /// Sends every queue mutation to the authoritative native player.
   void _syncQueue() {
     if (externalTitle.isNotEmpty || _closed) return;
-    final List<AudioQueueItem> items;
-    try {
-      items = _queueItems();
-    } on Object {
-      return;
-    }
+    final items = _queueItems();
     _engineItems = items;
     backend.updateQueue(items, queue.currentIndex, repeat: queue.repeat);
   }

@@ -135,7 +135,20 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   final _events = StreamController<PlaybackEventMessage>.broadcast();
   final List<Duration?> seeks = [];
   LoadRequest? loadRequest;
-  int sourceCount = 0;
+
+  /// The decoder's playlist, as source URIs.
+  final List<String> sources = [];
+  int get sourceCount => sources.length;
+
+  /// How often the playlist was edited after loading.
+  int edits = 0;
+
+  /// Reports no duration after a playlist edit, like just_audio_media_kit.
+  bool forgetsDurationOnEdit = false;
+  bool _durationForgotten = false;
+
+  /// Holds the next playlist edit until completed.
+  Completer<void>? editGate;
   LoopModeMessage loopMode = LoopModeMessage.off;
   ProcessingStateMessage _state = ProcessingStateMessage.idle;
   Duration _position = Duration.zero;
@@ -160,7 +173,7 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
         updateTime: DateTime.now(),
         updatePosition: _position,
         bufferedPosition: _position,
-        duration: trackDuration,
+        duration: _durationForgotten ? null : trackDuration,
         icyMetadata: null,
         currentIndex: _index,
         androidAudioSessionId: null,
@@ -178,6 +191,7 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   void autoAdvance(int index) {
     _index = index;
     _position = Duration.zero;
+    _durationForgotten = false;
     _broadcast();
   }
 
@@ -202,9 +216,13 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   Future<LoadResponse> load(LoadRequest request) async {
     loadRequest = request;
     final message = request.audioSourceMessage;
-    sourceCount = message is ConcatenatingAudioSourceMessage
-        ? message.children.length
-        : 1;
+    sources
+      ..clear()
+      ..addAll(
+        message is ConcatenatingAudioSourceMessage
+            ? message.children.map(_uri)
+            : [_uri(message)],
+      );
     _state = ProcessingStateMessage.loading;
     _broadcast();
     await _loadGate?.future;
@@ -249,13 +267,29 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   Future<ConcatenatingRemoveRangeResponse> concatenatingRemoveRange(
     ConcatenatingRemoveRangeRequest request,
   ) async {
-    sourceCount -= request.endIndex - request.startIndex;
+    await _edit();
+    sources.removeRange(request.startIndex, request.endIndex);
     if (request.startIndex < _index) {
       _index -= request.endIndex - request.startIndex;
     }
-    _broadcast();
+    _edited();
     return ConcatenatingRemoveRangeResponse();
   }
+
+  Future<void> _edit() async {
+    edits++;
+    final gate = editGate;
+    editGate = null;
+    await gate?.future;
+  }
+
+  void _edited() {
+    if (forgetsDurationOnEdit) _durationForgotten = true;
+    _broadcast();
+  }
+
+  static String _uri(AudioSourceMessage message) =>
+      (message as UriAudioSourceMessage).uri;
 
   @override
   Future<SetLoopModeResponse> setLoopMode(SetLoopModeRequest request) async {
@@ -359,7 +393,12 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   @override
   Future<ConcatenatingInsertAllResponse> concatenatingInsertAll(
     ConcatenatingInsertAllRequest request,
-  ) async => ConcatenatingInsertAllResponse();
+  ) async {
+    await _edit();
+    sources.insertAll(request.index, request.children.map(_uri));
+    _edited();
+    return ConcatenatingInsertAllResponse();
+  }
 
   @override
   Future<ConcatenatingMoveResponse> concatenatingMove(

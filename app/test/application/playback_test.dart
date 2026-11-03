@@ -862,6 +862,87 @@ void main() {
     expect(saved()["queue"], [id]);
   });
 
+  group("the rows given to the engine", () {
+    test("are built only when it reads them", () async {
+      final ids = await tracks(["a.mp3", "b.mp3", "c.mp3"]);
+      final playback = controller()..playTracks(ids);
+      final (items, index, _) = backend.queues.last;
+      expect(index, 0);
+      expect(items, hasLength(3));
+      expect(items[1].trackId, ids[1]);
+      expect(items[1].source, manager.trackPath(ids[1]));
+      expect(identical(items[1], items[1]), isTrue);
+      expect(() => items[0] = items[1], throwsUnsupportedError);
+      expect(() => items.length = 0, throwsUnsupportedError);
+      playback.close();
+    });
+
+    test("keep what the queue held when they were sent", () async {
+      final ids = await tracks(["a.mp3", "b.mp3", "c.mp3"]);
+      final playback = controller()..playTracks(ids);
+      final (items, _, _) = backend.queues.last;
+      playback.removeQueueItem(2);
+      expect(items, hasLength(3));
+      expect(items[2].trackId, ids[2]);
+      expect(backend.queueUpdates.last.$1, hasLength(2));
+    });
+
+    test("read as unplayable once a track cannot be played", () async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      controller().playTracks(ids);
+      final (items, _, _) = backend.queues.last;
+      manager.deleteTrack(ids[1]);
+      expect(items[1].trackId, ids[1]);
+      expect(items[1].isPlayable, isFalse);
+    });
+
+    test("a selected track that cannot be played is reported", () async {
+      final errors = <String>[];
+      final ids = await tracks(["a.mp3"]);
+      final playback = controller(onError: errors.add);
+      playback.playTracks(ids);
+      final loads = backend.queues.length;
+      manager.deleteTrack(ids[0]);
+      playback.queue.items = [ids[0]];
+      playback.playQueueIndex(0);
+      expect(backend.queues, hasLength(loads));
+      expect(errors, isNotEmpty);
+    });
+  });
+
+  group("Previous", () {
+    Future<PlaybackController> onSecondRow() async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      return controller()
+        ..playTracks(ids, startIndex: 1)
+        ..onLoaded();
+    }
+
+    test("starts the earlier track from the player", () async {
+      final playback = await onSecondRow();
+      playback.toggle();
+      expect(playback.playing, isFalse);
+      playback.previous();
+      expect(playback.queue.currentIndex, 0);
+      expect(playback.playing, isTrue);
+    });
+
+    test("keeps a paused player paused from system controls", () async {
+      final playback = await onSecondRow();
+      playback.toggle();
+      playback.previous(resume: false);
+      expect(playback.queue.currentIndex, 0);
+      expect(playback.playing, isFalse);
+    });
+
+    test("keeps playing from system controls", () async {
+      final playback = await onSecondRow();
+      playback.previous(resume: false);
+      expect(playback.queue.currentIndex, 0);
+      expect(playback.playing, isTrue);
+    });
+  });
+
   test("mute restores the exact previous volume", () {
     final playback = controller()
       ..setVolume(41)
