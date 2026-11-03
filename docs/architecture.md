@@ -186,11 +186,11 @@ them to the playback controller.
 Both SQLite schemas are compatible with the first SQLite release: the only change
 since is `playlists.source`, added with a default so earlier releases can still
 read and write the table. Fixtures written by earlier releases are part of the
-test suite. The periodic position
-save writes its own small `playback_position` row in `state`, laid over the
-`playback` row when read, so it never rewrites the queue; writing `playback`
-empties it. An earlier release ignores the row and resumes from the last
-`playback` save. Pre-SQLite
+test suite. The `playback` row holds the queue and repeat mode, and the small
+`playback_position` row holds the place in the queue, laid over it when read, so
+moving through the queue never rewrites the queue. A `playback` row saved before
+that split holds the place itself and reads the same way. An earlier release
+ignores the second row, so it keeps the queue and loses the place. Pre-SQLite
 `library.mmdb` and `state.json` files are still imported once and kept with a
 `.migrated` suffix.
 

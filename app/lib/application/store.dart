@@ -35,8 +35,8 @@ bool _sameJson(Object? a, Object? b) => _encode(a) == _encode(b);
 /// SQLite persistence for state outside MusicManager's domain: preferences,
 /// playback session, enriched metadata, favorites, histories, and download
 /// history. Each top-level value is one JSON row and each track's details
-/// another, so a change rewrites one row. The periodic position save has a
-/// small row of its own ([_positionKey]), so it never rewrites the queue.
+/// another, so a change rewrites one row. Where playback is has a small row of
+/// its own ([_cursorKey]), so moving through the queue never rewrites the queue.
 ///
 /// Commits survive application crashes; a power loss can drop only the most
 /// recent commits (`synchronous=NORMAL`).
@@ -65,9 +65,14 @@ class ApplicationStore {
 
   static const _searchHistoryKey = "search_history";
 
-  /// Where playback has reached since the `playback` row was last written,
-  /// laid over it when read. Writing that row empties this one.
-  static const _positionKey = "playback_position";
+  /// Where playback is in the queue, laid over the `playback` row when read.
+  /// A `playback` row written before this split still holds these fields
+  /// itself, and they count until the cursor row has its own.
+  static const _cursorKey = "playback_position";
+  static const _cursorFields = {"current_index", "position_ms", "duration_ms"};
+
+  /// State the launch pass over the library's lyrics kept.
+  static const _retiredKeys = ["lyrics_not_embedded"];
 
   /// How many earlier searches the search history keeps.
   static const _searchHistoryLimit = 20;
@@ -121,6 +126,14 @@ class ApplicationStore {
         ))
           row["track_id"] as String: jsonDecode(row["value"] as String),
       };
+      if (_retiredKeys.any(raw.containsKey)) {
+        _db.transaction((db) {
+          for (final key in _retiredKeys) {
+            db.execute("DELETE FROM state WHERE key = ?", [key]);
+            raw.remove(key);
+          }
+        });
+      }
     } on FormatException catch (error) {
       throw FormatException("Could not read application settings: $error");
     }
@@ -307,9 +320,7 @@ class ApplicationStore {
     if (!_data.containsKey(key)) return fallback;
     if (key == "playback") {
       final playback = _data[key];
-      if (playback is Map && _hasNewerPosition) {
-        return _clone({...playback, ...(_data[_positionKey] as Map)});
-      }
+      if (playback is Map) return _clone({...playback, ..._cursor});
     }
     return _clone(_data[key]);
   }
@@ -400,8 +411,8 @@ class ApplicationStore {
     final updates = <String, Object?>{};
     if (changes.containsKey("playback")) {
       updates["playback"] = changes["playback"];
-    } else if (changes.containsKey("position")) {
-      updates[_positionKey] = changes["position"];
+    } else if (changes["position"] case final Map position) {
+      updates[_cursorKey] = {..._cursor, ...position};
     }
     if (changes["volume"] case final Map volume) {
       updates["settings"] = {
@@ -444,15 +455,13 @@ class ApplicationStore {
   }) {
     final updates = <String, Object?>{};
     final encoded = <String, String>{};
-    for (final MapEntry(:key, :value) in changes.entries) {
+    final rows = changes["playback"] is Map
+        ? {...changes, ..._splitSession(changes["playback"] as Map)}
+        : changes;
+    for (final MapEntry(:key, :value) in rows.entries) {
       if (trackDetails.isNotEmpty && key == "track_details") continue;
       final json = _encode(value);
-      // A rewind to the stored position must still clear the newer one.
-      if (_data.containsKey(key) &&
-          json == _storedJson(key) &&
-          !(key == "playback" && _hasNewerPosition)) {
-        continue;
-      }
+      if (_data.containsKey(key) && json == _storedJson(key)) continue;
       updates[key] = value;
       encoded[key] = json;
     }
@@ -466,11 +475,6 @@ class ApplicationStore {
           entry.key: entry.value,
     };
     if (updates.isEmpty && changedDetails.isEmpty) return;
-    if (updates.containsKey("playback") && _hasNewerPosition) {
-      // The new row carries its own position.
-      updates[_positionKey] = const <String, Object?>{};
-      encoded[_positionKey] = "{}";
-    }
     _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
     // Committed. A failure above leaves the model as it was.
     _data = {..._data, ...updates};
@@ -488,9 +492,21 @@ class ApplicationStore {
     _written.addAll(encoded);
   }
 
-  bool get _hasNewerPosition => switch (_data[_positionKey]) {
-    final Map position => position.isNotEmpty,
-    _ => false,
+  Map<Object?, Object?> get _cursor => switch (_data[_cursorKey]) {
+    final Map cursor => cursor,
+    _ => const {},
+  };
+
+  /// A whole session as its two rows.
+  static Map<String, Object?> _splitSession(Map session) => {
+    "playback": {
+      for (final MapEntry(:key, :value) in session.entries)
+        if (!_cursorFields.contains(key)) key: value,
+    },
+    _cursorKey: {
+      for (final MapEntry(:key, :value) in session.entries)
+        if (_cursorFields.contains(key)) key: value,
+    },
   };
 
   String _storedJson(String key) => key == "track_details"
