@@ -308,6 +308,75 @@ void main() {
     expect(record.status, DownloadStatus.completed);
   });
 
+  group("settings changed while Melody runs", () {
+    AppSettings settings() => store.settings.copy();
+
+    String codec(Map options) =>
+        ((options["postprocessors"] as List).first as Map)["preferredcodec"]
+            as String;
+
+    test("a new format applies to the next download only", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      final running = (await coordinator.request(_result())).task!;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final before = codec(transport.downloadOptions.single);
+
+      coordinator.applySettings(settings()..audioFormat = "flac");
+      final finished = terminal(coordinator, running);
+      transport.downloadGate!.complete();
+
+      // The running song still finishes as the format it started with.
+      expect((await finished).status, DownloadStatus.completed);
+      expect(before, isNot("flac"));
+      transport.downloadGate = null;
+      await coordinator.request(
+        _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(codec(transport.downloadOptions.last), "flac");
+    });
+
+    test("a higher limit starts waiting downloads at once", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      coordinator.applySettings(settings()..concurrentDownloads = 1);
+      await coordinator.request(_result());
+      await coordinator.request(
+        _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(transport.downloadOptions, hasLength(1));
+
+      coordinator.applySettings(settings()..concurrentDownloads = 2);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(transport.downloadOptions, hasLength(2));
+      transport.downloadGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+
+    test("new cookies apply to the next download", () async {
+      var options = <String, Object?>{};
+      final coordinator = await DownloadCoordinator.open(
+        manager,
+        store,
+        store.settings,
+        worker,
+        sharedOptions: () => options,
+        stagingDirectory: staging,
+        receiptDirectory: receipts,
+      );
+      options = {"cookiefile": "cookies.txt"};
+      coordinator.applySettings(store.settings);
+
+      await coordinator.request(_result());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(transport.downloadOptions.single["cookiefile"], "cookies.txt");
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+  });
+
   test("cancelling a running download keeps nothing", () async {
     transport.downloadGate = Completer();
     final coordinator = await open();

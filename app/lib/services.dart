@@ -162,8 +162,7 @@ class AppServices {
       worker,
       thumbnails: thumbnails,
       lyrics: lyrics,
-      // Download options apply from the next launch (Settings says so).
-      sharedOptions: sharedOptions(),
+      sharedOptions: sharedOptions,
       stagingDirectory: paths.downloadStaging,
       receiptDirectory: paths.downloadReceipts,
     );

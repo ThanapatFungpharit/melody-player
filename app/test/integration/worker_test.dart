@@ -120,7 +120,7 @@ void main() {
         store.settings,
         worker,
         thumbnails: thumbnails,
-        sharedOptions: sharedYtDlpOptions(
+        sharedOptions: () => sharedYtDlpOptions(
           ffmpegLocation: ffmpeg,
           cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
         ),
@@ -181,7 +181,7 @@ void main() {
           store.settings,
           worker,
           lyrics: LyricsLibrary(p.join(folder, "lyrics"), catalog.lyrics),
-          sharedOptions: sharedYtDlpOptions(
+          sharedOptions: () => sharedYtDlpOptions(
             ffmpegLocation: ffmpeg,
             cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
           ),

@@ -145,22 +145,23 @@ Future<void> showConfirmDialog(
 
 /// Saves the settings, first asking to move the library when the music
 /// folder changes while it has tracks.
-Future<void> saveSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsDraft;
+Future<void> applyMusicFolder(BuildContext context, MelodyApp app) {
+  final settings = app.settingsControls;
   final tracks = settings.tracksToMove;
-  if (tracks == 0) return app.run(settings.save);
+  if (tracks == 0) return app.run(settings.applyMusicFolder);
   return showConfirmDialog(
     context,
     title: "Move your library?",
     message:
         "Melody will move the audio of ${plural(tracks, "library track")} "
         "from ${app.settings.downloadDirectory} to "
-        "${settings.draftMusicFolder}, and save new downloads there. "
+        "${settings.requestedMusicFolder}, and save new downloads there. "
         "Playback stops while the files move. Other files in the old folder "
         "stay where they are.",
     confirmLabel: "Move library",
     icon: Icons.drive_file_move_rounded,
-    onConfirm: () => app.run(() => settings.save(moveLibrary: true)),
+    onConfirm: () =>
+        app.run(() => settings.applyMusicFolder(moveLibrary: true)),
   );
 }
 
@@ -932,7 +933,7 @@ Future<void> pickCookieFile(MelodyApp app) async {
       app.showError("The selected cookie file could not be read.");
       return;
     }
-    app.settingsDraft.stageCookie(file.name, bytes);
+    await app.settingsControls.uploadCookie(file.name, bytes);
   } on FileSystemException catch (error) {
     app.showError(error.message);
   }
@@ -943,8 +944,7 @@ Future<void> pickCookieFile(MelodyApp app) async {
 /// Android lets Melody write audio only inside the shared Music folder, so a
 /// folder elsewhere is refused there.
 Future<void> pickMusicFolder(MelodyApp app) async {
-  final draft = app.settingsDraft;
-  final current = draft.draft.downloadDirectory;
+  final current = app.settings.downloadDirectory;
   final String? folder;
   try {
     folder = await FilePicker.getDirectoryPath(
@@ -964,7 +964,7 @@ Future<void> pickMusicFolder(MelodyApp app) async {
     );
     return;
   }
-  draft.update((settings) => settings.downloadDirectory = p.normalize(folder!));
+  app.settingsControls.chooseMusicFolder(p.normalize(folder));
 }
 
 /// Opens [folder] in the system file manager, or on Android in the Files
@@ -1069,7 +1069,7 @@ Future<void> showDataActionDialog(
     warning: true,
     onConfirm: () async {
       try {
-        app.showMessage(await app.settingsDraft.runDataAction(action));
+        app.showMessage(await app.settingsControls.runDataAction(action));
       } catch (error) {
         app.showError("The reset could not be completed: $error");
       }
@@ -1100,7 +1100,7 @@ Future<void> showCleanupReport(
     );
     return Future.value();
   }
-  final settings = app.settingsDraft;
+  final settings = app.settingsControls;
   var busy = false;
   return showDialog<void>(
     context: context,

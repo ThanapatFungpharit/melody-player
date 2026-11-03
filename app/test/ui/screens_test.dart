@@ -1,5 +1,6 @@
 import "../support/temp.dart";
 import "dart:async";
+import "dart:convert";
 import "dart:io";
 
 import "package:flutter/material.dart";
@@ -112,6 +113,10 @@ Future<void> _loadFonts() async {
 
 /// [defaultMusic] is the platform default folder, when the library was
 /// set up in a different one.
+const _cookieFile =
+    "# Netscape HTTP Cookie File\n"
+    ".youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalue\n";
+
 Future<MelodyApp> _app(
   Directory root, {
   required bool mobile,
@@ -295,7 +300,7 @@ void main() {
     final folder = app.settings.downloadDirectory;
     expect(folder, isNot(defaultMusic));
 
-    await app.settingsDraft.runDataAction("settings");
+    await app.settingsControls.runDataAction("settings");
     // The library's files live in its folder; moving it would lose them.
     expect(app.settings.downloadDirectory, folder);
     expect(app.services.store.settings.downloadDirectory, folder);
@@ -307,7 +312,7 @@ void main() {
     );
 
     // Once the library is empty, the default folder applies again.
-    await app.settingsDraft.runDataAction("everything");
+    await app.settingsControls.runDataAction("everything");
     expect(app.settings.downloadDirectory, defaultMusic);
     expect(app.services.store.settings.downloadDirectory, defaultMusic);
     // Applied without a restart, so new downloads land where it records.
@@ -328,7 +333,7 @@ void main() {
     expect(File(downloaded).existsSync(), isTrue);
     expect(File(imported).existsSync(), isTrue);
 
-    await app.settingsDraft.runDataAction("everything");
+    await app.settingsControls.runDataAction("everything");
 
     expect(File(downloaded).existsSync(), isFalse);
     expect(File(imported).existsSync(), isFalse);
@@ -484,50 +489,117 @@ void main() {
     },
   );
 
-  test("leaving Settings unsaved drops an appearance preview", () async {
+  test("a setting applies and is saved the moment it changes", () async {
     final app = await _app(root, mobile: false);
     addTearDown(app.close);
-    final saved = (app.settings.theme, app.settings.accentColor);
-    expect(saved.$2, isNot("rose"));
+    expect(app.settings.accentColor, isNot("rose"));
 
-    app.openPanel(AppPanel.settings);
-    app.settingsDraft.previewAppearance(theme: "dark", accent: "rose");
+    app.settingsControls.update(
+      (next) => next
+        ..theme = "dark"
+        ..accentColor = "rose",
+    );
+
     expect(app.appearance.value, ("dark", "rose"));
-    app.closePanel();
-    expect(app.appearance.value, saved);
-
-    app.openPanel(AppPanel.settings);
-    app.settingsDraft.reset();
-    app.settingsDraft.previewAppearance(accent: "rose");
-    await app.settingsDraft.save();
-    app.openPanel(AppPanel.downloads);
-    expect(app.appearance.value, (saved.$1, "rose"));
+    expect(app.services.store.settings.theme, "dark");
     expect(app.services.store.settings.accentColor, "rose");
   });
 
-  test("a new music folder applies immediately, stored absolute", () async {
+  test("a changed setting keeps the volume playback owns", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    app.playback.setVolume(25);
+
+    app.settingsControls.update((next) => next.theme = "dark");
+
+    expect(app.services.store.settings.volume, 25);
+  });
+
+  test("a cookie file is used and removed at once", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final cookies = File(app.services.paths.cookieFile);
+    final settings = app.settingsControls;
+
+    await settings.uploadCookie("mine.txt", utf8.encode(_cookieFile));
+    expect(await cookies.exists(), isTrue);
+    expect(settings.savedCookieAvailable, isTrue);
+
+    await settings.removeCookie();
+    expect(await cookies.exists(), isFalse);
+    expect(settings.savedCookieAvailable, isFalse);
+  });
+
+  test("a new music folder applies once confirmed, stored absolute", () async {
     final app = await _app(root, mobile: false);
     addTearDown(app.close);
     final original = app.settings.downloadDirectory;
     final requested = p.join(root.path, "Elsewhere", "..", "New Music");
     final expected = p.join(root.path, "New Music");
+    final settings = app.settingsControls;
 
-    app.settingsDraft.draft.downloadDirectory = requested;
+    settings.typeMusicFolder(requested);
+    expect(settings.musicFolderChanged, isTrue);
+    expect(app.settings.downloadDirectory, original);
     await expectLater(
-      app.settingsDraft.save(),
+      settings.applyMusicFolder(),
       throwsA(isA<FormatException>()),
     );
     // A library's files stay where they are recorded.
     expect(app.services.manager.musicFolder, original);
     expect(app.services.store.settings.downloadDirectory, original);
 
-    await app.settingsDraft.runDataAction("library");
-    app.settingsDraft.draft.downloadDirectory = requested;
-    await app.settingsDraft.save();
+    await settings.runDataAction("library");
+    settings.typeMusicFolder(requested);
+    await settings.applyMusicFolder();
+    expect(settings.musicFolderChanged, isFalse);
     expect(app.settings.downloadDirectory, expected);
     expect(app.services.store.settings.downloadDirectory, expected);
     expect(app.services.manager.musicFolder, expected);
     expect(Directory(expected).existsSync(), isTrue);
+  });
+
+  test("an empty folder field asks for no change", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    app.settingsControls.typeMusicFolder("   ");
+    expect(app.settingsControls.musicFolderChanged, isFalse);
+    expect(app.settingsControls.tracksToMove, 0);
+  });
+
+  testWidgets("Settings has no Save, and a new folder asks before moving", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pumpAndSettle();
+    expect(find.text("Save settings"), findsNothing);
+    expect(find.text("Move library here"), findsNothing);
+
+    final field = find.widgetWithText(TextFormField, "Music & download folder");
+    await tester.enterText(field, p.join(root.path, "Elsewhere"));
+    await tester.pump();
+    // Typing keeps the field, and its text, in place.
+    expect(field, findsOneWidget);
+    expect(tester.testTextInput.isVisible, isTrue);
+    await tester.tap(find.text("Move library here"));
+    await tester.pumpAndSettle();
+    expect(find.text("Move your library?"), findsOneWidget);
+    expect(
+      app.services.manager.musicFolder,
+      isNot(p.join(root.path, "Elsewhere")),
+    );
+    await tester.tap(find.text("Cancel"));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text("Keep current folder"));
+    await tester.pumpAndSettle();
+    expect(find.text("Move library here"), findsNothing);
+    await tester.pump(const Duration(seconds: 15));
   });
 
   testWidgets("desktop screens render", (tester) async {

@@ -296,6 +296,12 @@ kept, so it starts from the beginning. Off screen, Android runs a `dataSync`
 foreground service for as long as any download is active, reported over the
 `melody/downloads` channel.
 
+Format, quality, the number of concurrent downloads, and cookies apply to
+downloads that start after they change; a running download keeps what it started
+with, and a higher limit starts waiting ones at once. Settings apply and are
+saved the moment they change, except a new music folder, which can move the
+whole library and so waits for a button and a confirmation.
+
 An imported playlist keeps its link (`playlists.source`), in one canonical form.
 Importing that link again, or Update on the playlist, fills the same playlist:
 songs added there join it in their order, what failed or was interrupted gets

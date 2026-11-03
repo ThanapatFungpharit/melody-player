@@ -98,6 +98,9 @@ class FakeWorkerTransport implements WorkerTransport {
 
   /// Downloads wait on this gate when set.
   Completer<void>? downloadGate;
+
+  /// The yt-dlp options of each download request, in order.
+  final List<Map> downloadOptions = [];
   final Set<String> _cancelled = {};
   String downloadedName = "Song.mp3";
 
@@ -142,6 +145,7 @@ class FakeWorkerTransport implements WorkerTransport {
         _cancelled.add("${frame["task"]}");
         _frames.add({"id": id, "ok": true, "result": true});
       case "download":
+        downloadOptions.add(frame["options"] as Map);
         final task = "${frame["task"]}";
         final directory = "${frame["directory"]}";
         // yt-dlp streams into a .part file before converting.

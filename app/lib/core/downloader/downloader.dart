@@ -264,7 +264,7 @@ class Downloader {
     this._outputDirectory, {
     int maxWorkers = 4,
     Set<String> audioExtensions = const {".mp3"},
-    this.options = const {},
+    this._options = const {},
     this.lyricsTimeout = const Duration(seconds: 15),
     required this.stagingDirectory,
     required this.receiptDirectory,
@@ -302,11 +302,25 @@ class Downloader {
     _outputDirectory = directory;
   }
 
-  final int _maxWorkers;
-  final Set<String> _audioExtensions;
+  int _maxWorkers;
+  Set<String> _audioExtensions;
 
-  /// yt-dlp options applied to every job.
-  final Map<String, Object?> options;
+  /// yt-dlp options for jobs that start from now on.
+  Map<String, Object?> _options;
+
+  /// Changes what jobs that start from now on use; a running job keeps what it
+  /// started with. A higher limit starts waiting jobs at once, and a lower one
+  /// lets running jobs finish.
+  void configure({
+    required int maxWorkers,
+    required Set<String> audioExtensions,
+    required Map<String, Object?> options,
+  }) {
+    _maxWorkers = max(1, maxWorkers);
+    _audioExtensions = {for (final item in audioExtensions) item.toLowerCase()};
+    _options = options;
+    scheduleMicrotask(_pump);
+  }
 
   /// How long a job waits for its lyrics before downloading without them.
   final Duration lyricsTimeout;
@@ -415,7 +429,9 @@ class Downloader {
       // FFmpeg tags MP3 lyrics as a TXXX frame players ignore; those get a
       // proper USLT frame after the download instead, so their lookup runs
       // alongside it. Other formats need the lyrics before FFmpeg runs.
-      final tagsMp3 = _audioExtensions.contains(".mp3");
+      final audioExtensions = _audioExtensions;
+      final options = _options;
+      final tagsMp3 = audioExtensions.contains(".mp3");
       final lyricsLookup = _lyrics(job);
       final tagLyrics = tagsMp3 ? null : await lyricsLookup;
       _raiseIfCancelled(job);
@@ -434,8 +450,8 @@ class Downloader {
         _raiseIfCancelled(job);
         if (lyrics != null) await _writeMp3Lyrics(staging, lyrics);
       }
-      final artwork = await _embeddedArtwork(staging);
-      final files = await _moveDownloadedFiles(job, staging);
+      final artwork = await _embeddedArtwork(staging, audioExtensions);
+      final files = await _moveDownloadedFiles(job, staging, audioExtensions);
       if (files.isEmpty) {
         throw DownloadError("The download did not produce an audio file");
       }
@@ -511,11 +527,14 @@ class Downloader {
 
   /// Reads back the cover art burned into the staged audio, for the UI cache.
   /// A song without one is still the song: it plays with a placeholder.
-  Future<Uint8List> _embeddedArtwork(Directory staging) async {
+  Future<Uint8List> _embeddedArtwork(
+    Directory staging,
+    Set<String> audioExtensions,
+  ) async {
     var largest = Uint8List(0);
     await for (final entity in staging.list()) {
       if (entity is! File ||
-          !_audioExtensions.contains(p.extension(entity.path).toLowerCase())) {
+          !audioExtensions.contains(p.extension(entity.path).toLowerCase())) {
         continue;
       }
       try {
@@ -531,7 +550,11 @@ class Downloader {
     return largest;
   }
 
-  Future<List<String>> _moveDownloadedFiles(_Job job, Directory staging) async {
+  Future<List<String>> _moveDownloadedFiles(
+    _Job job,
+    Directory staging,
+    Set<String> audioExtensions,
+  ) async {
     final files = <String>[];
     final entries = <Map<String, String>>[];
     // Listed up front: moving entries out of a directory while it is being
@@ -540,7 +563,7 @@ class Downloader {
     final staged = [
       await for (final entity in staging.list())
         if (entity is File &&
-            _audioExtensions.contains(p.extension(entity.path).toLowerCase()))
+            audioExtensions.contains(p.extension(entity.path).toLowerCase()))
           entity,
     ]..sort((a, b) => a.path.compareTo(b.path));
     try {

@@ -88,14 +88,7 @@ class MelodyApp {
     search = MusicSearchController(this);
     library = LibraryController(this);
     playlists = PlaylistsController(this);
-    settingsDraft = SettingsController(this);
-    // Leaving Settings without saving (close, Esc, back, another panel)
-    // drops a theme or accent preview, as Cancel does.
-    activePanel.addListener(() {
-      if (activePanel.value != AppPanel.settings) {
-        appearance.value = (settings.theme, settings.accentColor);
-      }
-    });
+    settingsControls = SettingsController(this);
     services.lyricsEmbedder?.isPlaying = (trackId) =>
         playback.currentTrackId == trackId;
     // Measuring waits for the first view to settle; FFmpeg then runs one
@@ -127,7 +120,7 @@ class MelodyApp {
   final AppServices services;
   final bool isMobile;
 
-  /// The saved settings; drafts live in [settingsDraft] until saved.
+  /// The saved settings; drafts live in [settingsControls] until saved.
   AppSettings get settings => _settings;
   set settings(AppSettings value) {
     _settings = value;
@@ -143,7 +136,7 @@ class MelodyApp {
   late final MusicSearchController search;
   late final LibraryController library;
   late final PlaylistsController playlists;
-  late final SettingsController settingsDraft;
+  late final SettingsController settingsControls;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
   Timer? _loudnessStart;
   Timer? _metadataStart;

@@ -212,8 +212,8 @@ SettingsSection downloadSettings(
   MelodyApp app, {
   required bool mobile,
 }) {
-  final settings = app.settingsDraft;
-  final draft = settings.draft;
+  final settings = app.settingsControls;
+  final current = app.settings;
   final android = Platform.isAndroid;
   return SettingsSection(
     icon: Icons.download_for_offline_rounded,
@@ -228,15 +228,15 @@ SettingsSection downloadSettings(
       children: [
         _textFormField(
           "Music & download folder",
-          draft.downloadDirectory,
-          (value) => draft.downloadDirectory = value,
+          settings.folderField,
+          settings.typeMusicFolder,
           readOnly: android || mobile,
           prefixIcon: const Icon(Icons.folder_rounded),
           helper: android
-              ? "Choose any folder inside Music. Changes apply when you save."
+              ? "Choose any folder inside Music."
               : mobile
-              ? "Choose a folder. Changes apply when you save."
-              : "Type a path or choose a folder. Changes apply when you save.",
+              ? "Choose a folder."
+              : "Type a path or choose a folder.",
           suffixIcon: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -247,13 +247,34 @@ SettingsSection downloadSettings(
               ),
               IconButton(
                 tooltip: android ? "Open in Files" : "Open in file manager",
-                onPressed: () => _openMusicFolder(app),
+                onPressed: () => openFolder(app, current.downloadDirectory),
                 icon: const Icon(Icons.open_in_new_rounded),
               ),
               const SizedBox(width: 4),
             ],
           ),
         ),
+        if (settings.musicFolderChanged)
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              FilledButton.icon(
+                onPressed: () => applyMusicFolder(context, app),
+                icon: const Icon(Icons.drive_file_move_rounded),
+                label: Text(
+                  settings.tracksToMove > 0
+                      ? "Move library here"
+                      : "Use this folder",
+                ),
+              ),
+              TextButton(
+                onPressed: () =>
+                    settings.chooseMusicFolder(current.downloadDirectory),
+                child: const Text("Keep current folder"),
+              ),
+            ],
+          ),
         Wrap(
           spacing: 12,
           runSpacing: 12,
@@ -263,14 +284,13 @@ SettingsSection downloadSettings(
               width: 300,
               child: _dropdown(
                 "Audio format",
-                draft.audioFormat,
+                current.audioFormat,
                 [
                   for (final format in DownloadFormat.values)
                     (format.codec, format.label),
                 ],
-                (value) =>
-                    settings.update((draft) => draft.audioFormat = value),
-                helper: draft.downloadFormat.reason,
+                (value) => settings.update((next) => next.audioFormat = value),
+                helper: current.downloadFormat.reason,
                 descriptions: {
                   for (final format in DownloadFormat.values)
                     format.codec: format.reason,
@@ -281,7 +301,7 @@ SettingsSection downloadSettings(
               width: 220,
               child: _dropdown(
                 "Audio quality",
-                draft.audioQuality,
+                current.audioQuality,
                 const [
                   ("best", "Best available"),
                   ("320", "320 kbps"),
@@ -289,9 +309,8 @@ SettingsSection downloadSettings(
                   ("192", "192 kbps"),
                   ("128", "128 kbps"),
                 ],
-                (value) =>
-                    settings.update((draft) => draft.audioQuality = value),
-                helper: draft.downloadFormat.lossless
+                (value) => settings.update((next) => next.audioQuality = value),
+                helper: current.downloadFormat.lossless
                     ? "Lossless formats keep the source quality"
                     : null,
               ),
@@ -300,7 +319,7 @@ SettingsSection downloadSettings(
               width: 220,
               child: _dropdown(
                 "Keep download history",
-                "${draft.downloadHistoryDays}",
+                "${current.downloadHistoryDays}",
                 [
                   for (final days in downloadHistoryChoices)
                     (
@@ -314,7 +333,7 @@ SettingsSection downloadSettings(
                     ),
                 ],
                 (value) => settings.update(
-                  (draft) => draft.downloadHistoryDays = int.parse(value),
+                  (next) => next.downloadHistoryDays = int.parse(value),
                 ),
                 helper: "Finished downloads are then cleared",
               ),
@@ -330,7 +349,7 @@ SettingsSection downloadSettings(
               ),
             ),
             Text(
-              "${draft.concurrentDownloads} at a time",
+              "${current.concurrentDownloads} at a time",
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.primary,
@@ -339,49 +358,24 @@ SettingsSection downloadSettings(
           ],
         ),
         Slider(
-          value: draft.concurrentDownloads.toDouble(),
+          value: current.concurrentDownloads.toDouble(),
           min: 1,
           max: 8,
           divisions: 7,
-          label: "${draft.concurrentDownloads} simultaneous",
+          label: "${current.concurrentDownloads} simultaneous",
           onChanged: (value) => settings.update(
-            (draft) => draft.concurrentDownloads = value.round(),
+            (next) => next.concurrentDownloads = value.round(),
           ),
         ),
-        _infoBox(
-          context,
-          Icons.restart_alt_rounded,
-          _note(
-            context,
-            "Format, quality, and speed changes apply after restarting "
-            "Melody. A new folder applies right away.",
-          ),
-          background: Theme.of(
-            context,
-          ).colorScheme.primary.withValues(alpha: 0.09),
-        ),
+        _note(context, "These apply to downloads that start from now on."),
       ],
     ),
   );
 }
 
-/// Opens the folder shown in the settings. A folder typed or chosen but not
-/// saved yet is opened only if it already exists; saving creates it.
-void _openMusicFolder(MelodyApp app) {
-  final draft = app.settingsDraft.draft.downloadDirectory.trim();
-  final saved = app.settings.downloadDirectory;
-  if (draft.isEmpty || draft == saved) {
-    openFolder(app, saved);
-  } else if (Directory(draft).existsSync()) {
-    openFolder(app, draft);
-  } else {
-    app.showMessage("Save settings to create $draft.");
-  }
-}
-
 SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsDraft;
-  final draft = settings.draft;
+  final settings = app.settingsControls;
+  final current = app.settings;
   final scheme = Theme.of(context).colorScheme;
   return SettingsSection(
     icon: Icons.tune_rounded,
@@ -394,11 +388,11 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
       spacing: 16,
       children: [
         _label(context, "DISPLAY"),
-        _dropdown("Theme", draft.theme, const [
+        _dropdown("Theme", current.theme, const [
           ("system", "Use system setting"),
           ("dark", "Dark"),
           ("light", "Light"),
-        ], (value) => settings.previewAppearance(theme: value)),
+        ], (value) => settings.update((next) => next.theme = value)),
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -421,7 +415,8 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                       in themePalettes.entries)
                     InkWell(
                       borderRadius: BorderRadius.circular(12),
-                      onTap: () => settings.previewAppearance(accent: name),
+                      onTap: () =>
+                          settings.update((next) => next.accentColor = name),
                       child: SizedBox(
                         width: 72,
                         child: Padding(
@@ -437,8 +432,8 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                                   color: color,
                                   shape: BoxShape.circle,
                                   border: Border.all(
-                                    width: name == draft.accentColor ? 3 : 1,
-                                    color: name == draft.accentColor
+                                    width: name == current.accentColor ? 3 : 1,
+                                    color: name == current.accentColor
                                         ? scheme.onSurface
                                         : scheme.outlineVariant,
                                   ),
@@ -449,7 +444,7 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontSize: 11,
-                                  fontWeight: name == draft.accentColor
+                                  fontWeight: name == current.accentColor
                                       ? FontWeight.bold
                                       : FontWeight.normal,
                                 ),
@@ -467,16 +462,16 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
         const Divider(height: 18),
         _label(context, "STARTUP & PLAYBACK"),
         SwitchListTile(
-          value: draft.resumeSession,
+          value: current.resumeSession,
           onChanged: (value) =>
-              settings.update((draft) => draft.resumeSession = value),
+              settings.update((next) => next.resumeSession = value),
           title: const Text("Resume queue and playback state"),
           contentPadding: EdgeInsets.zero,
         ),
         SwitchListTile(
-          value: draft.normalizeLoudness,
+          value: current.normalizeLoudness,
           onChanged: (value) =>
-              settings.update((draft) => draft.normalizeLoudness = value),
+              settings.update((next) => next.normalizeLoudness = value),
           title: const Text("Normalize loudness"),
           subtitle: const Text(
             "Play songs at a similar volume. Your files and volume setting "
@@ -486,7 +481,7 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
         ),
         _dropdown(
           "Target loudness",
-          "${draft.loudnessTarget}",
+          "${current.loudnessTarget}",
           [
             for (final target in loudnessTargetChoices)
               (
@@ -499,9 +494,9 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
                 },
               ),
           ],
-          draft.normalizeLoudness
+          current.normalizeLoudness
               ? (value) => settings.update(
-                  (draft) => draft.loudnessTarget = int.parse(value),
+                  (next) => next.loudnessTarget = int.parse(value),
                 )
               : null,
           helper: app.services.loudness.limiterHeadroomDb > 0
@@ -515,12 +510,12 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
               : "Tracks quieter than the target play as they are on this "
                     "device. A lower target evens out more tracks.",
         ),
-        if (draft.normalizeLoudness) _note(context, settings.loudnessStatus),
+        if (current.normalizeLoudness) _note(context, settings.loudnessStatus),
         const Divider(height: 18),
         _label(context, "NOTIFICATIONS"),
         _dropdown(
           "Android notification shortcuts",
-          draft.notificationActionPair,
+          current.notificationActionPair,
           const [
             ("shuffle_favorite", "Shuffle + Favorite"),
             ("shuffle_repeat", "Shuffle + Repeat"),
@@ -528,7 +523,7 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           ],
           PlatformFeatures.notificationShortcuts
               ? (value) => settings.update(
-                  (draft) => draft.notificationActionPair = value,
+                  (next) => next.notificationActionPair = value,
                 )
               : null,
           helper: PlatformFeatures.notificationShortcuts
@@ -542,13 +537,8 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
 }
 
 SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsDraft;
-  final (status, problem) = settings.cookieStatus();
+  final settings = app.settingsControls;
   final scheme = Theme.of(context).colorScheme;
-  final configured =
-      !settings.removeCookieRequested &&
-      settings.pendingCookie == null &&
-      settings.savedCookieAvailable;
   return SettingsSection(
     icon: Icons.smart_display_rounded,
     title: "$youtubeMusicName access",
@@ -567,15 +557,8 @@ SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
           context,
           Icons.cookie_outlined,
           Text(
-            status,
-            style: TextStyle(
-              fontSize: 12,
-              color: problem
-                  ? scheme.error
-                  : settings.pendingCookie != null
-                  ? scheme.primary
-                  : scheme.onSurfaceVariant,
-            ),
+            settings.cookieStatus,
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
           ),
         ),
         Wrap(
@@ -586,15 +569,15 @@ SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
               onPressed: () => pickCookieFile(app),
               icon: const Icon(Icons.upload_file_rounded),
               label: Text(
-                settings.pendingCookie != null
-                    ? "Choose another file"
-                    : configured
+                settings.savedCookieAvailable
                     ? "Replace file"
                     : "Upload cookie file",
               ),
             ),
             TextButton.icon(
-              onPressed: settings.hasCookie ? settings.removeCookie : null,
+              onPressed: settings.savedCookieAvailable
+                  ? () => app.run(settings.removeCookie)
+                  : null,
               icon: const Icon(Icons.delete_outline_rounded),
               label: const Text("Remove"),
             ),
@@ -607,7 +590,7 @@ SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
 }
 
 SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsDraft;
+  final settings = app.settingsControls;
   Widget runtimeControls(PackageRuntime runtime, String title) {
     final checking = settings.isChecking(runtime);
     return Column(

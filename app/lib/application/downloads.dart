@@ -156,6 +156,8 @@ Map<String, Object?> downloadOptions(
   ...sharedOptions,
 };
 
+Map<String, Object?> _noSharedOptions() => const {};
+
 /// Turns downloader jobs into persistent, library-aware operations.
 ///
 /// Worker callbacks can arrive many times per second. Listeners hear about
@@ -166,10 +168,11 @@ class DownloadCoordinator extends ChangeNotifier {
   DownloadCoordinator._(
     this.manager,
     this.store,
-    this.settings,
+    this._historyDays,
     this.thumbnails,
     this._downloader,
     this.lyrics,
+    this._sharedOptions,
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
@@ -177,13 +180,13 @@ class DownloadCoordinator extends ChangeNotifier {
 
   final MusicManager manager;
   final ApplicationStore store;
-  final AppSettings settings;
   final ThumbnailCache? thumbnails;
   final Downloader _downloader;
   late final OwnedFiles _files = OwnedFiles(store, manager);
 
   /// Supplies lyrics to embed in downloaded files.
   final LyricsLibrary? lyrics;
+  final Map<String, Object?> Function() _sharedOptions;
   final Map<String, DownloadRecord> _records = {};
   final Map<String, String> _activeBySource = {};
   final Stopwatch _clock = Stopwatch()..start();
@@ -204,25 +207,26 @@ class DownloadCoordinator extends ChangeNotifier {
     WorkerClient worker, {
     ThumbnailCache? thumbnails,
     LyricsLibrary? lyrics,
-    Map<String, Object?> sharedOptions = const {},
+    Map<String, Object?> Function() sharedOptions = _noSharedOptions,
     required String stagingDirectory,
     required String receiptDirectory,
   }) async {
     final coordinator = DownloadCoordinator._(
       manager,
       store,
-      settings,
+      settings.downloadHistoryDays,
       thumbnails,
       Downloader(
         worker,
         settings.downloadDirectory,
         maxWorkers: settings.concurrentDownloads,
         audioExtensions: {settings.downloadFormat.extension},
-        options: downloadOptions(settings, sharedOptions),
+        options: downloadOptions(settings, sharedOptions()),
         stagingDirectory: stagingDirectory,
         receiptDirectory: receiptDirectory,
       ),
       lyrics,
+      sharedOptions,
     );
     await coordinator._recover();
     return coordinator;
@@ -288,9 +292,20 @@ class DownloadCoordinator extends ChangeNotifier {
     }
   }
 
+  /// Applies [settings] to the history and to downloads that start from now
+  /// on, with the cookie file as it is now.
+  void applySettings(AppSettings settings) {
+    _downloader.configure(
+      maxWorkers: settings.concurrentDownloads,
+      audioExtensions: {settings.downloadFormat.extension},
+      options: downloadOptions(settings, _sharedOptions()),
+    );
+    historyDays = settings.downloadHistoryDays;
+  }
+
   /// Days a finished download stays in the history; 0 keeps it forever.
   int get historyDays => _historyDays;
-  late int _historyDays = settings.downloadHistoryDays;
+  int _historyDays;
 
   set historyDays(int days) {
     if (days == _historyDays) return;

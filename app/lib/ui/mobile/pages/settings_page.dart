@@ -1,7 +1,6 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
-import "../../shared/dialogs.dart";
 import "../../shared/settings_sections.dart";
 import "../../shared/theme.dart";
 import "../controls.dart";
@@ -19,8 +18,8 @@ class _MobileSettingsState extends State<MobileSettings> {
   @override
   void initState() {
     super.initState();
-    widget.app.settingsDraft.reset();
-    widget.app.settingsDraft.refreshPackageStatus();
+    widget.app.settingsControls.reset();
+    widget.app.settingsControls.refreshPackageStatus();
   }
 
   @override
@@ -58,61 +57,26 @@ class _MobileSettingsState extends State<MobileSettings> {
     }
 
     return ListenableBuilder(
-      listenable: app.settingsDraft,
-      builder: (context, _) => Column(
-        spacing: 10,
-        children: [
-          Expanded(
-            child: scrollPage([
-              MobileHeading(
-                "Settings",
-                subtitle: "Make Melody feel like yours.",
-                large: true,
-                actions: [
-                  TouchIconButton(
-                    Icons.arrow_back_rounded,
-                    "Back",
-                    () => Navigator.of(context).maybePop(),
-                  ),
-                ],
-              ),
-              tile(appearanceSettings(context, app)),
-              tile(downloadSettings(context, app, mobile: true)),
-              tile(youtubeSettings(context, app)),
-              tile(maintenanceSettings(context, app)),
-              tile(dataManagementSettings(context, app)),
-            ]),
-          ),
-          Container(
-            padding: const EdgeInsets.only(top: 12),
-            decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      listenable: app.settingsControls,
+      builder: (context, _) => scrollPage([
+        MobileHeading(
+          "Settings",
+          subtitle: "Make Melody feel like yours.",
+          large: true,
+          actions: [
+            TouchIconButton(
+              Icons.arrow_back_rounded,
+              "Back",
+              () => Navigator.of(context).maybePop(),
             ),
-            child: Row(
-              spacing: 12,
-              children: [
-                TextButton(
-                  onPressed: () {
-                    app.settingsDraft.cancel();
-                    Navigator.of(context).maybePop();
-                  },
-                  child: const Text("Cancel"),
-                ),
-                Expanded(
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(48),
-                    ),
-                    onPressed: () => saveSettings(context, app),
-                    icon: const Icon(Icons.check_rounded),
-                    label: const Text("Save settings"),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+          ],
+        ),
+        tile(appearanceSettings(context, app)),
+        tile(downloadSettings(context, app, mobile: true)),
+        tile(youtubeSettings(context, app)),
+        tile(maintenanceSettings(context, app)),
+        tile(dataManagementSettings(context, app)),
+      ]),
     );
   }
 }
