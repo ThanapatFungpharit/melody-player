@@ -786,7 +786,7 @@ class DownloadCoordinator extends ChangeNotifier {
       // An empty file goes once the track points at the new one, if Melody
       // downloaded it.
       final superseded = [
-        if (!samePath(previousPath, path) && LibraryService.ownsFile(track))
+        if (!samePath(previousPath, path) && LibraryService.isDownload(track))
           previousPath,
       ];
       _files.mark(superseded);

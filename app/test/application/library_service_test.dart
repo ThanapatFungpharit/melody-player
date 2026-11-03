@@ -163,20 +163,100 @@ void main() {
     expect(await lyricsSaved(), isTrue);
   });
 
-  test("deleting an imported track keeps its file", () async {
+  test("deleting an imported track deletes only Melody's copy", () async {
+    final original = p.join(root.path, "original.mp3");
+    await File(original).writeAsString("original");
+    final id = await library.importLocalFile(original);
+    final copy = manager.trackPath(id);
+    expect(copy, isNot(original));
+
+    await library.deleteTrack(id);
+
+    expect(manager.hasTrack(id), isFalse);
+    expect(await File(copy).exists(), isFalse);
+    expect(await File(original).exists(), isTrue);
+  });
+
+  test("deleting a file added where it was keeps the file", () async {
     final path = p.join(music, "mine.mp3");
     await File(path).writeAsString("mine");
-    await File(LyricsLibrary.sidecarPath(path)).writeAsString("[00:01]Mine");
-    final id = await manager.addTrack(
-      path,
-      source: Uri.file(p.join(root.path, "original.mp3")).toString(),
-    );
+    final id = await manager.addTrack(path);
 
     await library.deleteTrack(id);
 
     expect(manager.hasTrack(id), isFalse);
     expect(await File(path).exists(), isTrue);
-    expect(await File(LyricsLibrary.sidecarPath(path)).exists(), isTrue);
+  });
+
+  test("clearing the library keeps copies of imported files", () async {
+    final original = p.join(root.path, "original.mp3");
+    await File(original).writeAsString("original");
+    final copy = manager.trackPath(await library.importLocalFile(original));
+
+    await library.clearLibrary();
+
+    expect(await File(copy).exists(), isTrue);
+    expect(await File(original).exists(), isTrue);
+  });
+
+  test("stray files are found and added from inside folders", () async {
+    final stray = p.join(music, "Album", "Disc 1", "stray.mp3");
+    await File(stray).create(recursive: true);
+    await File(stray).writeAsString("stray");
+    final hidden = p.join(music, ".cache", "hidden.mp3");
+    await File(hidden).create(recursive: true);
+    await File(hidden).writeAsString("hidden");
+
+    final report = await library.reconcile();
+    expect(report.unregisteredFiles, [stray]);
+
+    await library.addStrayFiles(report.unregisteredFiles);
+    expect((await library.reconcile()).unregisteredFiles, isEmpty);
+    expect(manager.trackPath(manager.listTracks().single.id), stray);
+  });
+
+  test("a folder lists its audio files, not hidden or other ones", () async {
+    final folder = p.join(root.path, "picked");
+    for (final name in ["b.mp3", "sub/a.flac", "notes.txt", ".git/c.mp3"]) {
+      await File(p.join(folder, name)).create(recursive: true);
+    }
+
+    expect(await LibraryService.audioFilesIn(folder), [
+      p.join(folder, "b.mp3"),
+      p.join(folder, "sub", "a.flac"),
+    ]);
+  });
+
+  test("only tracks with a link have one to share", () async {
+    final linked = await downloaded("linked.mp3");
+    final path = p.join(music, "local.mp3");
+    await File(path).writeAsString("local");
+    final local = await manager.addTrack(path);
+
+    expect(
+      LibraryService.linksOf([
+        manager.getTrack(linked),
+        manager.getTrack(local),
+      ]),
+      [_source],
+    );
+  });
+
+  test("a playlist file imports the audio files it names", () async {
+    final listed = p.join(root.path, "listed.mp3");
+    await File(listed).writeAsString("listed");
+
+    final result = await library.importPlaylistM3u(
+      utf8.encode("#EXTM3U\nlisted.mp3\nmissing.mp3\n"),
+      fallbackName: "Files",
+      baseDirectory: root.path,
+    );
+
+    expect(result.added, 1);
+    expect(result.skipped, 1);
+    final id = manager.getPlaylist(result.playlistId).trackIds.single;
+    expect(manager.trackPath(id), isNot(listed));
+    expect(await File(listed).exists(), isTrue);
   });
 
   test("clearing the library deletes only downloaded files", () async {
@@ -452,6 +532,7 @@ void main() {
     final m3u8 = utf8.decode(library.exportPlaylistM3u8(source));
     expect(m3u8.split("\n"), [
       "#EXTM3U",
+      "#PLAYLIST:Mixed",
       "#EXTINF:-1,linked.mp3",
       _source,
       "#EXTINF:-1,local.mp3",

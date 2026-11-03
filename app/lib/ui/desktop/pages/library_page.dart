@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../../platform/features.dart";
 import "../../controllers/library_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
@@ -62,6 +63,12 @@ class _LibraryPageState extends State<LibraryPage> {
                   icon: const Icon(Icons.library_add_rounded, size: 19),
                   label: const Text("Add files"),
                 ),
+                if (PlatformFeatures.folderImport)
+                  IconButton(
+                    onPressed: () => pickLocalFolder(app),
+                    tooltip: "Add a folder",
+                    icon: const Icon(Icons.create_new_folder_rounded),
+                  ),
                 IconButton(
                   onPressed: total == 0 ? null : () => exportLibrary(app),
                   tooltip: "Export library",

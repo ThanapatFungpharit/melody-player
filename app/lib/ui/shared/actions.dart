@@ -3,6 +3,7 @@ import "dart:async";
 import "package:flutter/material.dart";
 
 import "../app_state.dart";
+import "../../application/library_service.dart" show LibraryService;
 import "../../application/models.dart";
 import "../../application/sleep_timer.dart";
 import "../../core/library/models.dart";
@@ -35,6 +36,11 @@ List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
     () => importPlaylistFile(app),
   ),
   MenuAction(
+    "From links to songs",
+    Icons.add_link_rounded,
+    () => showPlaylistFromLinksDialog(context, app),
+  ),
+  MenuAction(
     "From $youtubeMusicName link",
     Icons.link_rounded,
     () => showImportPlaylistDialog(context, app),
@@ -42,6 +48,16 @@ List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
 ];
 
 const addToPlaylistLabel = "Add to playlist…";
+
+/// Copies a track's link, for a track that has one.
+MenuAction? _copyLink(MelodyApp app, Track track) =>
+    LibraryService.linksOf([track]).isEmpty
+    ? null
+    : MenuAction(
+        "Copy link",
+        Icons.link_rounded,
+        () => copyLinks(app, LibraryService.linksOf([track])),
+      );
 
 MenuAction _addToPlaylist(
   BuildContext context,
@@ -95,6 +111,7 @@ List<MenuAction> libraryTrackActions(
     Icons.info_outline_rounded,
     () => showTrackDetailsDialog(context, app, track),
   ),
+  ?_copyLink(app, track),
   MenuAction(
     "Delete track and file…",
     Icons.delete_forever_rounded,
@@ -149,6 +166,11 @@ List<MenuAction> searchResultActions(
       Icons.info_outline_rounded,
       () => showSearchResultDetails(context, result),
     ),
+    MenuAction(
+      "Copy link",
+      Icons.link_rounded,
+      () => copyLinks(app, [result.url]),
+    ),
   ];
 }
 
@@ -196,6 +218,7 @@ List<MenuAction> playlistTrackActions(
         Icons.info_outline_rounded,
         () => showTrackDetailsDialog(context, app, track),
       ),
+      ?_copyLink(app, track),
       MenuAction(
         "Remove from Favorites",
         Icons.heart_broken_outlined,
@@ -227,6 +250,7 @@ List<MenuAction> playlistTrackActions(
       Icons.info_outline_rounded,
       () => showTrackDetailsDialog(context, app, track),
     ),
+    ?_copyLink(app, track),
     _addToPlaylist(context, app, track, except: playlist.id),
     MenuAction(
       "Move to playlist…",
@@ -361,6 +385,12 @@ List<MenuAction> playlistActions(
       () => app.playlists.updateFromSource(playlist),
       enabled: !app.playlists.importing,
     ),
+  MenuAction(
+    "Copy links",
+    Icons.link_rounded,
+    () => copyPlaylistLinks(app, playlist),
+    enabled: playlist.trackIds.isNotEmpty,
+  ),
   MenuAction(
     "Export playlist",
     Icons.ios_share_rounded,

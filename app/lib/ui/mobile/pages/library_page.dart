@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../../platform/features.dart";
 import "../../controllers/library_controller.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
@@ -49,6 +50,12 @@ class _MobileLibraryState extends State<MobileLibrary> {
                     Icons.library_add_rounded,
                     () => pickLocalFiles(app),
                   ),
+                  if (PlatformFeatures.folderImport)
+                    MenuAction(
+                      "Add a folder",
+                      Icons.create_new_folder_rounded,
+                      () => pickLocalFolder(app),
+                    ),
                   MenuAction(
                     "Select tracks",
                     Icons.checklist_rounded,

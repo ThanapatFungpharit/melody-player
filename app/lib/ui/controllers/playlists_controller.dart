@@ -219,17 +219,19 @@ class PlaylistsController extends ChangeNotifier {
 
   /// Creates a playlist from the tracks an M3U or M3U8 file lists, named
   /// after the file unless it names itself. Linked tracks missing from the
-  /// library are downloaded.
+  /// library are downloaded, and files missing from it imported.
   Future<void> importFromFile(
     List<int> bytes,
     String fileName, {
     String? directory,
   }) async {
     final library = app.services.library;
-    final match = await library.matchPlaylistM3u(
-      bytes,
-      fallbackName: p.basenameWithoutExtension(fileName),
-      baseDirectory: directory,
+    final match = await library.importListedFiles(
+      await library.matchPlaylistM3u(
+        bytes,
+        fallbackName: p.basenameWithoutExtension(fileName),
+        baseDirectory: directory,
+      ),
     );
     if (match.entries.any((entry) => entry.url != null)) {
       final order = <String>[];
@@ -242,18 +244,7 @@ class PlaylistsController extends ChangeNotifier {
           resolved[key] = trackId;
         } else if (entry.url case final url?) {
           key = sourceKey(url);
-          tracks.putIfAbsent(
-            key,
-            () => SearchResult(
-              id: "",
-              title: entry.title,
-              uploader: "",
-              duration: 0,
-              thumbnail: "",
-              url: url,
-              source: youtubeMusicName,
-            ),
-          );
+          tracks.putIfAbsent(key, () => _linkedSong(url, entry.title));
         } else {
           continue;
         }
@@ -270,11 +261,7 @@ class PlaylistsController extends ChangeNotifier {
       );
       return;
     }
-    final result = await library.importPlaylistM3u(
-      bytes,
-      fallbackName: p.basenameWithoutExtension(fileName),
-      baseDirectory: directory,
-    );
+    final result = library.createPlaylistFrom(match);
     selectedPlaylistId = result.playlistId;
     trackQuery = "";
     app.touchLibrary();
@@ -283,11 +270,63 @@ class PlaylistsController extends ChangeNotifier {
     final skipped = result.skipped;
     app.showMessage(
       "Imported ${plural(result.added, "track")} into “${result.name}”."
-      "${skipped > 0 ? " Skipped ${plural(skipped, "track")} not in the library." : ""}",
+      "${skipped > 0 ? " Skipped ${plural(skipped, "track")} it could not find." : ""}",
     );
   }
 
+  /// A song known only by its link, until yt-dlp reports its details.
+  static SearchResult _linkedSong(String url, String title) => SearchResult(
+    id: "",
+    title: title,
+    uploader: "",
+    duration: 0,
+    thumbnail: "",
+    url: url,
+    source: youtubeMusicName,
+  );
+
   // -- remote import ---------------------------------------------------------
+
+  /// Creates a playlist from links to songs pasted as [text], reusing library
+  /// tracks and downloading the rest. It starts in the background once the
+  /// links are checked, which is what [FormatException]s are about.
+  void importFromLinks(String name, String text) {
+    final title = name.trim();
+    if (title.isEmpty) {
+      throw const FormatException("Playlist name cannot be empty");
+    }
+    if (importing) {
+      throw const FormatException("A playlist import is already in progress.");
+    }
+    final links = extractDownloadUrls(text);
+    final songs = [
+      for (final url in links)
+        if (MediaIdentity.fromUrl(url) != null) url,
+    ];
+    if (songs.isEmpty) {
+      throw const FormatException("Paste at least one link to a song.");
+    }
+    final tracks = <String, SearchResult>{};
+    for (final (index, url) in songs.indexed) {
+      tracks.putIfAbsent(
+        sourceKey(url),
+        () => _linkedSong(url, "Song ${index + 1} of ${songs.length}"),
+      );
+    }
+    app.navigate(3);
+    unawaited(
+      app.run(
+        () => _run(
+          title,
+          tracks.keys.toList(),
+          tracks,
+          _generation,
+          resolveMetadata: true,
+          skipped: links.length - songs.length,
+        ),
+      ),
+    );
+  }
 
   /// Loads a remote playlist and imports it, reusing library tracks and
   /// downloading only missing ones.
@@ -525,7 +564,7 @@ class PlaylistsController extends ChangeNotifier {
     final summary =
         "Imported $imported of ${session.total} tracks into “${session.name}”: "
         "reused ${session.reused}, downloaded ${session.downloaded}."
-        "${session.skipped > 0 ? " Skipped ${plural(session.skipped, "track")} not in the library." : ""}";
+        "${session.skipped > 0 ? " Skipped ${plural(session.skipped, "track")} it could not find." : ""}";
     if (session.failed > 0) {
       app.showError(
         "$summary ${session.failed} could not be downloaded."

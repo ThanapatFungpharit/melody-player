@@ -122,12 +122,14 @@ class LibraryService {
     final unregistered = <String>[];
     final folder = Directory(manager.musicFolder);
     if (await folder.exists()) {
-      await for (final entity in folder.list()) {
-        final name = p.basename(entity.path);
+      await for (final entity in folder.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        final name = p.relative(entity.path, from: manager.musicFolder);
         // Track paths have links resolved; compare listed files the same way.
         if (entity is File &&
-            !name.startsWith(".") &&
-            audioSuffixes.contains(p.extension(name).toLowerCase()) &&
+            _isVisibleAudio(name) &&
             !paths.contains(pathKey(p.join(manager.musicRoot, name)))) {
           unregistered.add(entity.path);
         }
@@ -197,10 +199,29 @@ class LibraryService {
         return CleanupOutcome(done, failures);
       });
 
-  /// Accepts only a top-level audio file in the music folder that no track
-  /// uses, as [reconcile] reports them; the library may have changed since.
+  /// Whether a path relative to a folder names an audio file Melody would
+  /// list: not itself, or inside, anything hidden.
+  static bool _isVisibleAudio(String relative) =>
+      audioSuffixes.contains(p.extension(relative).toLowerCase()) &&
+      !p.split(relative).any((part) => part.startsWith("."));
+
+  /// Audio files anywhere under [folder], in name order. Lists the folder in a
+  /// background isolate.
+  static Future<List<String>> audioFilesIn(String folder) => Isolate.run(
+    () => [
+      for (final entity in Directory(
+        folder,
+      ).listSync(recursive: true, followLinks: false))
+        if (entity is File &&
+            _isVisibleAudio(p.relative(entity.path, from: folder)))
+          entity.path,
+    ]..sort(),
+  );
+
+  /// Accepts only an audio file in the music folder that no track uses, as
+  /// [reconcile] reports them; the library may have changed since.
   void _requireStray(String path) {
-    if (!samePath(p.dirname(path), manager.musicFolder) ||
+    if (!p.isWithin(manager.musicFolder, path) ||
         !audioSuffixes.contains(p.extension(path).toLowerCase())) {
       throw ArgumentError("Not an audio file in the music folder");
     }
@@ -267,19 +288,26 @@ class LibraryService {
   int favoriteTracks(Iterable<String> trackIds) =>
       store.favoriteTracks(trackIds);
 
-  /// Whether Melody downloaded the track's file, so removing the track may
-  /// delete it. Local imports and records without a source keep their file.
-  static bool ownsFile(Track track) {
+  /// Whether Melody downloaded the track's file.
+  static bool isDownload(Track track) {
     final scheme = Uri.tryParse(track.source)?.scheme.toLowerCase();
     return scheme == "http" || scheme == "https";
   }
 
-  /// The owned files of [tracks]' entries, which go with the entries:
-  /// files Melody downloaded ([ownsFile]), or every file when [all].
-  /// Other files only lose a `.lrc` Melody wrote beside them.
-  List<String> _ownedPaths(Iterable<Track> tracks, {bool all = false}) => [
+  /// Whether Melody put the track's file where it is, by downloading it or by
+  /// copying it on import, so deleting the track may delete it. A record
+  /// without a source is a file adopted where it already was, and stays.
+  static bool ownsFile(Track track) =>
+      isDownload(track) || _originalFile(track) != null;
+
+  /// The files that go with [tracks]' entries, as [goes] says. Other files
+  /// only lose a `.lrc` Melody wrote beside them.
+  List<String> _pathsToDelete(
+    Iterable<Track> tracks,
+    bool Function(Track track) goes,
+  ) => [
     for (final track in tracks)
-      if (all || ownsFile(track)) ?_pathOf(track),
+      if (goes(track)) ?_pathOf(track),
   ];
 
   /// The track's file, or null when its stored path is not in a music
@@ -292,34 +320,40 @@ class LibraryService {
     }
   }
 
-  /// Removes a library record with the file Melody downloaded for it, the
-  /// `.lrc` beside that file, and the cached artwork and saved lyrics no
-  /// other track uses. The file goes even if the operating system refuses
+  /// Removes a library record with the file Melody put there for it (never an
+  /// original it was imported from), the `.lrc` beside that file, and the
+  /// cached artwork and saved lyrics no other track uses. The file goes even if the operating system refuses
   /// now: it is deleted at a later launch ([OwnedFiles]).
   Future<void> deleteTrack(String trackId) => manager.mutation.run(() async {
     final track = manager.getTrack(trackId);
-    final owned = _ownedPaths([track]);
+    final owned = _pathsToDelete([track], ownsFile);
     _files.mark(owned);
     manager.deleteTrack(trackId);
     store.removeTrackDetails(trackId);
     await _files.release(owned);
-    await _removeMelodySidecars([track]);
+    await _removeMelodySidecars([track], ownsFile);
     await _forgetCaches([track]);
   });
 
   /// Removes every track and playlist record, every file Melody downloaded
   /// for them (with the `.lrc` beside it), and their cached artwork and
-  /// saved lyrics. Imported copies stay on disk unless [deleteImported].
+  /// saved lyrics. Copies of imported files stay on disk unless
+  /// [deleteImported], in case they are the only ones left.
   /// Returns the track and playlist counts that were removed.
   Future<(int, int)> clearLibrary({bool deleteImported = false}) =>
       manager.mutation.run(() async {
         final tracks = manager.listTracks();
-        final owned = _ownedPaths(tracks, all: deleteImported);
+        final owned = _pathsToDelete(
+          tracks,
+          deleteImported ? (_) => true : isDownload,
+        );
         _files.mark(owned);
         final counts = manager.clearLibrary();
         store.clearLibraryData();
         await _files.release(owned);
-        if (!deleteImported) await _removeMelodySidecars(tracks);
+        if (!deleteImported) {
+          await _removeMelodySidecars(tracks, isDownload);
+        }
         await _forgetCaches(tracks);
         return counts;
       });
@@ -329,9 +363,12 @@ class LibraryService {
   Future<void> releasePendingFiles() => _files.releasePending();
 
   /// Removes `.lrc` files Melody wrote beside the kept files of [tracks].
-  Future<void> _removeMelodySidecars(Iterable<Track> tracks) async {
+  Future<void> _removeMelodySidecars(
+    Iterable<Track> tracks,
+    bool Function(Track track) deleted,
+  ) async {
     for (final track in tracks) {
-      if (ownsFile(track)) continue;
+      if (deleted(track)) continue;
       if (_pathOf(track) case final path?) {
         await LyricsLibrary.removeMelodySidecar(path);
       }
@@ -472,7 +509,7 @@ class LibraryService {
         // A missing file is read once it is back.
         if (file == null || !manager.hasTrack(track.id)) continue;
         await cache.store(track.id, file.artwork);
-        if (!ownsFile(track)) _adoptTags(track, file);
+        if (!isDownload(track)) _adoptTags(track, file);
       }
       onChanged?.call();
     }
@@ -598,19 +635,30 @@ class LibraryService {
   );
 
   /// An ordered M3U8 index of the library: each track's source link.
-  List<int> exportLibraryM3u8() => _m3u8(manager.listTracks());
+  List<int> exportLibraryM3u8() =>
+      _m3u8("Melody Library", manager.listTracks());
 
   /// An M3U8 index in the playlist's saved track order.
-  List<int> exportPlaylistM3u8(String playlistId) => _m3u8(
-    playlistId == favoritesPlaylistId
-        ? favoriteTrackList()
-        : manager.playlistTracks(playlistId),
-  );
+  List<int> exportPlaylistM3u8(String playlistId) =>
+      playlistId == favoritesPlaylistId
+      ? _m3u8(favoritesPlaylist().name, favoriteTrackList())
+      : _m3u8(
+          manager.getPlaylist(playlistId).name,
+          manager.playlistTracks(playlistId),
+        );
+
+  /// The links that share [tracks], in order. A track imported from a file has
+  /// none.
+  static List<String> linksOf(Iterable<Track> tracks) => [
+    for (final track in tracks)
+      if (isHttpUrl(track.source)) youtubeMusicTrackUrl(track.source.trim()),
+  ];
 
   /// A track with no link (one imported from a local file) is listed by its
   /// file instead, or left out when that is outside the music folders.
-  List<int> _m3u8(Iterable<Track> tracks) {
-    final lines = ["#EXTM3U"];
+  List<int> _m3u8(String name, Iterable<Track> tracks) {
+    String line(String text) => text.split(RegExp(r"\s+")).join(" ");
+    final lines = ["#EXTM3U", "#PLAYLIST:${line(name)}"];
     for (final track in tracks) {
       final String location;
       if (isHttpUrl(track.source)) {
@@ -622,9 +670,8 @@ class LibraryService {
       } else {
         continue;
       }
-      final title = track.displayTitle.split(RegExp(r"\s+")).join(" ");
       lines
-        ..add("#EXTINF:-1,$title")
+        ..add("#EXTINF:-1,${line(track.displayTitle)}")
         ..add(location);
     }
     return utf8.encode("${lines.join("\n")}\n");
@@ -633,7 +680,8 @@ class LibraryService {
   /// Matches each entry of an M3U or M3U8 file to a library track by its
   /// path, its source (a URL, or the file a local track was imported from),
   /// its contents, or a file name only one track has. An unmatched link to a
-  /// YouTube song is left for the caller to download.
+  /// YouTube song is left for the caller to download, and an unmatched audio
+  /// file that exists to import ([importListedFiles]).
   /// [baseDirectory] resolves relative entries.
   Future<PlaylistFileMatch> matchPlaylistM3u(
     List<int> bytes, {
@@ -658,11 +706,13 @@ class LibraryService {
     for (final (:location, :title) in entries) {
       final path = _entryPath(location, baseDirectory);
       String? id;
+      var exists = false;
       if (path != null) {
         id =
             byPath[pathKey(p.absolute(path))] ??
             manager.findTrackBySource(Uri.file(path).toString())?.id;
-        if (id == null && await File(path).exists()) {
+        exists = await File(path).exists();
+        if (id == null && exists) {
           try {
             id = (await manager.findTrackByContent(path))?.id;
           } on FileSystemException {
@@ -685,10 +735,15 @@ class LibraryService {
       matched.add(
         id != null
             ? PlaylistFileEntry.track(id)
+            : exists && audioSuffixes.contains(p.extension(path!).toLowerCase())
+            ? PlaylistFileEntry.file(path)
             : const PlaylistFileEntry.skipped(),
       );
     }
-    if (matched.every((entry) => entry.trackId == null && entry.url == null)) {
+    if (matched.every(
+      (entry) =>
+          entry.trackId == null && entry.url == null && entry.file == null,
+    )) {
       throw FormatException(
         "None of the ${entries.length} tracks in the playlist file are in "
         "the library",
@@ -701,19 +756,46 @@ class LibraryService {
     );
   }
 
+  /// Imports the audio files [match] lists that the library lacks, and returns
+  /// it with their tracks in their place. A file that cannot be imported is
+  /// skipped.
+  Future<PlaylistFileMatch> importListedFiles(PlaylistFileMatch match) async {
+    final entries = <PlaylistFileEntry>[];
+    for (final entry in match.entries) {
+      if (entry.file case final path?) {
+        try {
+          entries.add(PlaylistFileEntry.track(await importLocalFile(path)));
+        } on Object catch (error) {
+          debugPrint("Could not import $path for a playlist: $error");
+          entries.add(const PlaylistFileEntry.skipped());
+        }
+      } else {
+        entries.add(entry);
+      }
+    }
+    return PlaylistFileMatch(match.name, entries);
+  }
+
   /// Creates a playlist from the library tracks an M3U or M3U8 file lists
-  /// (see [matchPlaylistM3u]); entries without a library track are skipped.
-  /// A file that matches none creates no playlist.
+  /// (see [matchPlaylistM3u]), importing the files it names that the library
+  /// lacks; other entries are skipped. A file that matches none creates no
+  /// playlist.
   Future<PlaylistFileImport> importPlaylistM3u(
     List<int> bytes, {
     required String fallbackName,
     String? baseDirectory,
-  }) async {
-    final match = await matchPlaylistM3u(
-      bytes,
-      fallbackName: fallbackName,
-      baseDirectory: baseDirectory,
-    );
+  }) async => createPlaylistFrom(
+    await importListedFiles(
+      await matchPlaylistM3u(
+        bytes,
+        fallbackName: fallbackName,
+        baseDirectory: baseDirectory,
+      ),
+    ),
+  );
+
+  /// Creates a playlist of the tracks in [match]; other entries are skipped.
+  PlaylistFileImport createPlaylistFrom(PlaylistFileMatch match) {
     final trackIds = match.trackIds;
     if (trackIds.isEmpty) {
       throw FormatException(
@@ -772,15 +854,29 @@ class _FileMetadata {
       tags.title.isNotEmpty ? tags.title : fallback;
 }
 
-/// An M3U entry matched to a library track, a link to download, or neither.
+/// An M3U entry matched to a library track, a link to download, a file to
+/// import, or none of them.
 class PlaylistFileEntry {
-  const PlaylistFileEntry.track(String this.trackId) : url = null, title = "";
+  const PlaylistFileEntry.track(String this.trackId)
+    : url = null,
+      file = null,
+      title = "";
   const PlaylistFileEntry.download(String this.url, this.title)
-    : trackId = null;
-  const PlaylistFileEntry.skipped() : trackId = null, url = null, title = "";
+    : trackId = null,
+      file = null;
+  const PlaylistFileEntry.file(String this.file)
+    : trackId = null,
+      url = null,
+      title = "";
+  const PlaylistFileEntry.skipped()
+    : trackId = null,
+      url = null,
+      file = null,
+      title = "";
 
   final String? trackId;
   final String? url;
+  final String? file;
   final String title;
 }
 
@@ -794,7 +890,10 @@ class PlaylistFileMatch {
   List<String> get trackIds => [for (final entry in entries) ?entry.trackId];
 
   int get skipped => entries
-      .where((entry) => entry.trackId == null && entry.url == null)
+      .where(
+        (entry) =>
+            entry.trackId == null && entry.url == null && entry.file == null,
+      )
       .length;
 }
 

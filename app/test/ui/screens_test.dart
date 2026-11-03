@@ -1324,7 +1324,7 @@ void main() {
         app,
         app.playlists.playlist(favoritesPlaylistId),
       ).map((action) => action.label),
-      ["Export playlist"],
+      ["Copy links", "Export playlist"],
     );
     expect(() => app.playlists.delete(favoritesPlaylistId), throwsStateError);
     expect(

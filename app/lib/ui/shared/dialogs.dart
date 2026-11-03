@@ -307,6 +307,7 @@ Future<void> showTrackDetailsDialog(
           ? details.sourceName
           : (track.source.isNotEmpty ? track.source : "Local"),
     ),
+    for (final link in LibraryService.linksOf([track])) ("Link", link),
     ("File", path),
   ]);
 }
@@ -319,8 +320,9 @@ Future<void> showDeleteTrackDialog(
   context,
   title: "Delete track?",
   message:
-      "“${track.displayTitle}” will be removed from the library and every playlist. "
-      "A file Melody downloaded is deleted; an imported file stays on disk.",
+      "“${track.displayTitle}” will be removed from the library and every playlist, "
+      "and Melody's file for it deleted. An original you imported it from is not "
+      "touched, and a file added from the music folder stays on disk.",
   confirmLabel: "Delete track",
   icon: Icons.delete_forever_rounded,
   onConfirm: () async {
@@ -346,8 +348,9 @@ Future<void> showDeleteSelectedTracksDialog(
     title: "Delete ${plural(count, "track")}?",
     message:
         "${count == 1 ? "This track" : "These tracks"} will be removed from the "
-        "library and every playlist. Files Melody downloaded are deleted; "
-        "imported files stay on disk.",
+        "library and every playlist, and Melody's files for them deleted. "
+        "Originals you imported from are not touched, and files added from the "
+        "music folder stay on disk.",
     confirmLabel: "Delete",
     icon: Icons.delete_forever_rounded,
     onConfirm: () => app.run(app.library.deleteSelected),
@@ -493,6 +496,67 @@ Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
       app.showMessage("Loading the $youtubeMusicName playlist…");
       app.playlists.importFromUrl(url);
     },
+  );
+}
+
+/// Asks for a name and links to songs, and makes a playlist of them.
+Future<void> showPlaylistFromLinksDialog(BuildContext context, MelodyApp app) {
+  final name = TextEditingController();
+  final links = TextEditingController();
+  String? error;
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        insetPadding: _dialogInsets,
+        title: const Text("New playlist from links"),
+        content: SizedBox(
+          width: _dialogWidth(context),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 12,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: "Playlist name"),
+                ),
+                TextField(
+                  controller: links,
+                  minLines: 5,
+                  maxLines: 10,
+                  decoration: InputDecoration(
+                    labelText: "$youtubeMusicName song links",
+                    hintText: "Paste the links someone shared with you",
+                    errorText: error,
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text("Cancel"),
+          ),
+          FilledButton(
+            onPressed: () {
+              try {
+                app.playlists.importFromLinks(name.text, links.text);
+                Navigator.of(context).pop();
+              } on FormatException catch (failure) {
+                setState(() => error = failure.message);
+              }
+            },
+            child: const Text("Create playlist"),
+          ),
+        ],
+      ),
+    ),
   );
 }
 
@@ -731,6 +795,54 @@ Future<void> pickLocalFiles(MelodyApp app) async {
   await app.library.importLocalFiles(paths);
 }
 
+/// Adds every audio file under a chosen folder to the library.
+Future<void> pickLocalFolder(MelodyApp app) => app.run(() async {
+  final folder = await FilePicker.getDirectoryPath(
+    dialogTitle: "Add a folder of music to Melody",
+  );
+  if (folder == null || folder.isEmpty) return;
+  final paths = await LibraryService.audioFilesIn(folder);
+  if (paths.isEmpty) {
+    app.showMessage("That folder has no audio files Melody can play.");
+    return;
+  }
+  app.showMessage("Importing ${plural(paths.length, "local file")}…");
+  await app.library.importLocalFiles(paths);
+});
+
+/// Copies links to the clipboard, one per line.
+Future<void> copyLinks(MelodyApp app, List<String> links) async {
+  await Clipboard.setData(ClipboardData(text: links.join("\n")));
+  app.showMessage(
+    links.length == 1 ? "Link copied." : "Copied ${links.length} links.",
+  );
+}
+
+/// Copies the links of a playlist's tracks, saying which have none to share.
+Future<void> copyPlaylistLinks(MelodyApp app, Playlist playlist) async {
+  final tracks = app.playlists.tracks(playlist.id);
+  final links = LibraryService.linksOf(tracks);
+  if (links.isEmpty) {
+    app.showMessage(
+      "These tracks came from files, so they have no links to share.",
+    );
+    return;
+  }
+  await Clipboard.setData(ClipboardData(text: links.join("\n")));
+  final local = tracks.length - links.length;
+  app.showMessage(
+    "Copied ${plural(links.length, "link")}."
+    "${local > 0 ? " ${plural(local, "track")} from files could not be included." : ""}",
+  );
+}
+
+/// What to say about a file listing [tracks], whose local ones only work here.
+String _exportedMessage(String what, List<Track> tracks) {
+  final local = tracks.length - LibraryService.linksOf(tracks).length;
+  return "$what exported."
+      "${local > 0 ? " ${plural(local, "track")} from files will only play on this device." : ""}";
+}
+
 Future<void> _saveM3u8(
   MelodyApp app,
   String title,
@@ -754,7 +866,7 @@ Future<void> exportLibrary(MelodyApp app) => app.run(
     "Export library playlist",
     "Melody Library.m3u8",
     app.services.library.exportLibraryM3u8(),
-    "Library playlist exported.",
+    _exportedMessage("Library playlist", app.services.manager.listTracks()),
   ),
 );
 
@@ -766,11 +878,11 @@ Future<void> exportPlaylist(MelodyApp app, Playlist playlist) => app.run(() {
     "Export playlist",
     "${safe.isEmpty ? "Playlist" : safe}.m3u8",
     app.services.library.exportPlaylistM3u8(playlist.id),
-    "Playlist exported.",
+    _exportedMessage("Playlist", app.playlists.tracks(playlist.id)),
   );
 });
 
-/// Picks an M3U or M3U8 file and makes a playlist of its library tracks.
+/// Picks an M3U or M3U8 file and makes a playlist of what it lists.
 Future<void> importPlaylistFile(MelodyApp app) => app.run(() async {
   final result = await FilePicker.pickFiles(
     dialogTitle: "Import playlist file",

@@ -8,6 +8,10 @@ abstract final class PlatformFeatures {
   /// have only built-in buttons.
   static bool get notificationShortcuts => Platform.isAndroid;
 
+  /// Adding a whole folder of music. Android lets Melody read only its own
+  /// folders, so files are picked one by one there.
+  static bool get folderImport => !Platform.isAndroid;
+
   /// Showing and opening the app data folder. Android keeps it private.
   static bool get appDataFolder => !Platform.isAndroid;
 }
