@@ -190,9 +190,10 @@ test suite. The `playback` row holds the queue and repeat mode, and the small
 `playback_position` row holds the place in the queue, laid over it when read, so
 moving through the queue never rewrites the queue. A `playback` row saved before
 that split holds the place itself and reads the same way. An earlier release
-ignores the second row, so it keeps the queue and loses the place. Pre-SQLite
-`library.mmdb` and `state.json` files are still imported once and kept with a
-`.migrated` suffix.
+ignores the second row, so it keeps the queue and loses the place. Melody
+upgrades from 1.0.2, the first release with SQLite and this layout. It refuses a
+data folder older than that (`state.json` or `library.mmdb` with no database)
+and asks for 1.0.3 first, rather than start an empty library beside it.
 
 ### Playback
 
@@ -388,16 +389,9 @@ Rules that keep it predictable:
   before use. Absolute paths remain only for the user-chosen music folder,
   imported originals, and Android tracks inside the public `Music` root.
 - **Earlier layouts are upgraded in one place.** `storage_upgrade.dart` holds
-  every legacy name: it moves `thumbnails/`, `yt-dlp-runtime/`,
-  `ytmusicapi-runtime/`, and `yt-dlp-cache/` into the layout above before
-  anything opens them, drops the `cookie_file` setting (an empty one removes
-  `cookies.txt`), deletes the `.melody-download-*.json` receipts and the
-  `downloads/receipts/` folder of earlier releases, sweeps abandoned
-  `.melody-download-*` staging beside the music, and moves Android's private `Music/` tracks to
-  the public music folder. Pre-SQLite `state.json` and `library.mmdb` are
-  imported by their stores and kept with a `.migrated` suffix until a later
-  launch has opened the databases. The old `download-staging/` folder and
-  the system-temp `melody-notification-artwork/` folder are removed.
+  every name an earlier release used: it refuses a data folder too old to
+  upgrade from, and removes what no release reads any more (the lyrics caches
+  and `downloads/receipts/`).
 
 ### Disk cleanup
 

@@ -445,17 +445,6 @@ String availablePath(
   return candidate;
 }
 
-/// Keeps an imported legacy file as a backup that is never imported again.
-void retireLegacyFile(String path) {
-  final file = File(path);
-  if (!file.existsSync()) return;
-  try {
-    file.renameSync("$path.migrated");
-  } on FileSystemException catch (error) {
-    debugPrint("Imported legacy state, but could not rename $path: $error");
-  }
-}
-
 /// Serializes asynchronous critical sections, like a non-reentrant lock.
 class AsyncMutex {
   Future<void> _tail = Future<void>.value();

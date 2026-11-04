@@ -74,17 +74,12 @@ class AppServices {
   }) async {
     onStage?.call("Finding your music");
     final paths = await AppPaths.resolve();
-    final legacy = LegacyLayout(paths);
-    // Before anything opens a folder that moved.
-    await relocateLegacyFolders(legacy);
+    requireSupportedDataFolder(paths);
+    await removeRetiredFiles(paths);
     useNotificationArtworkDirectory(paths.notificationArtworkCache);
-    final storesExisted =
-        File(paths.stateDatabase).existsSync() &&
-        File(paths.libraryDatabase).existsSync();
     final store = ApplicationStore.open(
       paths.stateDatabase,
       defaultDownloadDirectory: paths.defaultMusicDirectory,
-      legacyPath: legacy.stateJson,
     );
     onStoreReady?.call(store);
     onStage?.call("Opening your library");
@@ -92,14 +87,7 @@ class AppServices {
       paths.libraryDatabase,
       store.settings.downloadDirectory,
       additionalMusicFolders: [?paths.publicMusicRoot],
-      legacyMetadataPath: legacy.libraryMmdb,
       moveJournal: paths.musicMoveJournal,
-    );
-    await upgradeLegacyState(
-      legacy,
-      store,
-      manager,
-      storesExisted: storesExisted,
     );
     onStage?.call("Starting the music engine");
     const packages = [ytDlpRuntimeInfo, ytMusicRuntimeInfo];

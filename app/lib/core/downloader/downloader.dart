@@ -138,15 +138,14 @@ class _Staging {
   }
 }
 
-/// Deletes the subfolders of [parent] named `<prefix>...` that a download
+/// Deletes the staging subfolders of [parent] that a download
 /// abandoned when its process ended (closed mid-download, crashed, or
 /// killed): partial streams, intermediate audio, and thumbnails. Folders another
 /// running process still holds are kept, as are the ones in [except]. The ones
 /// in [resumable] are kept too, until nothing has touched them for a week.
 /// Returns how many were removed.
-Future<int> removeAbandonedStagingIn(
+Future<int> _removeAbandonedStagingIn(
   String parent, {
-  String prefix = _stagingPrefix,
   Set<String> except = const {},
   Set<String> resumable = const {},
   DateTime? now,
@@ -159,7 +158,7 @@ Future<int> removeAbandonedStagingIn(
     if (!await Directory(parent).exists()) return 0;
     await for (final entity in Directory(parent).list(followLinks: false)) {
       if (entity is! Directory ||
-          !p.basename(entity.path).startsWith(prefix) ||
+          !p.basename(entity.path).startsWith(_stagingPrefix) ||
           except.contains(entity.path)) {
         continue;
       }
@@ -543,13 +542,13 @@ class Downloader {
   }
 
   /// Deletes staging directories that a download abandoned when its
-  /// process ended ([removeAbandonedStagingIn]), except this downloader's
+  /// process ended ([_removeAbandonedStagingIn]), except this downloader's
   /// own running jobs and what [resumableUrls] left for another attempt.
   /// Returns how many were removed.
   Future<int> removeAbandonedStaging({
     Iterable<String> resumableUrls = const [],
     DateTime? now,
-  }) => removeAbandonedStagingIn(
+  }) => _removeAbandonedStagingIn(
     stagingDirectory,
     except: _activeStaging,
     resumable: {for (final url in resumableUrls) ?_songStaging(url)},

@@ -9,16 +9,14 @@ import "package:melody/core/library/manager.dart";
 import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
-/// The fixtures were written by earlier Melody releases (`library.db`,
-/// `state.db`, and the pre-SQLite `library.mmdb` and `state.json`), not by
-/// this code. Never regenerate them.
+/// The fixtures were written by earlier Melody releases (`library.db` and
+/// `state.db`), not by this code. Never regenerate them.
 void main() {
   final fixtures = p.join("test", "fixtures", "data");
   final expected =
       jsonDecode(File(p.join(fixtures, "expected.json")).readAsStringSync())
           as Map<String, Object?>;
   final ids = (expected["ids"] as Map).cast<String, String>();
-  final legacy = (expected["legacy"] as Map).cast<String, String>();
   late Directory root;
 
   Future<void> copyTree(String from, String to) async {
@@ -180,44 +178,6 @@ void main() {
       ids["beta"],
       ids["alpha"],
     ]);
-  });
-
-  test("imports the pre-SQLite library and state once", () {
-    final directory = Directory(p.join(root.path, "fresh"))..createSync();
-    final manager = MusicManager.open(
-      p.join(directory.path, "library.db"),
-      p.join(root.path, "music"),
-      legacyMetadataPath: p.join(root.path, "library.mmdb"),
-    );
-    addTearDown(manager.close);
-    expect(manager.counts(), (2, 1));
-    expect(manager.getTrack(legacy["track1"]!).title, "Legacy Alpha");
-    expect(manager.getTrack(legacy["track1"]!).addedAt, 1600000000.5);
-    // The unknown member is dropped; order is preserved.
-    expect(manager.getPlaylist(legacy["playlist"]!).trackIds, [
-      legacy["track2"],
-      legacy["track1"],
-    ]);
-    expect(File(p.join(root.path, "library.mmdb")).existsSync(), isFalse);
-    expect(
-      File(p.join(root.path, "library.mmdb.migrated")).existsSync(),
-      isTrue,
-    );
-
-    final store = ApplicationStore.open(
-      p.join(directory.path, "state.db"),
-      defaultDownloadDirectory: "/music",
-      legacyPath: p.join(root.path, "state.json"),
-    );
-    addTearDown(store.close);
-    expect(store.settings.volume, 7);
-    expect(store.settings.downloadDirectory, "/music");
-    final details = store.trackDetails(legacy["track1"]!);
-    expect(details.uploader, "Old Artist");
-    expect(details.favorite, isTrue);
-    expect(store.downloads().single.uploader, "Old");
-    expect((store.get("playback") as Map).containsKey("shuffle"), isFalse);
-    expect(File(p.join(root.path, "state.json.migrated")).existsSync(), isTrue);
   });
 
   test("settings defaults and clamping match earlier releases", () {

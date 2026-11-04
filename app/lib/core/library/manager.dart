@@ -39,9 +39,6 @@ CREATE INDEX playlist_tracks_by_track ON playlist_tracks (track_id);
 """;
 
 const _uuid = Uuid();
-const _zeroHash =
-    "0000000000000000000000000000000000000000000000000000000000000000";
-
 // Earlier releases stored any 128-bit value as an ID, so stored IDs need not
 // be RFC 4122 compliant.
 Uint8List uuidBytes(String id) => Uint8List.fromList(
@@ -171,15 +168,13 @@ class MusicManager {
   Map<String, String>? _searchText;
   final Map<String, String> _validatedPaths = {};
 
-  /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
-  /// imported once in the transaction that creates the schema. [moveJournal] is where
+  /// Opens the library. [moveJournal] is where
   /// [moveMusicFolder] records a move, so one a crash interrupted is settled
   /// here: its files go to whichever folder [musicFolder] is.
   static MusicManager open(
     String metadataPath,
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
-    String? legacyMetadataPath,
     String? moveJournal,
   }) {
     Directory(musicFolder).createSync(recursive: true);
@@ -197,7 +192,7 @@ class MusicManager {
       db,
     ).._moveJournal = moveJournal;
     try {
-      manager._open(legacyMetadataPath);
+      manager._open();
     } catch (_) {
       unawaited(db.close());
       rethrow;
@@ -391,42 +386,20 @@ class MusicManager {
   static Iterable<String> _noCompanions(String path) => const [];
 
   // -- persistence -------------------------------------------------------
-  void _open(String? legacyPath) {
-    if (!_db.hasTable("library_meta")) {
-      _initialize(legacyPath);
-    } else {
-      // A crash after the import committed but before the rename.
-      if (legacyPath != null) retireLegacyFile(legacyPath);
+  void _open() {
+    if (_db.hasTable("library_meta")) {
       _addPlaylistSources();
       _load();
+    } else {
+      _db.transaction((db) {
+        db.execute(_schema);
+        db.execute(
+          "INSERT INTO library_meta (key, value) VALUES ('schema', ?)",
+          [_schemaVersion],
+        );
+      });
     }
     _rebuildIndexes();
-  }
-
-  void _initialize(String? legacyPath) {
-    if (legacyPath != null) _loadLegacy(legacyPath);
-    _db.transaction((db) {
-      db.execute(_schema);
-      db.execute("INSERT INTO library_meta (key, value) VALUES ('schema', ?)", [
-        _schemaVersion,
-      ]);
-      final insert = db.prepare("INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)");
-      try {
-        for (final track in _tracks.values) {
-          insert.execute(_trackRow(track));
-        }
-      } finally {
-        insert.close();
-      }
-      for (final playlist in _playlists.values) {
-        db.execute(
-          "INSERT INTO playlists (id, name, source) VALUES (?, ?, ?)",
-          [uuidBytes(playlist.id), playlist.name, playlist.source],
-        );
-        _writePlaylistTracks(db, playlist);
-      }
-    });
-    if (legacyPath != null) retireLegacyFile(legacyPath);
   }
 
   /// Schema 1 had no `source` column. Adding one with a default leaves the
@@ -481,67 +454,6 @@ class MusicManager {
     }
     _tracks = tracks;
     _playlists = playlists;
-  }
-
-  void _loadLegacy(String path) {
-    final file = File(path);
-    if (!file.existsSync()) return;
-    final data = file.readAsBytesSync();
-    if (data.isEmpty) return;
-    final reader = _LegacyReader(data, path);
-    final (version, trackCount) = reader.header();
-    final tracks = <String, Track>{};
-    for (var i = 0; i < trackCount; i++) {
-      final id = uuidString(reader.bytes(16));
-      final addedAt = reader.float64();
-      final filename = reader.string();
-      final source = reader.string();
-      final title = version >= 2 ? reader.string() : "";
-      // A durable placeholder for a legacy file that was not hashed: it matches
-      // no real file when looking for duplicates.
-      final hash = version >= 3 ? _hex(reader.bytes(32)) : _zeroHash;
-      tracks[id] = Track(
-        id: id,
-        filename: filename,
-        source: source,
-        title: title,
-        addedAt: addedAt,
-        contentHash: hash,
-      );
-    }
-    final playlists = <String, Playlist>{};
-    final playlistCount = reader.uint32();
-    for (var i = 0; i < playlistCount; i++) {
-      final id = uuidString(reader.bytes(16));
-      final name = reader.string();
-      final count = reader.uint32();
-      final trackIds = [
-        for (var j = 0; j < count; j++) uuidString(reader.bytes(16)),
-      ];
-      playlists[id] = Playlist(
-        id: id,
-        name: name,
-        // Playlists hold each track once; the legacy format did not enforce it.
-        trackIds: trackIds.where(tracks.containsKey).toSet().toList(),
-      );
-    }
-    if (!reader.atEnd) {
-      throw FormatException("$path contains trailing music metadata");
-    }
-    _tracks = tracks;
-    _playlists = playlists;
-    if (version < 3) _captureLegacyHashes();
-  }
-
-  void _captureLegacyHashes() {
-    for (final track in _tracks.values) {
-      try {
-        final path = _pathForFilename(track.filename);
-        if (File(path).existsSync()) track.contentHash = sha256FileSync(path);
-      } on Object catch (error) {
-        debugPrint("Could not hash legacy track ${track.id}: $error");
-      }
-    }
   }
 
   /// Applies one change durably, then invalidates derived read state.
@@ -1270,57 +1182,4 @@ class MusicManager {
     }
     return playlist;
   }
-}
-
-/// Reads the little-endian pre-SQLite `MMD1` library format.
-class _LegacyReader {
-  _LegacyReader(this._data, this._path) : _view = ByteData.sublistView(_data);
-
-  final Uint8List _data;
-  final ByteData _view;
-  final String _path;
-  int _offset = 0;
-
-  bool get atEnd => _offset == _data.length;
-
-  void _require(int length) {
-    if (_offset + length > _data.length) {
-      throw FormatException("$_path contains invalid music metadata");
-    }
-  }
-
-  (int, int) header() {
-    _require(9);
-    if (utf8.decode(bytes(4), allowMalformed: true) != "MMD1") {
-      throw FormatException("$_path is not a valid MusicManager file");
-    }
-    final version = _view.getUint8(_offset++);
-    if (version < 1 || version > 3) {
-      throw FormatException("Unsupported metadata version: $version");
-    }
-    return (version, uint32());
-  }
-
-  Uint8List bytes(int length) {
-    _require(length);
-    final value = Uint8List.sublistView(_data, _offset, _offset + length);
-    _offset += length;
-    return value;
-  }
-
-  int uint32() {
-    _require(4);
-    final value = _view.getUint32(_offset, Endian.little);
-    _offset += 4;
-    return value;
-  }
-
-  double float64() {
-    _require(8);
-    final value = _view.getFloat64(_offset, Endian.little);
-    _offset += 8;
-    return value;
-  }
-
-  String string() => utf8.decode(bytes(uint32()));
 }

@@ -1,6 +1,5 @@
 import "dart:async";
 import "dart:convert";
-import "dart:io";
 
 import "package:sqlite3/sqlite3.dart";
 
@@ -84,12 +83,11 @@ class ApplicationStore {
   static ApplicationStore open(
     String path, {
     required String defaultDownloadDirectory,
-    String? legacyPath,
   }) {
     final db = SqliteStore.open(path, fullSync: false);
     final store = ApplicationStore._(path, db, defaultDownloadDirectory);
     try {
-      store._data = store._open(legacyPath);
+      store._data = store._open();
     } catch (_) {
       unawaited(db.close());
       rethrow;
@@ -99,17 +97,13 @@ class ApplicationStore {
 
   Future<void> close() => _db.close();
 
-  Map<String, Object?> _open(String? legacyPath) {
-    if (_db.hasTable("state")) {
-      if (legacyPath != null) retireLegacyFile(legacyPath);
-      return _load();
-    }
-    final data = legacyPath != null ? _loadLegacy(legacyPath) : _defaults();
+  Map<String, Object?> _open() {
+    if (_db.hasTable("state")) return _load();
+    final data = _defaults();
     _db.transaction((db) {
       db.execute(_schema);
       _writeRows(db, data, const {}, const {});
     });
-    if (legacyPath != null) retireLegacyFile(legacyPath);
     return data;
   }
 
@@ -137,74 +131,7 @@ class ApplicationStore {
     } on FormatException catch (error) {
       throw FormatException("Could not read application settings: $error");
     }
-    return _migrate({..._defaults(), ...raw});
-  }
-
-  Map<String, Object?> _loadLegacy(String path) {
-    final file = File(path);
-    if (!file.existsSync()) return _defaults();
-    final contents = file.readAsStringSync();
-    if (contents.isEmpty) return _defaults();
-    final Object? raw;
-    try {
-      raw = jsonDecode(contents);
-    } on FormatException catch (error) {
-      throw FormatException("Could not read application settings: $error");
-    }
-    if (raw is! Map<String, Object?>) {
-      throw const FormatException(
-        "Application settings must contain a JSON object",
-      );
-    }
-    return _migrate({..._defaults(), ...raw});
-  }
-
-  static int _version(Map<String, Object?> data) => switch (data["version"]) {
-    num value when value.isFinite => value.toInt(),
-    _ => 1,
-  };
-
-  static Map<String, Object?> _migrate(Map<String, Object?> data) {
-    if (_version(data) < 2) {
-      final details = data["track_details"];
-      if (details is Map) {
-        for (final value in details.values) {
-          if (value is! Map) continue;
-          if (!value.containsKey("uploader") && value.containsKey("artist")) {
-            value["uploader"] = value["artist"];
-          }
-          value
-            ..remove("artist")
-            ..remove("album");
-        }
-      }
-      final downloads = data["downloads"];
-      if (downloads is List) {
-        for (final record in downloads) {
-          if (record is! Map) continue;
-          if (!record.containsKey("uploader") && record.containsKey("artist")) {
-            record["uploader"] = record["artist"];
-          }
-          record.remove("artist");
-        }
-      }
-      data["version"] = 2;
-    }
-    if (_version(data) < 3) {
-      final settings = data["settings"];
-      if (settings is Map) {
-        // Browser cookie extraction was removed; a user must upload a cookie
-        // file before authenticated requests are enabled again.
-        settings
-          ..remove("use_browser_cookies")
-          ..remove("cookie_browser")
-          ..remove("cookie_profile");
-      }
-      data["version"] = 3;
-    }
-    final playback = data["playback"];
-    if (playback is Map) playback.remove("shuffle");
-    return data;
+    return {..._defaults(), ...raw};
   }
 
   Map<String, Object?> _defaults() => {
@@ -302,7 +229,7 @@ class ApplicationStore {
         "queue": <Object?>[],
         "current_index": -1,
         "position_ms": 0,
-      }..remove("shuffle");
+      };
     } else {
       cleared = _defaults()["playback"] as Map<String, Object?>;
     }

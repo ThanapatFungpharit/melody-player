@@ -274,8 +274,7 @@ class TrackDetails {
   String sourceName;
 
   factory TrackDetails.fromJson(Map<String, Object?> data) => TrackDetails(
-    // Before version 0.2 the uploader/channel was stored as an artist.
-    uploader: _string(data["uploader"] ?? data["artist"], ""),
+    uploader: _string(data["uploader"], ""),
     duration: _seconds(data["duration"]),
     thumbnail: _string(data["thumbnail"], ""),
     favorite: data["favorite"] == true,
@@ -397,7 +396,7 @@ class DownloadRecord {
     id: _string(data["id"], ""),
     url: _string(data["url"], ""),
     title: _string(data["title"], ""),
-    uploader: _string(data["uploader"] ?? data["artist"], ""),
+    uploader: _string(data["uploader"], ""),
     thumbnail: _string(data["thumbnail"], ""),
     source: _string(data["source"], youtubeMusicName),
     status: DownloadStatus.parse(data["status"]),

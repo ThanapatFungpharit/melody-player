@@ -126,6 +126,9 @@ removed when the download ends, or kept for a while if it can pick up from there
 with buttons to open it or copy its path. Its `cache` folder is safe to delete
 while Melody is closed.
 
+Melody upgrades from 1.0.2 or newer. If yours is older, install 1.0.3 and open it
+once first; Melody tells you so rather than start over beside your old library.
+
 YouTube Music access is anonymous by default. To use a signed-in session, export
 a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody
 validates it and copies it to private application storage; it never reads
