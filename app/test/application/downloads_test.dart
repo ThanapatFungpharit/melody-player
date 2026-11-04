@@ -1,3 +1,4 @@
+import "../support/temp.dart";
 import "dart:async";
 import "dart:io";
 
@@ -32,6 +33,15 @@ SearchResult _result({
   source: "YouTube Music",
 );
 
+/// Waits for what a running download does next, however slow the disk is.
+Future<void> until(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 10));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) fail("Timed out waiting");
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 void main() {
   late Directory root;
   late String music;
@@ -60,20 +70,16 @@ void main() {
   });
 
   tearDown(() async {
+    // A download a test left running ends before its files and databases go.
+    if (transport.downloadGate case final gate? when !gate.isCompleted) {
+      gate.complete();
+    }
+    await until(() => transport.idle);
     manager.close();
     store.close();
     await worker.close();
-    await root.delete(recursive: true);
+    await deleteTestDirectory(root);
   });
-
-  /// Waits for what a running download does next, however slow the disk is.
-  Future<void> until(bool Function() condition) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (!condition()) {
-      if (DateTime.now().isAfter(deadline)) fail("Timed out waiting");
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-    }
-  }
 
   Future<DownloadCoordinator> open() => DownloadCoordinator.open(
     manager,

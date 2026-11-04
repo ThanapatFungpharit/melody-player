@@ -118,6 +118,10 @@ class FakeWorkerTransport implements WorkerTransport {
   bool writeThumbnail = true;
 
   final Completer<String?> _stopped = Completer();
+  int _handling = 0;
+
+  /// Whether every request has been answered, downloads included.
+  bool get idle => _handling == 0;
 
   @override
   Stream<Map<String, Object?>> get frames => _frames.stream;
@@ -133,17 +137,20 @@ class FakeWorkerTransport implements WorkerTransport {
   @override
   void send(Map<String, Object?> frame) {
     sent.add(frame);
+    _handling++;
     unawaited(
-      _handle(frame).catchError((Object error) {
-        _frames.add({
-          "id": frame["id"],
-          "ok": false,
-          "error": {
-            "message": "$error",
-            "types": [error.runtimeType.toString()],
-          },
-        });
-      }),
+      _handle(frame)
+          .catchError((Object error) {
+            _frames.add({
+              "id": frame["id"],
+              "ok": false,
+              "error": {
+                "message": "$error",
+                "types": [error.runtimeType.toString()],
+              },
+            });
+          })
+          .whenComplete(() => _handling--),
     );
   }
 
