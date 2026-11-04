@@ -66,6 +66,15 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  /// Waits for what a running download does next, however slow the disk is.
+  Future<void> until(bool Function() condition) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!condition()) {
+      if (DateTime.now().isAfter(deadline)) fail("Timed out waiting");
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
   Future<DownloadCoordinator> open() => DownloadCoordinator.open(
     manager,
     store,
@@ -311,7 +320,7 @@ void main() {
       transport.downloadGate = Completer();
       final coordinator = await open();
       final running = (await coordinator.request(_result())).task!;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => transport.downloadOptions.isNotEmpty);
       final before = codec(transport.downloadOptions.single);
 
       coordinator.applySettings(settings()..audioFormat = "flac");
@@ -325,7 +334,7 @@ void main() {
       await coordinator.request(
         _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => transport.downloadOptions.length == 2);
       expect(codec(transport.downloadOptions.last), "flac");
     });
 
@@ -337,11 +346,12 @@ void main() {
       await coordinator.request(
         _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
       );
+      await until(() => transport.downloadOptions.isNotEmpty);
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(transport.downloadOptions, hasLength(1));
 
       coordinator.applySettings(settings()..concurrentDownloads = 2);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => transport.downloadOptions.length == 2);
       expect(transport.downloadOptions, hasLength(2));
       transport.downloadGate!.complete();
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -361,7 +371,7 @@ void main() {
       coordinator.applySettings(store.settings);
 
       await coordinator.request(_result());
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => transport.downloadOptions.isNotEmpty);
 
       expect(transport.downloadOptions.single["cookiefile"], "cookies.txt");
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -498,7 +508,7 @@ void main() {
       transport.downloadGate = Completer();
       final coordinator = await open();
       final task = (await coordinator.request(_result())).task!;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => coordinator.get(task)!.downloadedBytes == 5);
 
       coordinator.shutdown();
       transport.downloadGate!.complete();
@@ -515,16 +525,15 @@ void main() {
     transport.downloadGate = Completer();
     final coordinator = await open();
     final task = (await coordinator.request(_result())).task!;
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await until(() => coordinator.get(task)!.downloadedBytes == 5);
 
     expect(coordinator.cancel(task), isTrue);
     coordinator.shutdown();
     transport.downloadGate!.complete();
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-
-    expect(
-      store.downloads().singleWhere((r) => r.id == task).status,
-      DownloadStatus.cancelled,
+    await until(
+      () =>
+          store.downloads().singleWhere((r) => r.id == task).status ==
+          DownloadStatus.cancelled,
     );
   });
 
@@ -645,7 +654,7 @@ void main() {
 
         final coordinator = await open();
         await coordinator.resumeInterrupted();
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await until(() => transport.downloadDirectories.isNotEmpty);
 
         expect(transport.downloadDirectories.single, songStaging());
         expect(await part.length(), 4096);
@@ -653,7 +662,7 @@ void main() {
         final finished = terminal(coordinator, restarted.id);
         transport.downloadGate!.complete();
         expect((await finished).status, DownloadStatus.completed);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await until(() => leftovers().isEmpty);
         // Done with, it goes.
         expect(leftovers(), isEmpty);
       });
@@ -665,7 +674,7 @@ void main() {
 
         final coordinator = await open();
         await coordinator.resumeInterrupted();
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await until(() => transport.downloadDirectories.isNotEmpty);
 
         final row = coordinator.list().single;
         expect(row.status.isActive, isTrue);
@@ -679,7 +688,7 @@ void main() {
         transport.downloadGate = Completer();
         final coordinator = await open();
         await coordinator.request(_result());
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await until(() => transport.downloadDirectories.isNotEmpty);
         expect(transport.downloadDirectories.single, songStaging());
 
         coordinator.shutdown();
@@ -716,7 +725,7 @@ void main() {
           (await coordinator.request(_result())).task!,
         );
         expect(record.status, DownloadStatus.failed);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await until(() => leftovers().isEmpty);
         expect(leftovers(), isEmpty);
       });
 
@@ -768,12 +777,12 @@ void main() {
         progressSaveInterval: Duration.zero,
       );
       final task = (await coordinator.request(_result())).task!;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      DownloadRecord saved() =>
+          store.downloads().singleWhere((r) => r.id == task);
+      await until(() => saved().downloadedBytes == 5);
 
-      final saved = store.downloads().singleWhere((r) => r.id == task);
-      expect(saved.status.isActive, isTrue);
-      expect(saved.downloadedBytes, 5);
-      expect(saved.totalBytes, 10);
+      expect(saved().status.isActive, isTrue);
+      expect(saved().totalBytes, 10);
       transport.downloadGate!.complete();
       await terminal(coordinator, task);
     });
@@ -782,7 +791,7 @@ void main() {
       transport.downloadGate = Completer();
       final coordinator = await open();
       final task = (await coordinator.request(_result())).task!;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await until(() => coordinator.get(task)!.downloadedBytes == 5);
 
       coordinator.shutdown();
       transport.downloadGate!.complete();
