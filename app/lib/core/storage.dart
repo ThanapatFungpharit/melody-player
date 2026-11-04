@@ -34,7 +34,13 @@ class SqliteStore {
   final String path;
   Database? _db;
 
-  static SqliteStore open(String path, {bool fullSync = true}) {
+  /// Opens the database at [path]. Without [check], its integrity is taken as
+  /// known, as when another connection has just checked the same file.
+  static SqliteStore open(
+    String path, {
+    bool fullSync = true,
+    bool check = true,
+  }) {
     Directory(p.dirname(path)).createSync(recursive: true);
     final Database db;
     try {
@@ -49,9 +55,11 @@ class SqliteStore {
       db.execute("PRAGMA synchronous=${fullSync ? "FULL" : "NORMAL"}");
       db.execute("PRAGMA foreign_keys=ON");
       db.execute("PRAGMA busy_timeout=5000");
-      final check = db.select("PRAGMA quick_check").first.values.first;
-      if (check != "ok") throw FormatException("$check");
-      _reclaimFreePages(db);
+      if (check) {
+        final result = db.select("PRAGMA quick_check").first.values.first;
+        if (result != "ok") throw FormatException("$result");
+        _reclaimFreePages(db);
+      }
     } catch (error) {
       db.close();
       throw FormatException("$path is not a valid database: $error");

@@ -171,7 +171,7 @@ them to the playback controller.
 | Durable queue mirror, requested transport, current selection | `PlaybackController` | UI sends commands; native snapshots are persisted |
 | Live queue, automatic transitions, decoder/device state | `AudioEngine` (melody_audio) | `NativeAudioBackend` forwards generation-filtered events to the controller |
 | Track UUIDs, file references, hashes, playlists | `MusicManager` (`library.db`) | Services coordinate registration and deletion through `mutation` |
-| Settings, track details, history, session queue, download history | `ApplicationStore` (`state.db`) | Writes commit atomically; failure restores in-memory values |
+| Settings, track details, history, session queue, download history | `ApplicationStore` (`library.db`) | Writes commit atomically; failure restores in-memory values |
 | Staged download files, cancellation, terminal outcome | `Downloader` | The worker writes only inside the staging directory it is given (and yt-dlp's cache folder, also chosen by the app) |
 | Download reuse, registration, retry, resuming after a restart | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once and byte progress every few seconds (a download active at startup carries on, and its row shows how far it had got) |
 | Embedded cover artwork | The downloaded media container | The downloader reads it back before committing the file |
@@ -183,10 +183,13 @@ them to the playback controller.
 | Loudness measurements and normalization gains | `LoudnessNormalizer` (`application/loudness.dart`), cached in `cache/loudness.json` by track ID with the file's size and modification time | FFmpeg's `ebur128` filter measures integrated loudness and true peak (`core/loudness.dart`), one file at a time in its own process, from 10 seconds after launch, for new tracks, and for what plays next; a file whose size or time changed is hashed first (its audio packets, with FFmpeg's `streamhash`, no decoding), so a rewrite of only tags, lyrics, or cover art keeps its measurement and only new audio is measured again; a corrupted or unsupported one is recorded so it is not retried until it changes; each `AudioQueueItem` carries its gain, which the engine multiplies with the volume |
 | `.lrc` files beside library audio | Read by `LyricsLibrary`; no longer written | Melody's old ones (marked `[re:Melody]`) are removed when that pass finds the audio carries the lyrics; a user's `.lrc` is never changed; deleting or replacing the audio removes it; imports copy a `.lrc` beside the original |
 
-Both SQLite schemas are compatible with the first SQLite release: the only change
-since is `playlists.source`, added with a default so earlier releases can still
-read and write the table. Fixtures written by earlier releases are part of the
-test suite. The `playback` row holds the queue and repeat mode, and the small
+Earlier releases kept the application's state in `state.db`. The next launch moves
+it into `library.db` in one transaction, before anything opens either (a failure
+leaves both as they were, and Melody says so), and keeps the old file for one more
+launch. This is one-way: an earlier release opening `library.db` finds its tracks
+but not its settings. Beyond that the library's schema only gained
+`playlists.source`. Fixtures written by earlier releases are part of the test
+suite. The `playback` row holds the queue and repeat mode, and the small
 `playback_position` row holds the place in the queue, laid over it when read, so
 moving through the queue never rewrites the queue. A `playback` row saved before
 that split holds the place itself and reads the same way. An earlier release
@@ -294,7 +297,7 @@ active queue.
 
 ### Downloads
 
-A download still running when Melody closes stays active in `state.db`, and the
+A download still running when Melody closes stays active in `library.db`, and the
 next launch carries on with it; only cancelling it ends it. Each song stages in
 its own `downloads/staging/job-<song>` folder, so another attempt finds what the
 last one left: yt-dlp continues a partial stream, and `final_ext` lets it skip a
@@ -359,8 +362,7 @@ installs upgrade in place; inside it:
 
 | Path | Contents | Owner |
 | --- | --- | --- |
-| `library.db` | Tracks, file references, hashes, playlists | `MusicManager` |
-| `state.db` | Settings, history, queue, download history, small app state | `ApplicationStore` |
+| `library.db` | Tracks, file references, hashes, playlists; and settings, track details, history, queue, download history, small app state | `MusicManager`; `ApplicationStore` |
 | `cookies.txt` | Uploaded cookies; present means yt-dlp uses them | Settings (upload/remove) |
 | `music-move.json` | The files of a music folder move in progress | `MusicManager` |
 | `lyrics/` | Saved lyrics, `<provider>_<id>.json` | `LyricsLibrary` |
@@ -465,7 +467,7 @@ repaired by downloading the song again.
 | Download staging | `Downloader`-owned, locked `downloads/staging/job-*` folder, one per song; removed when a download ends, unless another attempt could carry on from it. At launch, one no active or failed download could use is removed once its process has ended, and any is removed after a week untouched |
 | Completed, unregistered download | Removed if registering fails; if the process ends first, the file stays and Maintenance lists it |
 | Managed library audio | `MusicManager`; desktop uses the music folder, on Android the music folder is inside public `Music` (`Music/Melody` by default); tracks earlier releases kept in private storage move there once at launch |
-| Downloaded audio of a removed entry | `OwnedFiles`: recorded in `state.db` (`pending_file_deletions`) before the entry goes, then deleted with its `.lrc`; a file that cannot be deleted yet (held open, or a crash in between) is deleted at a later launch, unless an entry still uses it |
+| Downloaded audio of a removed entry | `OwnedFiles`: recorded in `library.db` (`pending_file_deletions`) before the entry goes, then deleted with its `.lrc`; a file that cannot be deleted yet (held open, or a crash in between) is deleted at a later launch, unless an entry still uses it |
 | Imported local original | The user's; Melody copies it and never deletes the original |
 | Copied import, lyrics rewrite | A `.melody-tmp-*` file beside the destination; an atomic rename exposes only complete files; an abandoned one is removed at launch |
 | yt-dlp cache | `cache/yt-dlp/`; disposable, pruned at launch by age and size |
@@ -478,8 +480,10 @@ repaired by downloading the song again.
 
 ## Crash consistency
 
-Both databases use write-ahead logging. A change writes only its rows in one
+The database uses write-ahead logging. A change writes only its rows in one
 transaction; a failure rolls back and the owner restores its in-memory model.
+`MusicManager` and `ApplicationStore` each have a connection to the file, because
+durability is set per connection.
 The library's commits are flushed to durable storage before they return
 (`FULL`); application state uses `NORMAL`, which survives application crashes
 and may lose only the latest session saves on power loss. Each database opens
@@ -487,7 +491,9 @@ with an integrity quick check. Cookies, saved lyrics, and
 artwork are written to a `.melody-tmp-*` file, flushed, and renamed; a
 temporary file a crash leaves behind is removed at a later launch.
 
-The two databases are not a distributed transaction. Startup marks completed
+A track's details go with it in one transaction (a trigger on `tracks`), so they
+cannot outlive it. Other changes that touch both owners, such as registering a
+track and then saving its details, are separate transactions. Startup marks completed
 downloads whose library track lost its file as repairable (a track the user
 removed is not lost), starts interrupted downloads over, and filters the
 restored queue by file availability. `LibraryService.reconcile`

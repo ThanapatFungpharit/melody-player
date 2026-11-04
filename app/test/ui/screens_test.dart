@@ -134,10 +134,10 @@ Future<MelodyApp> _app(
     defaultMusicDirectory: defaultMusic ?? music,
   );
   final store = ApplicationStore.open(
-    paths.stateDatabase,
+    paths.database,
     defaultDownloadDirectory: music,
   );
-  final manager = MusicManager.open(paths.libraryDatabase, music);
+  final manager = MusicManager.open(paths.database, music);
   final library = LibraryService(manager, store);
   final ids = <String>[];
   for (final (index, title) in [

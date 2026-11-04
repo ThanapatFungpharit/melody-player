@@ -9,8 +9,8 @@ import "package:path_provider/path_provider.dart";
 /// Everything Melody owns lives under [dataDirectory]:
 ///
 /// ```text
-/// library.db              tracks and playlists (MusicManager)
-/// state.db                settings, history, queue (ApplicationStore)
+/// library.db              tracks and playlists (MusicManager), with settings,
+///                         history, and the queue (ApplicationStore)
 /// cookies.txt             uploaded cookies; present means they are used
 /// music-move.json         a music folder move in progress (MusicManager)
 /// lyrics/                 saved lyrics, one JSON file per song
@@ -51,8 +51,7 @@ class AppPaths {
 
   String _data(String relative) => p.join(dataDirectory, relative);
 
-  String get libraryDatabase => _data("library.db");
-  String get stateDatabase => _data("state.db");
+  String get database => _data("library.db");
   String get cookieFile => _data("cookies.txt");
   String get musicMoveJournal => _data("music-move.json");
 

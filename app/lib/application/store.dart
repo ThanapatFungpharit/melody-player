@@ -3,12 +3,15 @@ import "dart:convert";
 
 import "package:sqlite3/sqlite3.dart";
 
+import "../core/library/manager.dart" show trackDetailsSchema;
 import "../core/storage.dart";
 import "models.dart";
 
-const _schema = """
-CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-CREATE TABLE track_details (track_id TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+/// The application's own tables, beside the library's in the same file.
+const applicationStateSchema =
+    """
+CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+$trackDetailsSchema
 """;
 const _upsertState =
     "INSERT INTO state (key, value) VALUES (?, ?) "
@@ -37,8 +40,10 @@ bool _sameJson(Object? a, Object? b) => _encode(a) == _encode(b);
 /// another, so a change rewrites one row. Where playback is has a small row of
 /// its own ([_cursorKey]), so moving through the queue never rewrites the queue.
 ///
-/// Commits survive application crashes; a power loss can drop only the most
-/// recent commits (`synchronous=NORMAL`).
+/// It shares the library's file over a connection of its own, which is what lets
+/// its commits differ from the library's: they survive application crashes, and a
+/// power loss can drop only the most recent ones (`synchronous=NORMAL`). A track's
+/// row here goes with the track ([trackDetailsSchema]).
 class ApplicationStore {
   ApplicationStore._(this.path, this._db, this._defaultDownloadDirectory);
 
@@ -101,7 +106,7 @@ class ApplicationStore {
     if (_db.hasTable("state")) return _load();
     final data = _defaults();
     _db.transaction((db) {
-      db.execute(_schema);
+      db.execute(applicationStateSchema);
       _writeRows(db, data, const {}, const {});
     });
     return data;

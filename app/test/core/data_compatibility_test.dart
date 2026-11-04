@@ -4,9 +4,11 @@ import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/models.dart";
+import "package:melody/application/storage_upgrade.dart";
 import "package:melody/application/store.dart";
 import "package:melody/core/library/manager.dart";
 import "package:melody/core/storage.dart";
+import "package:melody/platform/paths.dart";
 import "package:path/path.dart" as p;
 
 /// The fixtures were written by earlier Melody releases (`library.db` and
@@ -178,6 +180,212 @@ void main() {
       ids["beta"],
       ids["alpha"],
     ]);
+  });
+
+  group("an earlier release's two databases", () {
+    late AppPaths paths;
+    late File state;
+    late File merged;
+
+    ApplicationStore openStore() => ApplicationStore.open(
+      paths.database,
+      defaultDownloadDirectory: "/unused",
+    );
+
+    MusicManager openLibrary() =>
+        MusicManager.open(paths.database, p.join(root.path, "music"));
+
+    setUp(() {
+      paths = AppPaths(
+        dataDirectory: root.path,
+        defaultMusicDirectory: p.join(root.path, "music"),
+      );
+      state = File(p.join(root.path, "state.db"));
+      merged = File("${state.path}.merged");
+    });
+
+    test("become one, with everything in them", () async {
+      mergeStateDatabase(paths);
+
+      expect(state.existsSync(), isFalse);
+      expect(merged.existsSync(), isTrue);
+      final store = openStore();
+      final manager = openLibrary();
+      addTearDown(store.close);
+      addTearDown(manager.close);
+      expect(store.settings.downloadDirectory, "C:/Music/Melody");
+      expect(store.settings.volume, 42);
+      expect(store.settings.accentColor, "ocean");
+      final details = store.trackDetails(ids["alpha"]!);
+      expect(details.uploader, "Artist A");
+      expect(details.favorite, isTrue);
+      expect(details.playCount, 1);
+      expect(store.favoriteTrackIds(), {ids["alpha"]});
+      expect(store.recentTrackIds(), [ids["beta"], ids["alpha"]]);
+      expect(store.searchHistory(), ["lofi"]);
+      expect(store.get("playback"), {
+        "queue": [ids["beta"], ids["alpha"]],
+        "current_index": 1,
+        "position_ms": 12345,
+        "repeat": "playlist",
+      });
+      expect(store.downloads().single.trackIds, [ids["alpha"]]);
+      expect(manager.counts(), (3, 2));
+      expect(manager.getTrack(ids["gamma"]!).title, "Gamma ü");
+    });
+
+    test("leave no second file behind once used", () async {
+      mergeStateDatabase(paths);
+      final store = openStore();
+      final manager = openLibrary();
+      store.set("anything", 1);
+      manager.createPlaylist("New");
+      await store.close();
+      await manager.close();
+
+      expect(state.existsSync(), isFalse);
+      final reopened = openStore();
+      addTearDown(reopened.close);
+      expect(reopened.get("anything"), 1);
+    });
+
+    test("share commits in any order across a restart", () async {
+      mergeStateDatabase(paths);
+      final store = openStore();
+      final manager = openLibrary();
+      for (var i = 0; i < 20; i++) {
+        store.set("turn", i);
+        manager.createPlaylist("Playlist $i");
+      }
+      await store.close();
+      await manager.close();
+
+      final reopenedStore = openStore();
+      final reopenedLibrary = openLibrary();
+      addTearDown(reopenedStore.close);
+      addTearDown(reopenedLibrary.close);
+      expect(reopenedStore.get("turn"), 19);
+      expect(reopenedLibrary.counts().$2, 22);
+    });
+
+    test("delete a track's details with the track", () async {
+      mergeStateDatabase(paths);
+      final store = openStore();
+      final manager = openLibrary();
+      expect(store.hasTrackDetails(ids["alpha"]!), isTrue);
+
+      // Nothing tells the store: a crash right here must lose nothing else.
+      manager.deleteTrack(ids["alpha"]!);
+      await store.close();
+      await manager.close();
+
+      final reopened = openStore();
+      addTearDown(reopened.close);
+      expect(reopened.hasTrackDetails(ids["alpha"]!), isFalse);
+      expect(reopened.hasTrackDetails(ids["beta"]!), isTrue);
+    });
+
+    test("delete every track's details when the library clears", () async {
+      mergeStateDatabase(paths);
+      final manager = openLibrary();
+      manager.clearLibrary();
+      await manager.close();
+
+      final reopened = openStore();
+      addTearDown(reopened.close);
+      expect(reopened.hasTrackDetails(ids["beta"]!), isFalse);
+    });
+
+    test("drop only details of tracks already gone", () async {
+      const gone = "99999999-9999-4999-8999-999999999999";
+      final earlier = SqliteStore.open(state.path);
+      earlier.transaction(
+        (db) => db.execute(
+          "INSERT INTO track_details (track_id, value) VALUES (?, '{}')",
+          [gone],
+        ),
+      );
+      await earlier.close();
+
+      mergeStateDatabase(paths);
+
+      final store = openStore();
+      addTearDown(store.close);
+      expect(store.hasTrackDetails(gone), isFalse);
+      for (final name in ["alpha", "beta"]) {
+        expect(store.hasTrackDetails(ids[name]!), isTrue, reason: name);
+      }
+    });
+
+    test("merged again keep what changed since", () async {
+      mergeStateDatabase(paths);
+      // A file another program held open is not renamed: it comes round again.
+      merged.renameSync(state.path);
+      final store = openStore();
+      store.saveSettings(store.settings..volume = 7);
+      await store.close();
+
+      mergeStateDatabase(paths);
+
+      final reopened = openStore();
+      addTearDown(reopened.close);
+      expect(reopened.settings.volume, 7);
+      expect(reopened.settings.accentColor, "ocean");
+      expect(state.existsSync(), isFalse);
+    });
+
+    test("stay as they were if the old file is damaged", () async {
+      final garbage = List.generate(8192, (i) => i % 251);
+      state.writeAsBytesSync(garbage);
+
+      expect(() => mergeStateDatabase(paths), throwsA(anything));
+
+      expect(state.readAsBytesSync(), garbage);
+      expect(merged.existsSync(), isFalse);
+      final db = SqliteStore.open(paths.database);
+      addTearDown(db.close);
+      expect(db.hasTable("state"), isFalse);
+      expect(db.hasTable("tracks"), isTrue);
+    });
+
+    test("stay as they were if the merge fails partway", () async {
+      // A table with this name but not this shape makes the copy fail.
+      final db = SqliteStore.open(paths.database);
+      db.transaction(
+        (db) => db.execute("CREATE TABLE state (key TEXT PRIMARY KEY) STRICT"),
+      );
+      await db.close();
+
+      expect(() => mergeStateDatabase(paths), throwsA(anything));
+
+      expect(state.existsSync(), isTrue);
+      expect(merged.existsSync(), isFalse);
+      final after = SqliteStore.open(paths.database);
+      addTearDown(after.close);
+      expect(after.hasTable("track_details"), isFalse);
+    });
+
+    test("merge into a new file when the library never opened", () async {
+      File(paths.database).deleteSync();
+
+      mergeStateDatabase(paths);
+
+      final store = openStore();
+      final manager = openLibrary();
+      addTearDown(store.close);
+      addTearDown(manager.close);
+      expect(store.settings.volume, 42);
+      expect(manager.counts().$1, 0);
+    });
+
+    test("are nothing to do once merged, or on a new install", () async {
+      File(paths.database).deleteSync();
+      state.deleteSync();
+
+      mergeStateDatabase(paths);
+
+      expect(File(paths.database).existsSync(), isFalse);
+    });
   });
 
   test("settings defaults and clamping match earlier releases", () {

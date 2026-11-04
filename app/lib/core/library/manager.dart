@@ -38,6 +38,32 @@ CREATE TABLE playlist_tracks (
 CREATE INDEX playlist_tracks_by_track ON playlist_tracks (track_id);
 """;
 
+/// A track's other details, as JSON. The application's state is kept in the
+/// same file, and this table is what ties it to the tracks: whichever of its two
+/// owners opens the file first, deleting a track has somewhere to delete from.
+const trackDetailsSchema = """
+CREATE TABLE IF NOT EXISTS track_details (
+    track_id TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
+""";
+
+/// SQL for a stored track ID in [column] in the text form [Track.id] has.
+String trackIdAsText(String column) =>
+    "lower(substr(hex($column), 1, 8) || '-' || substr(hex($column), 9, 4) || "
+    "'-' || substr(hex($column), 13, 4) || '-' || substr(hex($column), 17, 4) || "
+    "'-' || substr(hex($column), 21))";
+
+/// A track's details go in the transaction that deletes it, so none can outlive
+/// their track.
+final _detailsGoWithTheirTrack =
+    """
+CREATE TRIGGER IF NOT EXISTS track_details_go_with_track
+AFTER DELETE ON tracks BEGIN
+    DELETE FROM track_details WHERE track_id = ${trackIdAsText("OLD.id")};
+END;
+""";
+
 const _uuid = Uuid();
 // Earlier releases stored any 128-bit value as an ID, so stored IDs need not
 // be RFC 4122 compliant.
@@ -168,7 +194,9 @@ class MusicManager {
   Map<String, String>? _searchText;
   final Map<String, String> _validatedPaths = {};
 
-  /// Opens the library. [moveJournal] is where
+  /// Opens the library. With [checkIntegrity] off, the file is taken as known
+  /// to be intact, as when the application store has just opened it.
+  /// [moveJournal] is where
   /// [moveMusicFolder] records a move, so one a crash interrupted is settled
   /// here: its files go to whichever folder [musicFolder] is.
   static MusicManager open(
@@ -176,6 +204,7 @@ class MusicManager {
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
     String? moveJournal,
+    bool checkIntegrity = true,
   }) {
     Directory(musicFolder).createSync(recursive: true);
     Directory(p.dirname(metadataPath)).createSync(recursive: true);
@@ -183,7 +212,7 @@ class MusicManager {
     final additional = [
       for (final folder in additionalMusicFolders) _resolve(folder),
     ];
-    final db = SqliteStore.open(metadataPath);
+    final db = SqliteStore.open(metadataPath, check: checkIntegrity);
     final manager = MusicManager._(
       metadataPath,
       musicFolder,
@@ -399,6 +428,10 @@ class MusicManager {
         );
       });
     }
+    _db.transaction((db) {
+      db.execute(trackDetailsSchema);
+      db.execute(_detailsGoWithTheirTrack);
+    });
     _rebuildIndexes();
   }
 

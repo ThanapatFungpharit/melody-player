@@ -76,18 +76,20 @@ class AppServices {
     final paths = await AppPaths.resolve();
     requireSupportedDataFolder(paths);
     await removeRetiredFiles(paths);
+    mergeStateDatabase(paths);
     useNotificationArtworkDirectory(paths.notificationArtworkCache);
     final store = ApplicationStore.open(
-      paths.stateDatabase,
+      paths.database,
       defaultDownloadDirectory: paths.defaultMusicDirectory,
     );
     onStoreReady?.call(store);
     onStage?.call("Opening your library");
     final manager = MusicManager.open(
-      paths.libraryDatabase,
+      paths.database,
       store.settings.downloadDirectory,
       additionalMusicFolders: [?paths.publicMusicRoot],
       moveJournal: paths.musicMoveJournal,
+      checkIntegrity: false,
     );
     onStage?.call("Starting the music engine");
     const packages = [ytDlpRuntimeInfo, ytMusicRuntimeInfo];

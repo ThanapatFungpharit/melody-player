@@ -32,8 +32,8 @@ void main() {
     });
 
     test("a folder from 1.0.2 or later is fine", () {
-      write(paths.libraryDatabase);
-      write(paths.stateDatabase);
+      write(paths.database);
+      write(p.join(root.path, "state.db"));
       // What the import of older files left, once they were read.
       write(p.join(root.path, "state.json.migrated"));
       write(p.join(root.path, "library.mmdb.migrated"));
@@ -48,13 +48,12 @@ void main() {
           throwsA(isA<UnsupportedDataFolder>()),
         );
         expect(old.readAsStringSync(), "old");
-        expect(File(paths.libraryDatabase).existsSync(), isFalse);
-        expect(File(paths.stateDatabase).existsSync(), isFalse);
+        expect(File(paths.database).existsSync(), isFalse);
       });
     }
 
     test("older files beside the databases are not a reason to stop", () {
-      write(paths.stateDatabase);
+      write(p.join(root.path, "state.db"));
       write(p.join(root.path, "state.json"));
       requireSupportedDataFolder(paths);
     });
@@ -77,6 +76,7 @@ void main() {
         write(p.join(paths.lyrics, "not_embedded.json"), "{}"),
         write(p.join(paths.cache, "lyrics-embedded.json"), "[]"),
         write(p.join(root.path, "downloads", "receipts", "task.json"), "{}"),
+        write(p.join(root.path, "state.db.merged")),
       ];
 
       await removeRetiredFiles(paths);
