@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 from packaging.version import Version
 
@@ -40,6 +41,29 @@ def require_location(module):
 """
 
 
+def _urllib3_percent_pattern() -> Any:
+    return getattr(sys.modules.get("urllib3.util.url"), "_PERCENT_RE", None)
+
+
+def _restore_urllib3_percent_pattern(before: Any) -> None:
+    """Undo what importing yt-dlp did to urllib3, which outlives the probe.
+
+    yt-dlp wraps this pattern each time it is imported, and its wrapper cannot
+    wrap another: the real import after a probe would break every request in the
+    process with "object has no attribute 'sub'". ``before`` is None when the
+    probe was first to import urllib3, so nothing else can have wrapped it.
+    """
+    url: Any = sys.modules.get("urllib3.util.url")
+    pattern = getattr(url, "_PERCENT_RE", None)
+    if pattern is None:
+        return
+    if before is None:
+        before = pattern
+        while not isinstance(before, re.Pattern) and hasattr(before, "re"):
+            before = before.re
+    url._PERCENT_RE = before
+
+
 def probe(
     path: Path, version: Version, package: RuntimePackage, *, timeout: float
 ) -> None:
@@ -60,6 +84,7 @@ def probe(
         or not standalone
     ):
         original_path = sys.path[:]
+        percent_pattern = _urllib3_percent_pattern()
         try:
             exec(script, {"probe_arguments": [str(path), str(version)]})  # noqa: S102 - fixed, local API probe (never remote source text)
         except MemoryError:
@@ -75,6 +100,7 @@ def probe(
             for name in list(sys.modules):
                 if name == package.module or name.startswith(f"{package.module}."):
                     sys.modules.pop(name, None)
+            _restore_urllib3_percent_pattern(percent_pattern)
             importlib.invalidate_caches()
     else:
         result = subprocess.run(
