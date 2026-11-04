@@ -805,9 +805,12 @@ class MusicManager {
   }
 
   /// The track with the same bytes as [path], if one exists.
-  Future<Track?> findTrackByContent(String path) async {
-    final digest = await sha256File(path);
-    final ids = _contentIndex[digest];
+  Future<Track?> findTrackByContent(String path) async =>
+      findTrackByHash(await sha256File(path));
+
+  /// The track whose recorded SHA-256 is [hex], if one exists.
+  Track? findTrackByHash(String hex) {
+    final ids = _contentIndex[hex.toLowerCase()];
     return ids == null || ids.isEmpty ? null : _tracks[ids.first]!.copy();
   }
 

@@ -16,6 +16,7 @@ import "../../core/errors.dart" show failureMessage;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 import "../../platform/folders.dart";
+import "../controllers/playlists_controller.dart" show MissingPlaylistTracks;
 import "../controllers/search_controller.dart";
 import "format.dart";
 
@@ -717,8 +718,8 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  "Add links to several songs on $youtubeMusicName. Melody will queue "
-                  "them together and show progress for each song. To save a "
+                  "Add links to one or more songs on $youtubeMusicName. Melody will "
+                  "queue them together and show progress for each song. To save a "
                   "playlist, use Import playlist on the Playlists page.",
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -749,10 +750,10 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
           FilledButton.icon(
             onPressed: () async {
               final urls = extractDownloadUrls(controller.text);
-              if (urls.length < 2) {
+              if (urls.isEmpty) {
                 setState(
                   () => error =
-                      "Paste at least two complete $youtubeMusicName URLs.",
+                      "Paste at least one complete $youtubeMusicName URL.",
                 );
                 return;
               }
@@ -837,28 +838,46 @@ Future<void> copyPlaylistLinks(MelodyApp app, Playlist playlist) async {
   );
 }
 
-/// What to say about a file listing [tracks], whose local ones only work here.
+/// What to say about a file listing [tracks], whose local ones need their files
+/// wherever it is opened.
 String _exportedMessage(String what, List<Track> tracks) {
   final local = tracks.length - LibraryService.linksOf(tracks).length;
   return "$what exported."
-      "${local > 0 ? " ${plural(local, "track")} from files will only play on this device." : ""}";
+      "${local > 0 ? " ${plural(local, "track")} from files will need those files wherever it's opened." : ""}";
 }
 
+/// Saves a playlist file made by [contents] for the folder it is saved in,
+/// so its relative paths start there. Mobile pickers write the file
+/// themselves and do not say where, so there they start at the music
+/// folder.
 Future<void> _saveM3u8(
   MelodyApp app,
   String title,
   String name,
-  List<int> contents,
+  List<int> Function(String? directory) contents,
   String done,
 ) async {
-  final saved = await FilePicker.saveFile(
+  if (Platform.isAndroid || Platform.isIOS) {
+    final saved = await FilePicker.saveFile(
+      dialogTitle: title,
+      fileName: name,
+      type: FileType.custom,
+      allowedExtensions: const ["m3u8"],
+      bytes: Uint8List.fromList(contents(null)),
+    );
+    if (saved != null) app.showMessage(done);
+    return;
+  }
+  final chosen = await FilePicker.saveFile(
     dialogTitle: title,
     fileName: name,
     type: FileType.custom,
     allowedExtensions: const ["m3u8"],
-    bytes: Uint8List.fromList(contents),
   );
-  if (saved != null) app.showMessage(done);
+  if (chosen == null) return;
+  final path = p.extension(chosen).isEmpty ? "$chosen.m3u8" : chosen;
+  await File(path).writeAsBytes(contents(p.dirname(path)), flush: true);
+  app.showMessage(done);
 }
 
 Future<void> exportLibrary(MelodyApp app) => app.run(
@@ -866,7 +885,7 @@ Future<void> exportLibrary(MelodyApp app) => app.run(
     app,
     "Export library playlist",
     "Melody Library.m3u8",
-    app.services.library.exportLibraryM3u8(),
+    (directory) => app.services.library.exportLibraryM3u8(directory: directory),
     _exportedMessage("Library playlist", app.services.manager.listTracks()),
   ),
 );
@@ -878,37 +897,149 @@ Future<void> exportPlaylist(MelodyApp app, Playlist playlist) => app.run(() {
     app,
     "Export playlist",
     "${safe.isEmpty ? "Playlist" : safe}.m3u8",
-    app.services.library.exportPlaylistM3u8(playlist.id),
+    (directory) => app.services.library.exportPlaylistM3u8(
+      playlist.id,
+      directory: directory,
+    ),
     _exportedMessage("Playlist", app.playlists.tracks(playlist.id)),
   );
 });
 
 /// Picks an M3U or M3U8 file and makes a playlist of what it lists.
-Future<void> importPlaylistFile(MelodyApp app) => app.run(() async {
-  final result = await FilePicker.pickFiles(
-    dialogTitle: "Import playlist file",
-    type: FileType.custom,
-    allowedExtensions: const ["m3u8", "m3u"],
-    withData: true,
+/// Tracks that are not found can then be located one by one.
+Future<void> importPlaylistFile(BuildContext context, MelodyApp app) =>
+    app.run(() async {
+      final result = await FilePicker.pickFiles(
+        dialogTitle: "Import playlist file",
+        type: FileType.custom,
+        allowedExtensions: const ["m3u8", "m3u"],
+        withData: true,
+      );
+      final file = result?.files.firstOrNull;
+      if (file == null) return;
+      final bytes =
+          file.bytes ??
+          (file.path != null ? await File(file.path!).readAsBytes() : null);
+      if (bytes == null) {
+        throw const FormatException(
+          "The selected playlist file could not be read",
+        );
+      }
+      await app.playlists.importFromFile(
+        bytes,
+        file.name,
+        // Relative entries are relative to the file; a picker's cached copy
+        // (Android) has no such folder, so those match another way.
+        directory: file.path != null && !Platform.isAndroid
+            ? p.dirname(file.path!)
+            : null,
+        onLocate: (missing) {
+          if (context.mounted) showMissingTracksDialog(context, app, missing);
+        },
+      );
+    });
+
+/// Lists the tracks of an imported playlist file that were not found, each
+/// with a button to pick its audio file.
+Future<void> showMissingTracksDialog(
+  BuildContext context,
+  MelodyApp app,
+  MissingPlaylistTracks missing,
+) {
+  var busy = false;
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        final small = TextStyle(
+          fontSize: 12,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        );
+        final pending = missing.pending;
+
+        Future<void> locate(int index) async {
+          final picked = await FilePicker.pickFiles(
+            dialogTitle: "Locate “${missing.entries[index].title}”",
+            type: FileType.custom,
+            allowedExtensions: _audioExtensions,
+          );
+          final path = picked?.files.firstOrNull?.path;
+          if (path == null) return;
+          setState(() => busy = true);
+          try {
+            await app.playlists.locateMissing(missing, index, path);
+          } catch (error) {
+            app.reportFailure(error);
+          } finally {
+            if (context.mounted) setState(() => busy = false);
+          }
+        }
+
+        return AlertDialog(
+          insetPadding: _dialogInsets,
+          icon: const Icon(Icons.search_off_rounded, size: 32),
+          title: Text(
+            pending.isEmpty ? "All tracks found" : "Tracks not found",
+          ),
+          content: SizedBox(
+            width: _dialogWidth(context),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: 8,
+                children: [
+                  Text(
+                    pending.isEmpty
+                        ? "Every track is now in the playlist."
+                        : "Melody could not find ${pending.length != 1 ? "these tracks" : "this track"} "
+                              "in your library. Locate the audio file to add it to the "
+                              "playlist in its place.",
+                  ),
+                  for (final index in pending)
+                    Row(
+                      spacing: 8,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                missing.entries[index].title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                missing.entries[index].location,
+                                style: small,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        OutlinedButton(
+                          onPressed: busy ? null : () => locate(index),
+                          child: const Text("Locate…"),
+                        ),
+                      ],
+                    ),
+                  if (busy) const LinearProgressIndicator(),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.of(context).pop(),
+              child: Text(pending.isEmpty ? "Done" : "Close"),
+            ),
+          ],
+        );
+      },
+    ),
   );
-  final file = result?.files.firstOrNull;
-  if (file == null) return;
-  final bytes =
-      file.bytes ??
-      (file.path != null ? await File(file.path!).readAsBytes() : null);
-  if (bytes == null) {
-    throw const FormatException("The selected playlist file could not be read");
-  }
-  await app.playlists.importFromFile(
-    bytes,
-    file.name,
-    // Relative entries are relative to the file; a picker's cached copy
-    // (Android) has no such folder, so those match by name.
-    directory: file.path != null && !Platform.isAndroid
-        ? p.dirname(file.path!)
-        : null,
-  );
-});
+}
 
 Future<void> pickCookieFile(MelodyApp app) async {
   final FilePickerResult? result;
@@ -1159,10 +1290,45 @@ Future<void> showCleanupReport(
                     Text(
                       "${missing.length != 1 ? "These tracks have" : "This track has"} "
                       "no audio file on disk. Restore copies an imported file again "
-                      "from its original, or downloads the song again.",
+                      "from its original, or downloads the song again. If the file "
+                      "was moved, locate it instead.",
                     ),
                     for (final track in missing.take(_cleanupListed))
-                      Text(track.displayTitle, style: small),
+                      Row(
+                        spacing: 8,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              track.displayTitle,
+                              style: small,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: busy
+                                ? null
+                                : () => run(() async {
+                                    final picked = await FilePicker.pickFiles(
+                                      dialogTitle:
+                                          "Locate “${track.displayTitle}”",
+                                      type: FileType.custom,
+                                      allowedExtensions: _audioExtensions,
+                                    );
+                                    final path =
+                                        picked?.files.firstOrNull?.path;
+                                    if (path != null &&
+                                        await settings.relinkTrack(
+                                          track.id,
+                                          path,
+                                        )) {
+                                      missing.remove(track);
+                                    }
+                                  }),
+                            child: const Text("Locate…"),
+                          ),
+                        ],
+                      ),
                     if (missing.length > _cleanupListed) more(missing.length),
                     buttons([
                       FilledButton.tonalIcon(

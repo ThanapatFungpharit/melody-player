@@ -542,15 +542,231 @@ void main() {
     final source = manager.createPlaylist("Mixed");
     manager.addTracksToPlaylist(source, [linked, local]);
 
+    store.saveTrackDetails(linked, TrackDetails(duration: 201.6));
+
     final m3u8 = utf8.decode(library.exportPlaylistM3u8(source));
     expect(m3u8.split("\n"), [
       "#EXTM3U",
       "#PLAYLIST:Mixed",
-      "#EXTINF:-1,linked.mp3",
+      "#EXTINF:202,linked.mp3",
+      "#MELODY-SHA256:${manager.getTrack(linked).contentHash}",
       _source,
       "#EXTINF:-1,local.mp3",
-      Uri.file(manager.trackPath(local)).toString(),
+      "#MELODY-SHA256:${manager.getTrack(local).contentHash}",
+      // Relative to the music folder, never this device's absolute path.
+      "local.mp3",
       "",
+    ]);
+
+    // Saved elsewhere, a local file is listed relative to the playlist.
+    final elsewhere = p.join(root.path, "exports");
+    final relative = utf8.decode(
+      library.exportPlaylistM3u8(source, directory: elsewhere),
+    );
+    expect(relative, contains("\n../music/local.mp3\n"));
+  });
+
+  test("an exported playlist finds its files on another device", () async {
+    final localPath = p.join(music, "local.mp3");
+    await File(localPath).writeAsString("local");
+    final local = await manager.addTrack(localPath, title: "Local song");
+    final hash = manager.getTrack(local).contentHash;
+    final nested = p.join(music, "Artist", "nested.mp3");
+    await Directory(p.dirname(nested)).create();
+    await File(nested).writeAsString("nested");
+    final inFolder = await manager.addTrack(nested, title: "Nested");
+    final titledPath = p.join(music, "titled.mp3");
+    await File(titledPath).writeAsString("titled");
+    final titled = await manager.addTrack(titledPath, title: "Only title");
+    store.saveTrackDetails(titled, TrackDetails(duration: 180));
+
+    final m3u = [
+      "#EXTM3U",
+      "#PLAYLIST:From the laptop",
+      // The same audio under another name: matched by its contents.
+      "#EXTINF:-1,Renamed",
+      "#MELODY-SHA256:${hash.toUpperCase()}",
+      r"D:\Old Music\renamed.mp3",
+      // Relative to the other device's music folder.
+      "Artist/nested.mp3",
+      // Only the title is known, and the duration agrees.
+      "#EXTINF:181,Only title",
+      "elsewhere/unknown.mp3",
+      // The title matches but the duration does not.
+      "#EXTINF:30,Only title",
+      "elsewhere/short.mp3",
+      "#EXTINF:-1,Never seen",
+      "gone/never.flac",
+    ].join("\n");
+    final match = await library.matchPlaylistM3u(
+      utf8.encode(m3u),
+      fallbackName: "x",
+      baseDirectory: p.join(root.path, "Downloads"),
+    );
+    expect(match.name, "From the laptop");
+    expect(match.trackIds, [local, inFolder, titled]);
+    expect(match.skipped, 2);
+    final missing = [
+      for (final entry in match.entries)
+        if (entry.isMissing) (entry.title, entry.location),
+    ];
+    expect(missing, [
+      ("Only title", "elsewhere/short.mp3"),
+      ("Never seen", "gone/never.flac"),
+    ]);
+  });
+
+  test("a located file joins the library once", () async {
+    final existing = await downloaded("first.mp3");
+    expect(await library.trackForFile(manager.trackPath(existing)), existing);
+
+    final outside = p.join(root.path, "elsewhere", "found.mp3");
+    await Directory(p.dirname(outside)).create();
+    await File(outside).writeAsString("found");
+    final imported = await library.trackForFile(outside);
+    expect(imported, isNot(existing));
+    expect(await library.trackForFile(outside), imported);
+    expect(manager.listTracks(), hasLength(2));
+  });
+
+  test("a missing track is relinked to a located file", () async {
+    final path = p.join(music, "moved.mp3");
+    await File(path).writeAsString("moved");
+    final id = await manager.addTrack(path, title: "Moved");
+    final playlist = manager.createPlaylist("Kept");
+    manager.addTracksToPlaylist(playlist, [id]);
+    await File(path).delete();
+    expect(await manager.checkTrackFile(id), isNotNull);
+
+    final located = p.join(root.path, "new place", "moved.mp3");
+    await Directory(p.dirname(located)).create();
+    await File(located).writeAsString("moved, re-encoded");
+    await library.relinkTrack(id, located);
+
+    expect(await manager.checkTrackFile(id), isNull);
+    // The file goes back where the track's file was.
+    expect(manager.trackPath(id), path);
+    expect(
+      await File(manager.trackPath(id)).readAsString(),
+      "moved, re-encoded",
+    );
+    expect(manager.getTrack(id).source, Uri.file(located).toString());
+    expect(manager.getPlaylist(playlist).trackIds, [id]);
+    expect(await library.canRestoreLocalFile(id), isTrue);
+    await expectLater(
+      library.relinkTrack(id, p.join(root.path, "notes.txt")),
+      throwsFormatException,
+    );
+  });
+
+  test("an imported track remembers the file it is relinked to", () async {
+    final first = p.join(root.path, "first place", "song.mp3");
+    await Directory(p.dirname(first)).create();
+    await File(first).writeAsString("song");
+    final id = await library.importLocalFile(first);
+    final copy = manager.trackPath(id);
+    await File(copy).delete();
+    await File(first).delete();
+
+    final located = p.join(root.path, "new place", "song.mp3");
+    await Directory(p.dirname(located)).create();
+    await File(located).writeAsString("song, found");
+    await library.relinkTrack(id, located);
+
+    expect(manager.getTrack(id).source, Uri.file(located).toString());
+    expect(await library.canRestoreLocalFile(id), isTrue);
+    // The located file is the original now: deleting the track leaves it.
+    await library.deleteTrack(id);
+    expect(await File(copy).exists(), isFalse);
+    expect(await File(located).exists(), isTrue);
+  });
+
+  test("a relinked download keeps its link", () async {
+    final id = await downloaded("song.mp3");
+    await File(manager.trackPath(id)).delete();
+    final located = p.join(root.path, "song.mp3");
+    await File(located).writeAsString("found");
+
+    await library.relinkTrack(id, located);
+
+    expect(manager.getTrack(id).source, _source);
+  });
+
+  test("files a playlist file names join it, each once", () async {
+    final folder = p.join(root.path, "listed");
+    await Directory(folder).create();
+    await File(p.join(folder, "one.mp3")).writeAsString("same audio");
+    await File(p.join(folder, "copy.mp3")).writeAsString("same audio");
+    await File(p.join(folder, "notes.txt")).writeAsString("not audio");
+
+    final match = await library.importListedFiles(
+      await library.matchPlaylistM3u(
+        utf8.encode(
+          "#EXTM3U\none.mp3\ncopy.mp3\nnotes.txt\n"
+          "#EXTINF:-1,Gone\ngone.mp3\n",
+        ),
+        fallbackName: "Listed",
+        baseDirectory: folder,
+      ),
+    );
+
+    // The same contents are one track, not a failed second import.
+    expect(match.trackIds.toSet(), hasLength(1));
+    expect(match.trackIds, hasLength(2));
+    expect(manager.listTracks(), hasLength(1));
+    expect(
+      [
+        for (final entry in match.entries)
+          if (entry.isMissing) entry.title,
+      ],
+      ["notes", "Gone"],
+    );
+    expect(match.skipped, 2);
+  });
+
+  test("a listed file that cannot be imported can still be located", () async {
+    final match = await library.importListedFiles(
+      const PlaylistFileMatch("Listed", [
+        PlaylistFileEntry.file("/nowhere/song.mp3", "Song"),
+      ]),
+    );
+
+    final entry = match.entries.single;
+    expect(entry.isMissing, isTrue);
+    expect(entry.title, "Song");
+    expect(entry.location, "/nowhere/song.mp3");
+    expect(match.skipped, 1);
+  });
+
+  test("a song link needing a download is not a missing entry", () async {
+    final match = await library.matchPlaylistM3u(
+      utf8.encode("#EXTM3U\n#EXTINF:-1,New\nhttps://youtu.be/zzzzzzzzzzz\n"),
+      fallbackName: "Linked",
+    );
+    expect(match.entries.single.url, "https://youtu.be/zzzzzzzzzzz");
+    expect(match.entries.single.isMissing, isFalse);
+    expect(match.skipped, 0);
+  });
+
+  test("playlist entries keep their duration and content hash", () {
+    final hash = "a" * 64;
+    final (title, entries) = parseM3u(
+      utf8.encode(
+        [
+          "#EXTM3U",
+          "#EXTINF:215 tvg-id=\"x\",Song",
+          "#MELODY-SHA256:$hash",
+          "song.mp3",
+          "#MELODY-SHA256:not-a-hash",
+          "#EXTINF:-1,",
+          "other.mp3",
+        ].join("\n"),
+      ),
+    );
+    expect(title, isNull);
+    expect(entries, [
+      (location: "song.mp3", title: "Song", duration: 215, hash: hash),
+      (location: "other.mp3", title: null, duration: null, hash: null),
     ]);
   });
 

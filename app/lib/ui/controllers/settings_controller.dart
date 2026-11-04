@@ -490,7 +490,10 @@ class SettingsController extends ChangeNotifier {
           );
           queued++;
         } else {
-          failures.add("“${track.displayTitle}” has no source to restore from");
+          failures.add(
+            "“${track.displayTitle}” has no source to restore from; "
+            "locate its file instead",
+          );
           continue;
         }
         handled.add(trackId);
@@ -506,6 +509,22 @@ class SettingsController extends ChangeNotifier {
     ];
     _report(summary, failures);
     return handled;
+  }
+
+  /// Points a missing track at the audio file the user located. Returns
+  /// whether it worked.
+  Future<bool> relinkTrack(String trackId, String path) async {
+    try {
+      await app.services.library.relinkTrack(trackId, path);
+    } on Object catch (error) {
+      app.showError(failureMessage(error));
+      return false;
+    }
+    app.touchLibrary();
+    app.showMessage(
+      "Linked “${app.services.manager.getTrack(trackId).displayTitle}” to the file.",
+    );
+    return true;
   }
 
   /// Removes tracks from the library and every playlist. Returns the ids

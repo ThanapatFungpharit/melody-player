@@ -10,6 +10,7 @@ import "package:flutter_media_session/flutter_media_session.dart";
 import "package:flutter_test/flutter_test.dart";
 import "package:melody_audio/melody_audio.dart" show AudioEngineSnapshot;
 import "package:melody/ui/app_state.dart";
+import "package:melody/ui/controllers/playlists_controller.dart";
 import "package:melody/services.dart";
 import "package:melody/application/downloads.dart";
 import "package:melody/application/library_service.dart";
@@ -491,6 +492,52 @@ void main() {
       expect(playlist.trackIds, [track!.id]);
     },
   );
+
+  test("a playlist file's files import, and the rest can be located", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final folder = p.join(root.path, "Elsewhere");
+    await Directory(folder).create();
+    Future<String> audio(String name, int mark) async {
+      final path = p.join(folder, name);
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      await File(path).writeAsBytes([mark], mode: FileMode.append);
+      return path;
+    }
+
+    await audio("listed.mp3", 90);
+    final found = await audio("found elsewhere.mp3", 91);
+    final messages = <AppMessage>[];
+    final listening = app.messages.listen(messages.add);
+    addTearDown(listening.cancel);
+    MissingPlaylistTracks? missing;
+
+    await app.playlists.importFromFile(
+      utf8.encode(
+        "#EXTM3U\n#PLAYLIST:Mixed\n#EXTINF:-1,Gone\ngone.mp3\nlisted.mp3\n",
+      ),
+      "Mixed.m3u8",
+      directory: folder,
+      onLocate: (located) => missing = located,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final summary = messages.last;
+    expect(summary.text, contains("1 track was not found"));
+    summary.action!.$2();
+    final pending = missing!.pending.single;
+    expect(missing!.entries[pending].title, "Gone");
+    final playlist = app.playlists.selectedPlaylistId!;
+    final listed = app.services.manager.getPlaylist(playlist).trackIds.single;
+
+    await app.playlists.locateMissing(missing!, pending, found);
+
+    expect(missing!.pending, isEmpty);
+    final trackIds = app.services.manager.getPlaylist(playlist).trackIds;
+    // The located file takes the place the entry had in the file.
+    expect(trackIds, hasLength(2));
+    expect(trackIds.last, listed);
+  });
 
   test("a setting applies and is saved the moment it changes", () async {
     final app = await _app(root, mobile: false);
