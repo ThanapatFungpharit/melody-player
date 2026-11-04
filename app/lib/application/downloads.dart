@@ -135,6 +135,8 @@ Map<String, Object?> downloadOptions(
   "noplaylist": true,
   "quiet": true,
   "noprogress": true,
+  // What another attempt looks for, to skip a song already downloaded.
+  "final_ext": settings.downloadFormat.extension.substring(1),
   "postprocessors": [
     {
       "key": "FFmpegExtractAudio",
@@ -160,8 +162,10 @@ Map<String, Object?> _noSharedOptions() => const {};
 ///
 /// Worker callbacks can arrive many times per second. Listeners hear about
 /// byte progress at most every [progressNotifyInterval]; status changes are
-/// written and published immediately. Byte progress is never persisted: a
-/// download still active at startup starts over ([resumeInterrupted]).
+/// written and published immediately, and byte progress saved every few
+/// seconds. A download still active at startup carries on from
+/// what it left on disk ([resumeInterrupted]), and its row from what it last
+/// showed.
 class DownloadCoordinator extends ChangeNotifier {
   DownloadCoordinator._(
     this.manager,
@@ -171,6 +175,7 @@ class DownloadCoordinator extends ChangeNotifier {
     this._downloader,
     this.lyrics,
     this._sharedOptions,
+    this._progressSaveInterval,
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
@@ -185,10 +190,12 @@ class DownloadCoordinator extends ChangeNotifier {
   /// Supplies lyrics to embed in downloaded files.
   final LyricsLibrary? lyrics;
   final Map<String, Object?> Function() _sharedOptions;
+  final Duration _progressSaveInterval;
   final Map<String, DownloadRecord> _records = {};
   final Map<String, String> _activeBySource = {};
   final Stopwatch _clock = Stopwatch()..start();
   Duration _lastNotify = Duration.zero;
+  Duration _lastProgressSave = Duration.zero;
 
   /// What the last run was still downloading.
   final List<String> _interrupted = [];
@@ -207,6 +214,7 @@ class DownloadCoordinator extends ChangeNotifier {
     LyricsLibrary? lyrics,
     Map<String, Object?> Function() sharedOptions = _noSharedOptions,
     required String stagingDirectory,
+    Duration progressSaveInterval = const Duration(seconds: 5),
   }) async {
     final coordinator = DownloadCoordinator._(
       manager,
@@ -223,6 +231,7 @@ class DownloadCoordinator extends ChangeNotifier {
       ),
       lyrics,
       sharedOptions,
+      progressSaveInterval,
     );
     await coordinator._recover();
     return coordinator;
@@ -233,7 +242,13 @@ class DownloadCoordinator extends ChangeNotifier {
       _records[record.id] = record;
     }
     // Before any job starts, so only earlier processes' directories qualify.
-    final abandoned = await _downloader.removeAbandonedStaging();
+    final abandoned = await _downloader.removeAbandonedStaging(
+      resumableUrls: [
+        for (final record in _records.values)
+          if (record.status.isActive || record.status == DownloadStatus.failed)
+            record.url,
+      ],
+    );
     if (abandoned > 0) {
       debugPrint("Removed $abandoned abandoned download staging folder(s)");
     }
@@ -272,8 +287,9 @@ class DownloadCoordinator extends ChangeNotifier {
     if (recovered) _persist();
   }
 
-  /// Starts over what the last run was still downloading, unless it reached
-  /// the library just before the end. Call it once [onRecord] is listening.
+  /// Carries on with what the last run was still downloading, unless it
+  /// reached the library just before the end. Call it once [onRecord] is
+  /// listening.
   /// One that cannot start stays failed, to retry by hand.
   Future<void> resumeInterrupted() async {
     final interrupted = List.of(_interrupted);
@@ -590,6 +606,7 @@ class DownloadCoordinator extends ChangeNotifier {
   /// Stops every job. Those the user did not cancel stay active in the saved
   /// history, for the next launch to pick up.
   void shutdown() {
+    if (!_closing) _persist();
     _closing = true;
     _downloader.shutdown(cancelPending: true);
   }
@@ -602,13 +619,18 @@ class DownloadCoordinator extends ChangeNotifier {
       ..status = progress.status == DownloadStatus.completed
           ? DownloadStatus.processing
           : progress.status
-      ..progress = progress.progress
       ..filename = progress.filename.isEmpty
           ? ""
           : p.basename(progress.filename)
-      ..downloadedBytes = progress.downloadedBytes
-      ..totalBytes = progress.totalBytes
       ..error = friendlyDownloadError(progress.error);
+    // Reports without bytes know nothing yet, as when an attempt starts: the
+    // row keeps showing how far the song has got.
+    if (progress.downloadedBytes > 0 || progress.totalBytes > 0) {
+      record
+        ..progress = progress.progress
+        ..downloadedBytes = progress.downloadedBytes
+        ..totalBytes = progress.totalBytes;
+    }
     if (metadata.resolveMetadata) {
       if (progress.mediaTitle.isNotEmpty) record.title = progress.mediaTitle;
       if (progress.uploader.isNotEmpty) record.uploader = progress.uploader;
@@ -618,7 +640,10 @@ class DownloadCoordinator extends ChangeNotifier {
     if (record.status.isUnsuccessful) return;
     final now = _clock.elapsed;
     final changed = record.status != previous;
-    if (changed) _persist();
+    if (changed || now - _lastProgressSave >= _progressSaveInterval) {
+      _lastProgressSave = now;
+      _persist();
+    }
     if (changed || now - _lastNotify >= progressNotifyInterval) {
       _lastNotify = now;
       _publish(record);
@@ -908,6 +933,9 @@ class _DownloadMetadata {
     this.thumbnail = "",
     this.source = youtubeMusicName,
     this.duration = 0,
+    this.progress = 0,
+    this.downloadedBytes = 0,
+    this.totalBytes = 0,
     this.resolveMetadata = false,
     this.createdAt,
     this.batchId = "",
@@ -954,6 +982,9 @@ class _DownloadMetadata {
       uploader: original.uploader,
       thumbnail: original.thumbnail,
       source: original.source,
+      progress: original.progress,
+      downloadedBytes: original.downloadedBytes,
+      totalBytes: original.totalBytes,
       // URL batches start with placeholder titles that yt-dlp replaces.
       resolveMetadata: batched,
       // A batch song keeps its place and count in its batch.
@@ -975,6 +1006,11 @@ class _DownloadMetadata {
   /// In seconds; 0 when unknown.
   final double duration;
 
+  /// How far earlier attempts got.
+  final double progress;
+  final int downloadedBytes;
+  final int totalBytes;
+
   /// Whether the title, uploader, and artwork yt-dlp reports replace these.
   final bool resolveMetadata;
 
@@ -991,6 +1027,9 @@ class _DownloadMetadata {
     uploader: uploader,
     thumbnail: thumbnail,
     source: source,
+    progress: progress,
+    downloadedBytes: downloadedBytes,
+    totalBytes: totalBytes,
     createdAt: createdAt,
     batchId: batchId,
     batchPosition: batchPosition,

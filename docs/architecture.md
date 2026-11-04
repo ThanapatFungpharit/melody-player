@@ -173,7 +173,7 @@ them to the playback controller.
 | Track UUIDs, file references, hashes, playlists | `MusicManager` (`library.db`) | Services coordinate registration and deletion through `mutation` |
 | Settings, track details, history, session queue, download history | `ApplicationStore` (`state.db`) | Writes commit atomically; failure restores in-memory values |
 | Staged download files, cancellation, terminal outcome | `Downloader` | The worker writes only inside the staging directory it is given (and yt-dlp's cache folder, also chosen by the app) |
-| Download reuse, registration, retry, resuming after a restart | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once, byte progress never (a download active at startup starts over) |
+| Download reuse, registration, retry, resuming after a restart | `DownloadCoordinator` | Core does not know about the library; status changes are saved at once and byte progress every few seconds (a download active at startup carries on, and its row shows how far it had got) |
 | Embedded cover artwork | The downloaded media container | The downloader reads it back before committing the file |
 | Cover art for the UI, one file per track ID | `ThumbnailCache` | Read from the track's own file: when a download is registered or a file imported, else by the background pass after launch (`LibraryService.readMissingMetadata`), which covers earlier imports and a deleted cache. An empty entry records a file without art, so it is not read again. Entries of removed tracks go with them and at launch (`LibraryService.removeUnusedCaches`) |
 | Runtime ytmusicapi and yt-dlp selection | `worker/src/melody_worker/updater/`, once per launch before import | `PackageRuntime` (one per package) schedules updates and reports status |
@@ -294,8 +294,16 @@ active queue.
 ### Downloads
 
 A download still running when Melody closes stays active in `state.db`, and the
-next launch starts it over; only cancelling it ends it. Downloaded bytes are not
-kept, so it starts from the beginning. Off screen, Android runs a `dataSync`
+next launch carries on with it; only cancelling it ends it. Each song stages in
+its own `downloads/staging/job-<song>` folder, so another attempt finds what the
+last one left: yt-dlp continues a partial stream, and `final_ext` lets it skip a
+song already downloaded. Before the download, the worker's `resume_guard` clears
+half-written FFmpeg output, and partial streams of a format other than the one
+chosen now, which yt-dlp would otherwise continue with the wrong bytes. That
+folder stays when the app closes or dies, and through failures another attempt
+may get past (network, rate limit, an outdated engine, cookies); it goes after
+success, cancellation, and anything else, in case the bytes themselves caused
+the failure. Off screen, Android runs a `dataSync`
 foreground service for as long as any download is active, reported over the
 `melody/downloads` channel.
 
@@ -329,8 +337,9 @@ yt-dlp keeps the thumbnail sidecar in staging while metadata is written, and
 the cover is burned in as the last postprocessor. Before promotion the
 downloader reads the cover back from every audio file with `core/artwork.dart`
 (ID3v2, MP4 `covr`, FLAC, Ogg Opus/Vorbis). A song without a readable cover is
-still kept, and plays with a placeholder. Only verified bytes reach the
-thumbnail cache.
+still kept. The worker makes embedding optional (`optional_cover`), so a failure
+there leaves the audio as it is; the image yt-dlp downloaded then fills the
+thumbnail cache instead, and without either the song plays with a placeholder.
 
 Promotion and registration are the last two steps, one right after the other.
 If registering fails, the promoted file is removed and the download can be
@@ -459,7 +468,7 @@ repaired by downloading the song again.
 
 | File class | Owner and lifecycle |
 | --- | --- |
-| Download staging | `Downloader`-owned, locked `downloads/staging/job-*` folder; removed after every outcome, or at the next launch once its process has ended |
+| Download staging | `Downloader`-owned, locked `downloads/staging/job-*` folder, one per song; removed when a download ends, unless another attempt could carry on from it. At launch, one no active or failed download could use is removed once its process has ended, and any is removed after a week untouched |
 | Completed, unregistered download | Removed if registering fails; if the process ends first, the file stays and Maintenance lists it |
 | Managed library audio | `MusicManager`; desktop uses the music folder, on Android the music folder is inside public `Music` (`Music/Melody` by default); tracks earlier releases kept in private storage move there once at launch |
 | Downloaded audio of a removed entry | `OwnedFiles`: recorded in `state.db` (`pending_file_deletions`) before the entry goes, then deleted with its `.lrc`; a file that cannot be deleted yet (held open, or a crash in between) is deleted at a later launch, unless an entry still uses it |

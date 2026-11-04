@@ -13,6 +13,7 @@ import "../../worker/worker_client.dart";
 import "../artwork.dart";
 import "../errors.dart";
 import "../id3_lyrics.dart";
+import "../media.dart";
 import "../storage.dart";
 
 /// The lifecycle of one download. The names are persisted in download history.
@@ -37,8 +38,26 @@ enum DownloadStatus {
   bool get isUnsuccessful => this == failed || this == cancelled;
 }
 
-/// Staging directories are `<stagingDirectory>/job-<random>`.
+/// Staging directories are `<stagingDirectory>/job-<song>`, so another attempt
+/// at a song carries on from what the last one left (yt-dlp continues its
+/// partial stream, and skips what is already downloaded), or `job-<random>` when
+/// that is taken or the link names no song.
 const _stagingPrefix = "job-";
+
+/// How long what a stopped download left waits for another attempt.
+const _resumableStagingAge = Duration(days: 7);
+
+/// Failures another attempt may get past with the same bytes. Others may have
+/// come from the bytes themselves, or are about running out of space.
+const _resumableFailures = {
+  DownloadErrorKind.network,
+  DownloadErrorKind.rateLimit,
+  DownloadErrorKind.extractor,
+  DownloadErrorKind.authentication,
+};
+
+/// Cover images yt-dlp leaves beside the audio.
+const _coverExtensions = {".jpg", ".jpeg", ".png", ".webp"};
 
 /// Held with an exclusive lock while a download uses its staging directory,
 /// so another Melody process can tell a live directory from an abandoned one.
@@ -59,25 +78,37 @@ class _Staging {
 
   static Future<_Staging> create(String parent) async {
     final directory = await Directory(parent).createTemp(_stagingPrefix);
+    // Without a lock the directory is still removed below, or swept by age
+    // after a crash.
+    return _Staging(directory, await _lockOf(directory));
+  }
+
+  /// Takes the song's folder [path], with what an earlier attempt left in it.
+  /// Null when it cannot be locked, as when another Melody is using it.
+  static Future<_Staging?> resume(String path) async {
+    final directory = Directory(path);
+    await directory.create(recursive: true);
+    final lock = await _lockOf(directory);
+    return lock == null ? null : _Staging(directory, lock);
+  }
+
+  static Future<RandomAccessFile?> _lockOf(Directory directory) async {
     RandomAccessFile? lock;
     try {
       lock = await File(
         p.join(directory.path, _stagingLock),
-      ).open(mode: FileMode.write);
+      ).open(mode: FileMode.append);
       await lock.lock(FileLock.exclusive);
+      return lock;
     } on FileSystemException catch (error) {
-      // Without a lock the directory is still removed below, or swept by
-      // age after a crash.
       debugPrint("Download staging is not locked: $error");
       await lock?.close();
-      lock = null;
+      return null;
     }
-    return _Staging(directory, lock);
   }
 
-  /// Releases the lock and deletes the directory with everything in it.
-  /// Idempotent; a failure only logs, and the next launch sweeps it.
-  Future<void> remove() async {
+  /// Lets the directory go, as it is, for another attempt.
+  Future<void> release() async {
     final lock = _lock;
     _lock = null;
     try {
@@ -85,6 +116,12 @@ class _Staging {
     } on FileSystemException catch (error) {
       debugPrint("Could not release download staging: $error");
     }
+  }
+
+  /// Releases the lock and deletes the directory with everything in it.
+  /// Idempotent; a failure only logs, and the next launch sweeps it.
+  Future<void> remove() async {
+    await release();
     // FFmpeg, ending with the job, may hold a file open a moment longer
     // (Windows refuses to delete it until then).
     for (final wait in const [Duration.zero, Duration(seconds: 2)]) {
@@ -103,15 +140,20 @@ class _Staging {
 
 /// Deletes the subfolders of [parent] named `<prefix>...` that a download
 /// abandoned when its process ended (closed mid-download, crashed, or
-/// killed): partial streams, intermediate audio, and thumbnails. Folders another running process still holds are kept, as are the
-/// ones in [except]. Returns how many were removed.
+/// killed): partial streams, intermediate audio, and thumbnails. Folders another
+/// running process still holds are kept, as are the ones in [except]. The ones
+/// in [resumable] are kept too, until nothing has touched them for a week.
+/// Returns how many were removed.
 Future<int> removeAbandonedStagingIn(
   String parent, {
   String prefix = _stagingPrefix,
   Set<String> except = const {},
+  Set<String> resumable = const {},
   DateTime? now,
 }) async {
-  final cutoff = (now ?? DateTime.now()).subtract(_unlockedStagingAge);
+  final moment = now ?? DateTime.now();
+  final cutoff = moment.subtract(_unlockedStagingAge);
+  final resumableCutoff = moment.subtract(_resumableStagingAge);
   var removed = 0;
   try {
     if (!await Directory(parent).exists()) return 0;
@@ -122,6 +164,10 @@ Future<int> removeAbandonedStagingIn(
         continue;
       }
       try {
+        if (resumable.contains(entity.path) &&
+            (await _lastChange(entity)).isAfter(resumableCutoff)) {
+          continue;
+        }
         if (!await _isAbandoned(entity, cutoff)) continue;
       } on FileSystemException {
         continue; // Removed meanwhile, or unreadable: left alone.
@@ -151,6 +197,10 @@ Future<bool> _isAbandoned(Directory staging, DateTime cutoff) async {
       await lock?.close();
     }
   }
+  return (await _lastChange(staging)).isBefore(cutoff);
+}
+
+Future<DateTime> _lastChange(Directory staging) async {
   var newest = (await staging.stat()).modified;
   await for (final entity in staging.list(
     recursive: true,
@@ -159,7 +209,7 @@ Future<bool> _isAbandoned(Directory staging, DateTime cutoff) async {
     final modified = (await entity.stat()).modified;
     if (modified.isAfter(newest)) newest = modified;
   }
-  return newest.isBefore(cutoff);
+  return newest;
 }
 
 /// A point-in-time view of a download.
@@ -247,6 +297,10 @@ class _Job {
   final void Function(DownloadResult)? onComplete;
   final Future<String?> Function()? lyrics;
   bool cancelled = false;
+
+  /// Stopped by the app closing, not by the user: its folder stays, for the
+  /// next launch to carry on from.
+  bool closing = false;
   bool started = false;
   DownloadResult? result;
 }
@@ -372,7 +426,8 @@ class Downloader {
   void shutdown({bool cancelPending = false}) {
     _shutdown = true;
     if (!cancelPending) return;
-    for (final task in _jobs.keys.toList()) {
+    for (final MapEntry(key: task, value: job) in _jobs.entries.toList()) {
+      if (!job.cancelled) job.closing = true;
       cancel(task);
     }
   }
@@ -413,9 +468,9 @@ class Downloader {
   }
 
   Future<(List<String>, Uint8List?)> _downloadOne(_Job job) async {
-    final owned = await _Staging.create(stagingDirectory);
+    final owned = await _openStaging(job.progress.url);
     final staging = owned.directory;
-    _activeStaging.add(staging.path);
+    var keepStaging = false;
     try {
       // FFmpeg tags MP3 lyrics as a TXXX frame players ignore; those get a
       // proper USLT frame after the download instead, so their lookup runs
@@ -447,23 +502,59 @@ class Downloader {
         throw DownloadError("The download did not produce an audio file");
       }
       return (files, artwork.isEmpty ? null : artwork);
+    } on _Cancelled {
+      keepStaging = job.closing;
+      rethrow;
+    } catch (error) {
+      keepStaging = _resumableFailures.contains(
+        classifyDownloadError(error).kind,
+      );
+      rethrow;
     } finally {
-      // Every outcome (completion, failure, cancellation) ends here; only a
-      // process that dies first leaves the directory for the startup sweep.
-      await owned.remove();
+      // Every outcome ends here; the directory outlives only one another
+      // attempt can carry on from, and a process that dies first.
+      if (keepStaging) {
+        await owned.release();
+      } else {
+        await owned.remove();
+      }
       _activeStaging.remove(staging.path);
     }
   }
 
+  /// The song's folder, unless it has none or another job or process holds it.
+  Future<_Staging> _openStaging(String url) async {
+    final path = _songStaging(url);
+    // Claimed before waiting, so a job started alongside this one looks elsewhere.
+    if (path != null && _activeStaging.add(path)) {
+      if (await _Staging.resume(path) case final staging?) return staging;
+      _activeStaging.remove(path);
+    }
+    final staging = await _Staging.create(stagingDirectory);
+    _activeStaging.add(staging.directory.path);
+    return staging;
+  }
+
+  String? _songStaging(String url) {
+    final identity = MediaIdentity.fromUrl(url);
+    if (identity == null) return null;
+    final name = identity.key.replaceAll(":", "_");
+    return p.join(stagingDirectory, "$_stagingPrefix$name");
+  }
+
   /// Deletes staging directories that a download abandoned when its
   /// process ended ([removeAbandonedStagingIn]), except this downloader's
-  /// own running jobs. Returns how many were removed.
-  Future<int> removeAbandonedStaging({DateTime? now}) =>
-      removeAbandonedStagingIn(
-        stagingDirectory,
-        except: _activeStaging,
-        now: now,
-      );
+  /// own running jobs and what [resumableUrls] left for another attempt.
+  /// Returns how many were removed.
+  Future<int> removeAbandonedStaging({
+    Iterable<String> resumableUrls = const [],
+    DateTime? now,
+  }) => removeAbandonedStagingIn(
+    stagingDirectory,
+    except: _activeStaging,
+    resumable: {for (final url in resumableUrls) ?_songStaging(url)},
+    now: now,
+  );
 
   Future<String?> _lyrics(_Job job) async {
     final source = job.lyrics;
@@ -516,8 +607,9 @@ class Downloader {
     );
   }
 
-  /// Reads back the cover art burned into the staged audio, for the UI cache.
-  /// A song without one is still the song: it plays with a placeholder.
+  /// Reads back the cover art burned into the staged audio, for the UI cache,
+  /// or the image yt-dlp could not burn in. A song without either is still the
+  /// song: it plays with a placeholder.
   Future<Uint8List> _embeddedArtwork(
     Directory staging,
     Set<String> audioExtensions,
@@ -538,7 +630,24 @@ class Downloader {
         debugPrint("Could not read the cover art of ${entity.path}: $error");
       }
     }
-    return largest;
+    return largest.isEmpty ? _coverBeside(staging) : largest;
+  }
+
+  Future<Uint8List> _coverBeside(Directory staging) async {
+    final covers = [
+      await for (final entity in staging.list())
+        if (entity is File &&
+            _coverExtensions.contains(p.extension(entity.path).toLowerCase()))
+          entity,
+    ]..sort((a, b) => a.path.compareTo(b.path));
+    for (final cover in covers) {
+      try {
+        return await cover.readAsBytes();
+      } on FileSystemException catch (error) {
+        debugPrint("Could not read the cover ${cover.path}: $error");
+      }
+    }
+    return Uint8List(0);
   }
 
   Future<List<String>> _moveDownloadedFiles(

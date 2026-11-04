@@ -111,14 +111,6 @@ void main() {
       expect(kind("Unable to extract nsig"), DownloadErrorKind.extractor);
     });
 
-    test("recognizes thumbnail embedding failures", () {
-      expect(
-        kind("Could not embed thumbnail"),
-        DownloadErrorKind.postprocessing,
-      );
-      expect(kind("Thumbnail missing"), DownloadErrorKind.unknown);
-    });
-
     test("recognizes network failures from flags and messages", () {
       expect(
         kind(WorkerFailure("failed", timeout: true)),

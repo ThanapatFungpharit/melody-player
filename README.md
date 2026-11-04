@@ -17,7 +17,7 @@ interfaces for the same shared capabilities.
 - Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in every downloaded media file plus a derived offline UI cache
 - Search actions have one clear intent: Play reuses the intact library file or downloads it, keeping the current music going until it is ready and then playing it ahead of the rest of the queue; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
 - Automatic import of completed audio into the SQLite music library
-- Downloads that keep going off screen (with a foreground service on Android) and start over at the next launch if Melody closes first
+- Downloads that keep going off screen (with a foreground service on Android) and pick up where they left off at the next launch if Melody closes or crashes first
 - Sharing: copy a track's or playlist's links, make a playlist from pasted links, and export named M3U8 playlists that warn about tracks that only play on this device
 - Native multi-file and desktop folder import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, plus M3U files that name them, with content-hash duplicate detection, using the title, artist, and cover art each file is tagged with
 - Persistent playlists with duplicate-aware YouTube Music playlist import that shows its progress, can be stopped, and can be updated from its link later, bulk multi-select track adding, ordered tracks, find-in-playlist, drag-to-reorder, move-up/down actions, rename/delete, add/move between playlists, and safe removal that does not delete audio files
@@ -122,7 +122,7 @@ downloads are saved straight to the public `Music/Melody` folder, or another
 folder inside `Music` chosen in Settings, without any storage permission. The
 music folder only ever receives finished audio: each download stages in the app
 data folder (partial streams and thumbnails), and that staging is
-removed when the download ends. On desktop, Settings shows the app data folder
+removed when the download ends, or kept for a while if it can pick up from there. On desktop, Settings shows the app data folder
 with buttons to open it or copy its path. Its `cache` folder is safe to delete
 while Melody is closed.
 

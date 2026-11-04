@@ -50,11 +50,11 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
   moves the library like on desktop.
 - Each download stages in private app data, as on desktop (Android would
   refuse partial streams and thumbnails in `Music`), and removes
-  its staging when it ends.
+  its staging when it ends, unless it can pick up from there.
 - Downloads keep running off screen with a foreground service and its
   notification. Android can refuse to start that service for an app already in
   the background, and allows it six hours a day from Android 15. A download
-  Android stops anyway starts over at the next launch.
+  Android stops anyway picks up where it left off at the next launch.
 - Music is added one file at a time, because Android lets Melody read only its
   own folders; **Add a folder** is desktop only.
 - Only formats the Android audio decoders play can be imported: AIFF, WMA,

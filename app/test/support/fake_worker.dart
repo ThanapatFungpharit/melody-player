@@ -101,6 +101,15 @@ class FakeWorkerTransport implements WorkerTransport {
 
   /// The yt-dlp options of each download request, in order.
   final List<Map> downloadOptions = [];
+
+  /// The staging folder of each download request, in order.
+  final List<String> downloadDirectories = [];
+
+  /// Report byte progress, as yt-dlp does once it has started.
+  bool progressEvents = true;
+
+  /// What the next download fails with, as a message from yt-dlp.
+  String? downloadFailure;
   final Set<String> _cancelled = {};
   String downloadedName = "Song.mp3";
 
@@ -148,6 +157,7 @@ class FakeWorkerTransport implements WorkerTransport {
         downloadOptions.add(frame["options"] as Map);
         final task = "${frame["task"]}";
         final directory = "${frame["directory"]}";
+        downloadDirectories.add(directory);
         // yt-dlp streams into a .part file before converting.
         if (p.basename(directory).startsWith("job-") &&
             await Directory(directory).exists()) {
@@ -155,21 +165,35 @@ class FakeWorkerTransport implements WorkerTransport {
             p.join(directory, "$downloadedName.webm.part"),
           ).writeAsBytes(List.filled(1024, 7));
         }
-        _frames.add({
-          "event": "progress",
-          "task": task,
-          "status": "downloading",
-          "downloaded_bytes": 5,
-          "total_bytes": 10,
-          "title": "Resolved title",
-          "uploader": "Resolved artist",
-        });
+        if (progressEvents) {
+          _frames.add({
+            "event": "progress",
+            "task": task,
+            "status": "downloading",
+            "downloaded_bytes": 5,
+            "total_bytes": 10,
+            "title": "Resolved title",
+            "uploader": "Resolved artist",
+          });
+        }
         await downloadGate?.future;
         if (_cancelled.contains(task)) {
           _frames.add({
             "id": id,
             "ok": true,
             "result": {"cancelled": true},
+          });
+          return;
+        }
+        if (downloadFailure case final failure?) {
+          downloadFailure = null;
+          _frames.add({
+            "id": id,
+            "ok": false,
+            "error": {
+              "message": failure,
+              "types": ["DownloadError"],
+            },
           });
           return;
         }
