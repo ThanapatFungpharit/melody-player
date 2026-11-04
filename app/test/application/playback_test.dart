@@ -1043,6 +1043,100 @@ void main() {
     expect(changes, [PlaybackChange.volume, PlaybackChange.volume]);
   });
 
+  group("a row that fails while playing", () {
+    test("is skipped, and the queue carries on", () async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      final errors = <String>[];
+      final playback = controller(onError: errors.add)
+        ..playTracks(ids)
+        ..onLoaded()
+        ..onBackendError("The decoder failed.");
+
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentTrackId, ids[1]);
+      expect(playback.playing, isTrue);
+      expect(errors.single, contains("Skipped"));
+      expect(errors.single, contains("a.mp3"));
+    });
+
+    test("ends the queue when it was the last row", () async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      final errors = <String>[];
+      final playback = controller(onError: errors.add)
+        ..playTracks(ids, startIndex: 1)
+        ..onBackendError("The decoder failed.");
+
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentTrackId, ids[1]);
+      expect(playback.playing, isFalse);
+      expect(errors, ["The decoder failed."]);
+    });
+
+    test("does not start music while paused", () async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      final playback = controller()
+        ..playTracks(ids)
+        ..onLoaded()
+        ..toggle();
+      expect(playback.playing, isFalse);
+
+      playback.onBackendError("The decoder failed.");
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentTrackId, ids[0]);
+      expect(playback.playing, isFalse);
+    });
+
+    test("gives way to what the user asks for next", () async {
+      final ids = await tracks(["a.mp3", "b.mp3", "c.mp3"]);
+      final playback = controller()
+        ..playTracks(ids)
+        ..onLoaded()
+        ..onBackendError("The decoder failed.")
+        ..playQueueIndex(2);
+
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentTrackId, ids[2]);
+    });
+
+    test("stops once rows keep failing, then starts counting again", () async {
+      final ids = await tracks(["a.mp3", "b.mp3", "c.mp3", "d.mp3", "e.mp3"]);
+      final playback = controller()..playTracks(ids);
+      Future<void> fail() async {
+        playback.onBackendError("The decoder failed.");
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      for (var i = 0; i < 4; i++) {
+        await fail();
+      }
+      expect(playback.currentTrackId, ids[3]);
+      expect(playback.playing, isFalse);
+
+      playback.playQueueIndex(0);
+      await fail();
+      expect(playback.currentTrackId, ids[1]);
+      expect(playback.playing, isTrue);
+    });
+
+    test("is forgiven by rows that really play", () async {
+      final ids = await tracks(["a.mp3", "b.mp3", "c.mp3", "d.mp3", "e.mp3"]);
+      final playback = controller()..playTracks(ids);
+      for (var i = 0; i < 4; i++) {
+        playback
+          ..onLoaded()
+          ..onPosition(1000)
+          ..onBackendError("The decoder failed.");
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(playback.currentTrackId, ids[4]);
+      expect(playback.playing, isTrue);
+    });
+  });
+
   test("a failure repairs loaded state and the next toggle reloads", () async {
     final [id] = await tracks(["song.mp3"]);
     final errors = <String>[];

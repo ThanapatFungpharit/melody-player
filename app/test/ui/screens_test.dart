@@ -117,6 +117,10 @@ const _cookieFile =
     "# Netscape HTTP Cookie File\n"
     ".youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalue\n";
 
+/// Rows never load here. Long enough for each row's load watchdog to lapse, and
+/// for playback to skip along the queue until it stops.
+const _loadsGiveUp = Duration(seconds: 52);
+
 Future<MelodyApp> _app(
   Directory root, {
   required bool mobile,
@@ -912,7 +916,7 @@ void main() {
     );
     row.onPlay!();
     expect(queue.currentIndex, 7);
-    await tester.pump(const Duration(seconds: 13));
+    await tester.pump(_loadsGiveUp);
   });
 
   testWidgets("a playlist finds rows and keeps their real places", (
@@ -939,7 +943,7 @@ void main() {
     await settle(tester);
     expect(app.playback.queue.items, ids);
     expect(app.playback.queue.currentIndex, 42);
-    await tester.pump(const Duration(seconds: 13));
+    await tester.pump(_loadsGiveUp);
   });
 
   testWidgets("a library row plays the list from there", (tester) async {
@@ -958,7 +962,7 @@ void main() {
 
     expect(app.playback.queue.items, ids);
     expect(app.playback.currentTrackId, ids[1]);
-    await tester.pump(const Duration(seconds: 13));
+    await tester.pump(_loadsGiveUp);
   });
 
   testWidgets("Reset everything says it deletes the library's audio", (
@@ -1202,7 +1206,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(NowPlaying), findsNothing);
     // The skipped-to track never loads here; let its load watchdog lapse.
-    await tester.pump(const Duration(seconds: 15));
+    await tester.pump(_loadsGiveUp);
     await tester.pumpAndSettle();
   });
 

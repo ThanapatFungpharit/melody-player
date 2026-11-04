@@ -702,6 +702,7 @@ class PlaybackController {
 
   void onPosition(int position) {
     if (_playerLoading) return;
+    if (position > 0) _skippedInARow = 0;
     final clamped = position < 0 ? 0 : position;
     positionMs = durationMs > 0 && clamped > durationMs ? durationMs : clamped;
     final now = DateTime.now();
@@ -799,6 +800,7 @@ class PlaybackController {
 
   /// Reconciles optimistic state after a decoder failure.
   void onBackendError(String message) {
+    final failed = _playing ? currentTrackId : null;
     // Supersede pending generations first so a late callback cannot
     // resurrect a rejected track.
     _cancelPendingLoad(discardSource: true);
@@ -809,13 +811,44 @@ class PlaybackController {
     _pendingPlayRecordId = null;
     _persist();
     _notify();
+    final next = queue.nextIndex();
+    final skipping =
+        failed != null &&
+        next != null &&
+        next != queue.currentIndex &&
+        _skippedInARow < _maxSkippedInARow;
     final now = DateTime.now();
     final last = _lastBackendErrorAt;
     if (last == null || now.difference(last) >= const Duration(seconds: 5)) {
       _lastBackendErrorAt = now;
-      _error(message);
+      _error(
+        skipping
+            ? "Skipped “${_titleOf(failed)}”, which could not be played."
+            : message,
+      );
     }
+    if (!skipping) {
+      _skippedInARow = 0;
+      return;
+    }
+    _skippedInARow++;
+    final request = _requestGeneration;
+    // After the backend's failure handling, and only if nothing else has
+    // asked for music since.
+    scheduleMicrotask(() {
+      if (_closed || request != _requestGeneration) return;
+      if (queue.next() != null) _loadCurrent(autoplay: true);
+    });
   }
+
+  String _titleOf(String trackId) => manager.hasTrack(trackId)
+      ? manager.getTrack(trackId).displayTitle
+      : "this track";
+
+  /// One bad file should not end the queue, but rows that keep failing point at
+  /// the player rather than the files, so playback then stops and says so.
+  static const _maxSkippedInARow = 3;
+  int _skippedInARow = 0;
 
   void onLoaded() {
     _playerLoading = false;

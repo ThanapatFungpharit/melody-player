@@ -199,6 +199,9 @@ ignores the second row, so it keeps the queue and loses the place. Pre-SQLite
 The controller owns durable playback intent and mirrors the engine's live
 queue selection. `playing` reflects requested playback while a load is pending
 and is reconciled by engine events; it is not proof that sound was emitted.
+A row that fails while playing is skipped with a message, so one bad file does
+not end the queue. Three skips in a row with nothing played stop playback, since
+that points at the player rather than the files.
 
 The controller gives the engine the whole queue as a list whose rows are built
 when read, and the engine gives its decoder only the playing row and the next
