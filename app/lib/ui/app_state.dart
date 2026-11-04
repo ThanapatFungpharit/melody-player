@@ -18,7 +18,6 @@ import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
 import "../platform/download_keep_alive.dart";
-import "shared/app_icon.dart";
 import "shared/format.dart" show downloadReportMessage, plural;
 
 /// A listenable that fires on demand.
@@ -120,14 +119,8 @@ class MelodyApp {
   final AppServices services;
   final bool isMobile;
 
-  /// The saved settings; drafts live in [settingsControls] until saved.
-  AppSettings get settings => _settings;
-  set settings(AppSettings value) {
-    _settings = value;
-    AppIcon.apply(value.accentColor);
-  }
-
-  late AppSettings _settings;
+  /// The saved settings.
+  late AppSettings settings;
   late final PlaybackPersistence persistence;
   late final NativeAudioBackend backend;
   late final PlaybackController playback;

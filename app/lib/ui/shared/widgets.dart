@@ -619,9 +619,8 @@ const brandMarkGlyph = 0.62;
 
 /// The app's mark: an accent tile with the equalizer glyph.
 ///
-/// The running app's window, dock, or taskbar icon is drawn from it by
-/// `AppIcon`. The Android launcher icons reproduce it in the light theme for
-/// every accent; run `tools/build/icons.py` again after changing it.
+/// The bundled app icons reproduce it in the default accent's light theme; run
+/// `tools/build/icons.py` again after changing it.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 36});
 

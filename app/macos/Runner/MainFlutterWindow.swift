@@ -17,26 +17,7 @@ class MainFlutterWindow: NSWindow {
     }
 
     RegisterGeneratedPlugins(registry: flutterViewController)
-    registerAppIcon(flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
-  }
-
-  // Shows the icon Dart draws for the saved accent color in the Dock while
-  // Melody runs; the bundle's own icon stays as built.
-  private func registerAppIcon(_ messenger: FlutterBinaryMessenger) {
-    let channel = FlutterMethodChannel(name: "melody/app_icon", binaryMessenger: messenger)
-    channel.setMethodCallHandler { call, result in
-      guard call.method == "setImages",
-        let images = call.arguments as? [AnyHashable: Any],
-        let png = images.values.compactMap({ $0 as? FlutterStandardTypedData }).first,
-        let image = NSImage(data: png.data)
-      else {
-        result(FlutterMethodNotImplemented)
-        return
-      }
-      NSApp.applicationIconImage = image
-      result(nil)
-    }
   }
 }
