@@ -348,51 +348,32 @@ void main() {
     },
   );
 
-  test(
-    "native track changes honor the automatic focal point setting",
-    () async {
-      final directory = await Directory.systemTemp.createTemp(
-        "melody-session-art-",
+  test("native track changes publish the center of the artwork", () async {
+    final directory = await Directory.systemTemp.createTemp(
+      "melody-session-art-",
+    );
+    try {
+      final source = File("${directory.path}/art.png");
+      await source.writeAsBytes(await _portraitArtwork());
+
+      await session.sync(const MediaSessionState(title: "Setup"));
+      platform.nextMetadata = Completer<MediaMetadata>();
+      session.onEngineTrack(
+        title: "Centered",
+        artist: "Artist",
+        album: "Album",
+        artworkUri: source.uri.toString(),
       );
-      try {
-        final source = File("${directory.path}/art.png");
-        await source.writeAsBytes(await _portraitArtwork());
-        final uri = source.uri.toString();
+      final centered = await platform.nextMetadata!.future.timeout(
+        const Duration(seconds: 5),
+      );
+      expect(await _centerRed(centered.artworkUri!), 0);
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
 
-        await session.sync(
-          const MediaSessionState(title: "Setup", automaticFocalPoint: true),
-        );
-        platform.nextMetadata = Completer<MediaMetadata>();
-        session.onEngineTrack(
-          title: "Automatic",
-          artist: "Artist",
-          album: "Album",
-          artworkUri: uri,
-        );
-        final automatic = await platform.nextMetadata!.future.timeout(
-          const Duration(seconds: 5),
-        );
-        expect(await _centerRed(automatic.artworkUri!), greaterThan(50));
-
-        await session.sync(const MediaSessionState(title: "Setup"));
-        platform.nextMetadata = Completer<MediaMetadata>();
-        session.onEngineTrack(
-          title: "Centered",
-          artist: "Artist",
-          album: "Album",
-          artworkUri: uri,
-        );
-        final centered = await platform.nextMetadata!.future.timeout(
-          const Duration(seconds: 5),
-        );
-        expect(await _centerRed(centered.artworkUri!), 0);
-      } finally {
-        await directory.delete(recursive: true);
-      }
-    },
-  );
-
-  test("synced video thumbnails are cropped around the subject", () async {
+  test("synced video thumbnails are cropped to their center", () async {
     final directory = await Directory.systemTemp.createTemp(
       "melody-session-thumb-",
     );
@@ -401,26 +382,12 @@ void main() {
       await source.writeAsBytes(await _letterboxedThumbnail());
       final uri = source.uri.toString();
 
-      await session.sync(
-        MediaSessionState(
-          title: "Automatic",
-          artworkUri: uri,
-          automaticFocalPoint: true,
-        ),
-      );
-      final automatic = platform.metadata.last.artworkUri!;
-      expect(automatic, isNot(uri));
+      await session.sync(MediaSessionState(title: "Video", artworkUri: uri));
+      final centered = platform.metadata.last.artworkUri!;
+      expect(centered, isNot(uri));
       // Only the notification receives the square copy; the app keeps its
       // own uncropped thumbnail when it reattaches to the session.
       expect(session.currentMetadata.artworkUri, uri);
-      // The whole 70x100 subject survives, scaled from 360 to 512 pixels.
-      expect(await _redPixels(automatic), greaterThan(13000));
-
-      await session.sync(
-        MediaSessionState(title: "Automatic", artworkUri: uri),
-      );
-      final centered = platform.metadata.last.artworkUri!;
-      expect(centered, isNot(automatic));
       expect(await _redPixels(centered), lessThan(5000));
     } finally {
       await directory.delete(recursive: true);
@@ -443,11 +410,7 @@ void main() {
     try {
       final uri = "http://127.0.0.1:${server.port}/thumb.png";
       await session.sync(
-        MediaSessionState(
-          title: "Paused stream",
-          artworkUri: uri,
-          automaticFocalPoint: true,
-        ),
+        MediaSessionState(title: "Paused stream", artworkUri: uri),
       );
       expect(platform.metadata.last.artworkUri, uri);
 
@@ -457,7 +420,10 @@ void main() {
       );
       expect(replaced.title, "Paused stream");
       expect(replaced.artworkUri, isNot(uri));
-      expect(await _redPixels(replaced.artworkUri!), greaterThan(13000));
+      expect(
+        File.fromUri(Uri.parse(replaced.artworkUri!)).existsSync(),
+        isTrue,
+      );
     } finally {
       await server.close(force: true);
       HttpOverrides.global = httpOverrides;

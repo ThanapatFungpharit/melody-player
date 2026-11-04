@@ -19,7 +19,6 @@ import "../../platform/folders.dart";
 import "../controllers/playlists_controller.dart" show MissingPlaylistTracks;
 import "../controllers/search_controller.dart";
 import "format.dart";
-import "widgets.dart";
 
 final _audioExtensions = [
   for (final suffix in audioSuffixes) suffix.substring(1),
@@ -147,22 +146,23 @@ Future<void> showConfirmDialog(
 
 /// Saves the settings, first asking to move the library when the music
 /// folder changes while it has tracks.
-Future<void> saveSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsDraft;
+Future<void> applyMusicFolder(BuildContext context, MelodyApp app) {
+  final settings = app.settingsControls;
   final tracks = settings.tracksToMove;
-  if (tracks == 0) return app.run(settings.save);
+  if (tracks == 0) return app.run(settings.applyMusicFolder);
   return showConfirmDialog(
     context,
     title: "Move your library?",
     message:
         "Melody will move the audio of ${plural(tracks, "library track")} "
         "from ${app.settings.downloadDirectory} to "
-        "${settings.draftMusicFolder}, and save new downloads there. "
+        "${settings.requestedMusicFolder}, and save new downloads there. "
         "Playback stops while the files move. Other files in the old folder "
         "stay where they are.",
     confirmLabel: "Move library",
     icon: Icons.drive_file_move_rounded,
-    onConfirm: () => app.run(() => settings.save(moveLibrary: true)),
+    onConfirm: () =>
+        app.run(() => settings.applyMusicFolder(moveLibrary: true)),
   );
 }
 
@@ -217,18 +217,75 @@ Future<void> showDetailsDialog(
 
 // -- tracks ----------------------------------------------------------------
 
-Future<void> showRenameTrackDialog(
+/// Edits what a track is called in the library; its file stays as it is.
+Future<void> showEditTrackDialog(
   BuildContext context,
   MelodyApp app,
   Track track,
-) => showTextPrompt(
-  context,
-  title: "Edit track title",
-  label: "Track title",
-  initial: track.displayTitle,
-  confirmLabel: "Save",
-  onConfirm: (value) async => app.library.renameTrack(track.id, value),
-);
+) {
+  final title = TextEditingController(text: track.displayTitle);
+  final artist = TextEditingController(
+    text: app.services.library.details(track.id).uploader,
+  );
+  String? error;
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        void submit() {
+          try {
+            app.library.editTrack(
+              track.id,
+              title: title.text,
+              artist: artist.text,
+            );
+            Navigator.of(context).pop();
+          } on FormatException catch (failure) {
+            setState(() => error = failure.message);
+          } on ArgumentError catch (failure) {
+            setState(() => error = "${failure.message}");
+          }
+        }
+
+        return AlertDialog(
+          insetPadding: _dialogInsets,
+          title: const Text("Edit track details"),
+          content: SizedBox(
+            width: _dialogWidth(context),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 14,
+              children: [
+                TextField(
+                  controller: title,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: "Title",
+                    errorText: error,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+                TextField(
+                  controller: artist,
+                  decoration: const InputDecoration(labelText: "Artist"),
+                  onSubmitted: (_) => submit(),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
+            ),
+            FilledButton(onPressed: submit, child: const Text("Save")),
+          ],
+        );
+      },
+    ),
+  );
+}
 
 Future<void> showTrackDetailsDialog(
   BuildContext context,
@@ -244,7 +301,7 @@ Future<void> showTrackDetailsDialog(
   }
   return showDetailsDialog(context, "Track details", [
     ("Title", track.displayTitle),
-    ("Uploader / channel", details.uploader.isEmpty ? "—" : details.uploader),
+    ("Artist", details.uploader.isEmpty ? "—" : details.uploader),
     ("Duration", formatDuration(details.duration)),
     (
       "Source",
@@ -252,6 +309,7 @@ Future<void> showTrackDetailsDialog(
           ? details.sourceName
           : (track.source.isNotEmpty ? track.source : "Local"),
     ),
+    for (final link in LibraryService.linksOf([track])) ("Link", link),
     ("File", path),
   ]);
 }
@@ -264,8 +322,9 @@ Future<void> showDeleteTrackDialog(
   context,
   title: "Delete track?",
   message:
-      "“${track.displayTitle}” will be removed from the library and every playlist. "
-      "A file Melody downloaded is deleted; an imported file stays on disk.",
+      "“${track.displayTitle}” will be removed from the library and every playlist, "
+      "and Melody's file for it deleted. An original you imported it from is not "
+      "touched, and a file added from the music folder stays on disk.",
   confirmLabel: "Delete track",
   icon: Icons.delete_forever_rounded,
   onConfirm: () async {
@@ -281,18 +340,32 @@ Future<void> showDeleteTrackDialog(
   },
 );
 
+Future<void> showDeleteSelectedTracksDialog(
+  BuildContext context,
+  MelodyApp app,
+) {
+  final count = app.library.selectedIds.length;
+  return showConfirmDialog(
+    context,
+    title: "Delete ${plural(count, "track")}?",
+    message:
+        "${count == 1 ? "This track" : "These tracks"} will be removed from the "
+        "library and every playlist, and Melody's files for them deleted. "
+        "Originals you imported from are not touched, and files added from the "
+        "music folder stay on disk.",
+    confirmLabel: "Delete",
+    icon: Icons.delete_forever_rounded,
+    onConfirm: () => app.run(app.library.deleteSelected),
+  );
+}
+
 Future<void> showSearchResultDetails(
   BuildContext context,
   SearchResult result,
 ) => showDetailsDialog(context, result.title, [
-  (
-    "Uploader / channel",
-    result.uploader.isEmpty ? "Unknown uploader" : result.uploader,
-  ),
+  ("Artist", result.uploader.isEmpty ? "Unknown artist" : result.uploader),
   ("Source", result.source),
-  ("Type", result.isPlaylist ? "Playlist" : "Track"),
   if (result.duration > 0) ("Duration", formatDuration(result.duration)),
-  if (result.entryCount > 0) ("Tracks", "${result.entryCount}"),
 ], footer: result.url);
 
 // -- playlists ---------------------------------------------------------------
@@ -335,6 +408,71 @@ Future<void> showDeletePlaylistDialog(
   onConfirm: () => app.run(() => app.playlists.delete(playlist.id)),
 );
 
+/// Lets the user pick one of their playlists, or name a new one, and hands
+/// over its ID. [except] is left out of the list.
+Future<void> showPlaylistPicker(
+  BuildContext context,
+  MelodyApp app, {
+  required String title,
+  String? except,
+  required void Function(String playlistId) onChosen,
+}) => showDialog<void>(
+  context: context,
+  builder: (dialogContext) {
+    void choose(String playlistId) {
+      Navigator.of(dialogContext).pop();
+      onChosen(playlistId);
+    }
+
+    final playlists = [
+      for (final playlist in app.services.manager.listPlaylists())
+        if (playlist.id != except) playlist,
+    ];
+    return AlertDialog(
+      insetPadding: _dialogInsets,
+      title: Text(title),
+      content: SizedBox(
+        width: _dialogWidth(dialogContext),
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.add_rounded),
+              title: const Text("New playlist…"),
+              contentPadding: EdgeInsets.zero,
+              onTap: () {
+                Navigator.of(dialogContext).pop();
+                showTextPrompt(
+                  context,
+                  title: "New playlist",
+                  label: "Playlist name",
+                  confirmLabel: "Create",
+                  onConfirm: (name) async =>
+                      onChosen(app.playlists.create(name, open: false)),
+                );
+              },
+            ),
+            for (final playlist in playlists)
+              ListTile(
+                leading: const Icon(Icons.album_rounded),
+                title: Text(playlist.name),
+                subtitle: Text(plural(playlist.trackIds.length, "track")),
+                contentPadding: EdgeInsets.zero,
+                onTap: () => choose(playlist.id),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text("Cancel"),
+        ),
+      ],
+    );
+  },
+);
+
 Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
   if (app.playlists.importing) {
     app.showError("A playlist import is already in progress.");
@@ -363,6 +501,67 @@ Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
   );
 }
 
+/// Asks for a name and links to songs, and makes a playlist of them.
+Future<void> showPlaylistFromLinksDialog(BuildContext context, MelodyApp app) {
+  final name = TextEditingController();
+  final links = TextEditingController();
+  String? error;
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        insetPadding: _dialogInsets,
+        title: const Text("New playlist from links"),
+        content: SizedBox(
+          width: _dialogWidth(context),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 12,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: "Playlist name"),
+                ),
+                TextField(
+                  controller: links,
+                  minLines: 5,
+                  maxLines: 10,
+                  decoration: InputDecoration(
+                    labelText: "$youtubeMusicName song links",
+                    hintText: "Paste the links someone shared with you",
+                    errorText: error,
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text("Cancel"),
+          ),
+          FilledButton(
+            onPressed: () {
+              try {
+                app.playlists.importFromLinks(name.text, links.text);
+                Navigator.of(context).pop();
+              } on FormatException catch (failure) {
+                setState(() => error = failure.message);
+              }
+            },
+            child: const Text("Create playlist"),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 /// Picks several library tracks to add to [playlist] at once.
 Future<void> showBulkAddTracksDialog(
   BuildContext context,
@@ -370,29 +569,19 @@ Future<void> showBulkAddTracksDialog(
   Playlist playlist,
 ) {
   final members = playlist.trackIds.toSet();
-  final candidates = [
-    for (final track in app.services.manager.listTracks())
-      if (!members.contains(track.id)) track,
-  ];
+  final hasCandidates = app.services.manager.trackIds.any(
+    (id) => !members.contains(id),
+  );
   final selected = <String>{};
   var query = "";
-  var offset = 0;
   return showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) {
         final matching = [
-          for (final track in candidates)
-            if (query.isEmpty ||
-                track.displayTitle.toLowerCase().contains(query))
-              track,
+          for (final id in app.services.library.trackIds(query: query))
+            if (!members.contains(id)) id,
         ];
-        final (start, end) = pageBounds(matching.length, offset);
-        offset = start;
-        final visible = matching.sublist(start, end);
-        final details = app.services.library.detailsMany(
-          visible.map((track) => track.id),
-        );
         final muted = Theme.of(context).colorScheme.onSurfaceVariant;
         return AlertDialog(
           insetPadding: _dialogInsets,
@@ -408,27 +597,24 @@ Future<void> showBulkAddTracksDialog(
                     labelText: "Find a track",
                     prefixIcon: Icon(Icons.search_rounded),
                   ),
-                  onChanged: (value) => setState(() {
-                    query = value.toLowerCase();
-                    offset = 0;
-                  }),
+                  onChanged: (value) => setState(() => query = value),
                 ),
                 CheckboxListTile(
-                  value:
-                      candidates.isNotEmpty &&
-                      selected.length == candidates.length,
-                  onChanged: candidates.isEmpty
+                  value: matching.isNotEmpty && selected.containsAll(matching),
+                  onChanged: matching.isEmpty
                       ? null
                       : (value) => setState(() {
                           if (value == true) {
-                            selected.addAll(
-                              candidates.map((track) => track.id),
-                            );
+                            selected.addAll(matching);
                           } else {
-                            selected.clear();
+                            selected.removeAll(matching);
                           }
                         }),
-                  title: const Text("Select all tracks"),
+                  title: Text(
+                    query.trim().isEmpty
+                        ? "Select all tracks"
+                        : "Select all ${matching.length} shown",
+                  ),
                   controlAffinity: ListTileControlAffinity.leading,
                   contentPadding: EdgeInsets.zero,
                 ),
@@ -445,40 +631,35 @@ Future<void> showBulkAddTracksDialog(
                     child: matching.isEmpty
                         ? Center(
                             child: Text(
-                              candidates.isEmpty
+                              !hasCandidates
                                   ? "Every library track is already in this playlist."
                                   : "No tracks match this search.",
                             ),
                           )
-                        : ListView(
-                            children: [
-                              for (final track in visible)
-                                CheckboxListTile(
-                                  value: selected.contains(track.id),
-                                  onChanged: (value) => setState(() {
-                                    value == true
-                                        ? selected.add(track.id)
-                                        : selected.remove(track.id);
-                                  }),
-                                  title: Text(
-                                    "${track.displayTitle} — ${details[track.id]!.credit}",
-                                  ),
-                                  controlAffinity:
-                                      ListTileControlAffinity.leading,
-                                  contentPadding: EdgeInsets.zero,
-                                ),
-                            ],
+                        : ListView.builder(
+                            itemCount: matching.length,
+                            itemBuilder: (context, index) {
+                              final id = matching[index];
+                              final track = app.services.manager.getTrack(id);
+                              final credit = app.services.library
+                                  .details(id)
+                                  .credit;
+                              return CheckboxListTile(
+                                value: selected.contains(id),
+                                onChanged: (value) => setState(() {
+                                  value == true
+                                      ? selected.add(id)
+                                      : selected.remove(id);
+                                }),
+                                title: Text("${track.displayTitle} — $credit"),
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                              );
+                            },
                           ),
                   ),
                 ),
-                if (matching.length > 50)
-                  PageNavigation(
-                    total: matching.length,
-                    start: start,
-                    end: end,
-                    onChange: (direction) =>
-                        setState(() => offset += direction * 50),
-                  ),
                 Text(
                   selected.isEmpty
                       ? "No tracks selected"
@@ -497,12 +678,11 @@ Future<void> showBulkAddTracksDialog(
               onPressed: selected.isEmpty
                   ? null
                   : () {
-                      final ids = [
-                        for (final track in candidates)
-                          if (selected.contains(track.id)) track.id,
-                      ];
                       app.run(() {
-                        final added = app.playlists.addTracks(playlist.id, ids);
+                        final added = app.playlists.addTracks(
+                          playlist.id,
+                          selected.toList(),
+                        );
                         app.showMessage(
                           "Added ${plural(added, "track")} to “${playlist.name}”.",
                         );
@@ -538,8 +718,9 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  "Add one or more $youtubeMusicName URLs. Melody will queue them together "
-                  "and show progress for each song.",
+                  "Add links to one or more songs on $youtubeMusicName. Melody will "
+                  "queue them together and show progress for each song. To save a "
+                  "playlist, use Import playlist on the Playlists page.",
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -552,8 +733,7 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
                   maxLines: 12,
                   decoration: InputDecoration(
                     labelText: "$youtubeMusicName URLs",
-                    hintText:
-                        "Paste one $youtubeMusicName track or playlist URL per line",
+                    hintText: "Paste one $youtubeMusicName song link per line",
                     errorText: error,
                     alignLabelWithHint: true,
                   ),
@@ -617,6 +797,55 @@ Future<void> pickLocalFiles(MelodyApp app) async {
   await app.library.importLocalFiles(paths);
 }
 
+/// Adds every audio file under a chosen folder to the library.
+Future<void> pickLocalFolder(MelodyApp app) => app.run(() async {
+  final folder = await FilePicker.getDirectoryPath(
+    dialogTitle: "Add a folder of music to Melody",
+  );
+  if (folder == null || folder.isEmpty) return;
+  final paths = await LibraryService.audioFilesIn(folder);
+  if (paths.isEmpty) {
+    app.showMessage("That folder has no audio files Melody can play.");
+    return;
+  }
+  app.showMessage("Importing ${plural(paths.length, "local file")}…");
+  await app.library.importLocalFiles(paths);
+});
+
+/// Copies links to the clipboard, one per line.
+Future<void> copyLinks(MelodyApp app, List<String> links) async {
+  await Clipboard.setData(ClipboardData(text: links.join("\n")));
+  app.showMessage(
+    links.length == 1 ? "Link copied." : "Copied ${links.length} links.",
+  );
+}
+
+/// Copies the links of a playlist's tracks, saying which have none to share.
+Future<void> copyPlaylistLinks(MelodyApp app, Playlist playlist) async {
+  final tracks = app.playlists.tracks(playlist.id);
+  final links = LibraryService.linksOf(tracks);
+  if (links.isEmpty) {
+    app.showMessage(
+      "These tracks came from files, so they have no links to share.",
+    );
+    return;
+  }
+  await Clipboard.setData(ClipboardData(text: links.join("\n")));
+  final local = tracks.length - links.length;
+  app.showMessage(
+    "Copied ${plural(links.length, "link")}."
+    "${local > 0 ? " ${plural(local, "track")} from files could not be included." : ""}",
+  );
+}
+
+/// What to say about a file listing [tracks], whose local ones need their files
+/// wherever it is opened.
+String _exportedMessage(String what, List<Track> tracks) {
+  final local = tracks.length - LibraryService.linksOf(tracks).length;
+  return "$what exported."
+      "${local > 0 ? " ${plural(local, "track")} from files will need those files wherever it's opened." : ""}";
+}
+
 /// Saves a playlist file made by [contents] for the folder it is saved in,
 /// so its relative paths start there. Mobile pickers write the file
 /// themselves and do not say where, so there they start at the music
@@ -657,7 +886,7 @@ Future<void> exportLibrary(MelodyApp app) => app.run(
     "Export library playlist",
     "Melody Library.m3u8",
     (directory) => app.services.library.exportLibraryM3u8(directory: directory),
-    "Library playlist exported.",
+    _exportedMessage("Library playlist", app.services.manager.listTracks()),
   ),
 );
 
@@ -672,11 +901,11 @@ Future<void> exportPlaylist(MelodyApp app, Playlist playlist) => app.run(() {
       playlist.id,
       directory: directory,
     ),
-    "Playlist exported.",
+    _exportedMessage("Playlist", app.playlists.tracks(playlist.id)),
   );
 });
 
-/// Picks an M3U or M3U8 file and makes a playlist of its library tracks.
+/// Picks an M3U or M3U8 file and makes a playlist of what it lists.
 /// Tracks that are not found can then be located one by one.
 Future<void> importPlaylistFile(BuildContext context, MelodyApp app) =>
     app.run(() async {
@@ -835,7 +1064,7 @@ Future<void> pickCookieFile(MelodyApp app) async {
       app.showError("The selected cookie file could not be read.");
       return;
     }
-    app.settingsDraft.stageCookie(file.name, bytes);
+    await app.settingsControls.uploadCookie(file.name, bytes);
   } on FileSystemException catch (error) {
     app.showError(error.message);
   }
@@ -846,8 +1075,7 @@ Future<void> pickCookieFile(MelodyApp app) async {
 /// Android lets Melody write audio only inside the shared Music folder, so a
 /// folder elsewhere is refused there.
 Future<void> pickMusicFolder(MelodyApp app) async {
-  final draft = app.settingsDraft;
-  final current = draft.draft.downloadDirectory;
+  final current = app.settings.downloadDirectory;
   final String? folder;
   try {
     folder = await FilePicker.getDirectoryPath(
@@ -867,7 +1095,7 @@ Future<void> pickMusicFolder(MelodyApp app) async {
     );
     return;
   }
-  draft.update((settings) => settings.downloadDirectory = p.normalize(folder!));
+  app.settingsControls.chooseMusicFolder(p.normalize(folder));
 }
 
 /// Opens [folder] in the system file manager, or on Android in the Files
@@ -972,7 +1200,7 @@ Future<void> showDataActionDialog(
     warning: true,
     onConfirm: () async {
       try {
-        app.showMessage(await app.settingsDraft.runDataAction(action));
+        app.showMessage(await app.settingsControls.runDataAction(action));
       } catch (error) {
         app.showError("The reset could not be completed: $error");
       }
@@ -1003,7 +1231,7 @@ Future<void> showCleanupReport(
     );
     return Future.value();
   }
-  final settings = app.settingsDraft;
+  final settings = app.settingsControls;
   var busy = false;
   return showDialog<void>(
     context: context,

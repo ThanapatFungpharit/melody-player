@@ -173,18 +173,9 @@ DownloadFailure classifyDownloadError(Object error) {
   ])) {
     return const DownloadFailure(
       DownloadErrorKind.extractor,
-      "The provider's extractor failed. Install the latest Melody release, "
-          "then retry.",
+      "The download engine needs an update. Update yt-dlp in Settings, under "
+          "Maintenance, then retry.",
       "update_downloader",
-    );
-  }
-  if (message.contains("thumbnail") &&
-      _hasAny(message, ["embed", "embedded", "embedding"])) {
-    return const DownloadFailure(
-      DownloadErrorKind.postprocessing,
-      "Cover artwork could not be embedded in the audio file. Retry the "
-          "download or choose another audio format.",
-      "retry",
     );
   }
   if ((failure?.timeout ?? false) ||

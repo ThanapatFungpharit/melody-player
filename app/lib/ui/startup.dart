@@ -7,6 +7,7 @@ import "package:flutter/material.dart";
 
 import "shared/quotes.dart";
 import "shared/widgets.dart";
+import "../application/storage_upgrade.dart" show UnsupportedDataFolder;
 
 /// The animated mark, startup stage, and rotating quotes shown while loading.
 class LoadingView extends StatefulWidget {
@@ -503,11 +504,14 @@ class StartupError extends StatelessWidget {
                     "Melody couldn’t start",
                     style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
                   ),
-                  const Text(
-                    "Restart Melody and check that the configured music folder "
-                    "and app data location are available.",
-                  ),
-                  if (error != null)
+                  if (error is UnsupportedDataFolder)
+                    Text(error.message)
+                  else
+                    const Text(
+                      "Restart Melody and check that the configured music folder "
+                      "and app data location are available.",
+                    ),
+                  if (error != null && error is! UnsupportedDataFolder)
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(12),

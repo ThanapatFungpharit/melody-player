@@ -1,5 +1,4 @@
 import "dart:async";
-import "dart:io";
 import "dart:math";
 
 import "package:flutter/foundation.dart";
@@ -7,7 +6,6 @@ import "package:path/path.dart" as p;
 import "package:uuid/uuid.dart";
 
 import "../core/downloader/downloader.dart";
-import "../core/downloader/receipts.dart";
 import "../core/errors.dart";
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
@@ -65,6 +63,19 @@ class DuplicateDownloadError implements Exception {
   String toString() => "This track is already downloading.";
 }
 
+const _notASongLink =
+    "Only links to single songs can be downloaded here. To save a playlist, "
+    "use Import playlist on the Playlists page.";
+
+const _lostFileError =
+    "The downloaded library file is missing. Retry to restore it.";
+
+/// The form Melody stores a song's link in, without playlist or tracking
+/// parameters. Any other link stays as it is, for [DownloadCoordinator] to
+/// refuse.
+String _canonicalSource(String url) =>
+    isYoutubeUrl(url) ? youtubeMusicTrackUrl(url) : url;
+
 /// What [DownloadCoordinator.request] did with a result: found an intact
 /// library [track], or joined or started the download [task].
 class DownloadRequest {
@@ -119,8 +130,13 @@ Map<String, Object?> downloadOptions(
 ) => {
   "format": "bestaudio/best",
   "outtmpl": "%(title)s.%(ext)s",
+  // One task is one song: the files of a task are registered under one source,
+  // so a song link's playlist must not come along.
+  "noplaylist": true,
   "quiet": true,
   "noprogress": true,
+  // What another attempt looks for, to skip a song already downloaded.
+  "final_ext": settings.downloadFormat.extension.substring(1),
   "postprocessors": [
     {
       "key": "FFmpegExtractAudio",
@@ -140,20 +156,26 @@ Map<String, Object?> downloadOptions(
   ...sharedOptions,
 };
 
+Map<String, Object?> _noSharedOptions() => const {};
+
 /// Turns downloader jobs into persistent, library-aware operations.
 ///
 /// Worker callbacks can arrive many times per second. Listeners hear about
 /// byte progress at most every [progressNotifyInterval]; status changes are
-/// written and published immediately. Byte progress is never persisted: a
-/// download still active at startup is reported as interrupted.
+/// written and published immediately, and byte progress saved every few
+/// seconds. A download still active at startup carries on from
+/// what it left on disk ([resumeInterrupted]), and its row from what it last
+/// showed.
 class DownloadCoordinator extends ChangeNotifier {
   DownloadCoordinator._(
     this.manager,
     this.store,
-    this.settings,
+    this._historyDays,
     this.thumbnails,
     this._downloader,
     this.lyrics,
+    this._sharedOptions,
+    this._progressSaveInterval,
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
@@ -161,17 +183,24 @@ class DownloadCoordinator extends ChangeNotifier {
 
   final MusicManager manager;
   final ApplicationStore store;
-  final AppSettings settings;
   final ThumbnailCache? thumbnails;
   final Downloader _downloader;
   late final OwnedFiles _files = OwnedFiles(store, manager);
 
   /// Supplies lyrics to embed in downloaded files.
   final LyricsLibrary? lyrics;
+  final Map<String, Object?> Function() _sharedOptions;
+  final Duration _progressSaveInterval;
   final Map<String, DownloadRecord> _records = {};
   final Map<String, String> _activeBySource = {};
   final Stopwatch _clock = Stopwatch()..start();
   Duration _lastNotify = Duration.zero;
+  Duration _lastProgressSave = Duration.zero;
+
+  /// What the last run was still downloading.
+  final List<String> _interrupted = [];
+  final Set<String> _cancelRequested = {};
+  bool _closing = false;
 
   /// Called with each published record change (terminal ones included).
   void Function(DownloadRecord record)? onRecord;
@@ -183,25 +212,26 @@ class DownloadCoordinator extends ChangeNotifier {
     WorkerClient worker, {
     ThumbnailCache? thumbnails,
     LyricsLibrary? lyrics,
-    Map<String, Object?> sharedOptions = const {},
+    Map<String, Object?> Function() sharedOptions = _noSharedOptions,
     required String stagingDirectory,
-    required String receiptDirectory,
+    Duration progressSaveInterval = const Duration(seconds: 5),
   }) async {
     final coordinator = DownloadCoordinator._(
       manager,
       store,
-      settings,
+      settings.downloadHistoryDays,
       thumbnails,
       Downloader(
         worker,
         settings.downloadDirectory,
         maxWorkers: settings.concurrentDownloads,
         audioExtensions: {settings.downloadFormat.extension},
-        options: downloadOptions(settings, sharedOptions),
+        options: downloadOptions(settings, sharedOptions()),
         stagingDirectory: stagingDirectory,
-        receiptDirectory: receiptDirectory,
       ),
       lyrics,
+      sharedOptions,
+      progressSaveInterval,
     );
     await coordinator._recover();
     return coordinator;
@@ -212,27 +242,40 @@ class DownloadCoordinator extends ChangeNotifier {
       _records[record.id] = record;
     }
     // Before any job starts, so only earlier processes' directories qualify.
-    final abandoned = await _downloader.removeAbandonedStaging();
+    final abandoned = await _downloader.removeAbandonedStaging(
+      resumableUrls: [
+        for (final record in _records.values)
+          if (record.status.isActive || record.status == DownloadStatus.failed)
+            record.url,
+      ],
+    );
     if (abandoned > 0) {
       debugPrint("Removed $abandoned abandoned download staging folder(s)");
     }
-    await _recoverHandoffs();
-    final available = await _availableTrackIds();
+    final lost = await _lostTrackIds();
     var recovered = false;
     for (final record in _records.values) {
-      if (record.status == DownloadStatus.completed &&
-          record.trackIds.isNotEmpty &&
-          !record.trackIds.every(available.contains)) {
+      final lostFile = record.trackIds.any(lost.contains);
+      if (record.status == DownloadStatus.completed && lostFile) {
         recovered = true;
         record
           ..status = DownloadStatus.failed
-          ..error =
-              "The downloaded library file is missing. Retry to restore it."
+          ..error = _lostFileError
           ..errorKind = "disk"
           ..recovery = "retry";
+      } else if (_flaggedLost(record) && !lostFile) {
+        // Earlier releases flagged tracks the user removed too, and retrying
+        // would bring those back.
+        recovered = true;
+        record
+          ..status = DownloadStatus.completed
+          ..error = ""
+          ..errorKind = ""
+          ..recovery = "";
       }
       if (record.status.isActive) {
         recovered = true;
+        _interrupted.add(record.id);
         record
           ..status = DownloadStatus.failed
           ..error =
@@ -244,9 +287,49 @@ class DownloadCoordinator extends ChangeNotifier {
     if (recovered) _persist();
   }
 
+  /// Carries on with what the last run was still downloading, unless it
+  /// reached the library just before the end. Call it once [onRecord] is
+  /// listening.
+  /// One that cannot start stays failed, to retry by hand.
+  Future<void> resumeInterrupted() async {
+    final interrupted = List.of(_interrupted);
+    _interrupted.clear();
+    for (final id in interrupted) {
+      try {
+        final record = _records[id];
+        if (record == null) continue;
+        if (await availableTrack(record.url) case final track?) {
+          record
+            ..status = DownloadStatus.completed
+            ..progress = 1.0
+            ..error = ""
+            ..trackIds = [track.id]
+            ..completedAt = unixSeconds();
+          _persist();
+          _publish(record);
+        } else {
+          await retry(id);
+        }
+      } catch (error) {
+        debugPrint("Could not resume download $id: $error");
+      }
+    }
+  }
+
+  /// Applies [settings] to the history and to downloads that start from now
+  /// on, with the cookie file as it is now.
+  void applySettings(AppSettings settings) {
+    _downloader.configure(
+      maxWorkers: settings.concurrentDownloads,
+      audioExtensions: {settings.downloadFormat.extension},
+      options: downloadOptions(settings, _sharedOptions()),
+    );
+    historyDays = settings.downloadHistoryDays;
+  }
+
   /// Days a finished download stays in the history; 0 keeps it forever.
   int get historyDays => _historyDays;
-  late int _historyDays = settings.downloadHistoryDays;
+  int _historyDays;
 
   set historyDays(int days) {
     if (days == _historyDays) return;
@@ -295,13 +378,13 @@ class DownloadCoordinator extends ChangeNotifier {
 
   int activeCount() => _activeBySource.length;
 
-  /// The canonical intact library track for [url], if one exists.
+  /// The library track for [url] whose file is there, if one exists.
   Future<Track?> availableTrack(String url) async {
     if (url.isEmpty) return null;
     final existing = manager.findTrackBySource(url);
     if (existing == null) return null;
     try {
-      return await manager.checkTrackIntegrity(existing.id) == null
+      return await manager.checkTrackFile(existing.id) == null
           ? existing
           : null;
     } on Object {
@@ -336,6 +419,9 @@ class DownloadCoordinator extends ChangeNotifier {
       if (source.isEmpty || !seen.add(source)) continue;
       if (!isYoutubeUrl(source)) {
         throw ArgumentError("Only $youtubeMusicName URLs are supported.");
+      }
+      if (MediaIdentity.fromUrl(source) == null) {
+        throw ArgumentError(_notASongLink);
       }
       sources.add(source);
     }
@@ -396,10 +482,8 @@ class DownloadCoordinator extends ChangeNotifier {
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
-    if (metadata.kind != "playlist") {
-      if (await availableTrack(url) case final track?) {
-        return DownloadRequest.existing(track);
-      }
+    if (await availableTrack(url) case final track?) {
+      return DownloadRequest.existing(track);
     }
     final active = _activeRecordForSource(url);
     if (active != null) return DownloadRequest.task(active.id, started: false);
@@ -411,6 +495,7 @@ class DownloadCoordinator extends ChangeNotifier {
     if (!isYoutubeUrl(url)) {
       throw ArgumentError("Only $youtubeMusicName URLs are supported.");
     }
+    if (MediaIdentity.fromUrl(url) == null) throw ArgumentError(_notASongLink);
     if (_activeRecordForSource(url) != null) throw DuplicateDownloadError();
     String? task;
     final lyrics = this.lyrics;
@@ -469,7 +554,11 @@ class DownloadCoordinator extends ChangeNotifier {
     }
   });
 
-  bool cancel(String recordId) => _downloader.cancel(recordId);
+  bool cancel(String recordId) {
+    final cancelled = _downloader.cancel(recordId);
+    if (cancelled) _cancelRequested.add(recordId);
+    return cancelled;
+  }
 
   /// Starts a new attempt, which takes the entry's place in the history.
   Future<String> retry(String recordId) async {
@@ -514,22 +603,34 @@ class DownloadCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
-  void shutdown() => _downloader.shutdown(cancelPending: true);
+  /// Stops every job. Those the user did not cancel stay active in the saved
+  /// history, for the next launch to pick up.
+  void shutdown() {
+    if (!_closing) _persist();
+    _closing = true;
+    _downloader.shutdown(cancelPending: true);
+  }
 
   void _handleProgress(DownloadProgress progress, _DownloadMetadata metadata) {
+    if (_closing) return;
     final record = _ensureRecord(progress.task, metadata);
     final previous = record.status;
     record
       ..status = progress.status == DownloadStatus.completed
           ? DownloadStatus.processing
           : progress.status
-      ..progress = progress.progress
       ..filename = progress.filename.isEmpty
           ? ""
           : p.basename(progress.filename)
-      ..downloadedBytes = progress.downloadedBytes
-      ..totalBytes = progress.totalBytes
       ..error = friendlyDownloadError(progress.error);
+    // Reports without bytes know nothing yet, as when an attempt starts: the
+    // row keeps showing how far the song has got.
+    if (progress.downloadedBytes > 0 || progress.totalBytes > 0) {
+      record
+        ..progress = progress.progress
+        ..downloadedBytes = progress.downloadedBytes
+        ..totalBytes = progress.totalBytes;
+    }
     if (metadata.resolveMetadata) {
       if (progress.mediaTitle.isNotEmpty) record.title = progress.mediaTitle;
       if (progress.uploader.isNotEmpty) record.uploader = progress.uploader;
@@ -539,7 +640,10 @@ class DownloadCoordinator extends ChangeNotifier {
     if (record.status.isUnsuccessful) return;
     final now = _clock.elapsed;
     final changed = record.status != previous;
-    if (changed) _persist();
+    if (changed || now - _lastProgressSave >= _progressSaveInterval) {
+      _lastProgressSave = now;
+      _persist();
+    }
     if (changed || now - _lastNotify >= progressNotifyInterval) {
       _lastNotify = now;
       _publish(record);
@@ -550,6 +654,12 @@ class DownloadCoordinator extends ChangeNotifier {
     DownloadResult result,
     _DownloadMetadata metadata,
   ) async {
+    if (_closing &&
+        result.status.isUnsuccessful &&
+        !_cancelRequested.contains(result.task)) {
+      return;
+    }
+    _cancelRequested.remove(result.task);
     final record = _ensureRecord(result.task, metadata);
     var status = result.status;
     var error = result.failure?.message ?? friendlyDownloadError(result.error);
@@ -572,12 +682,16 @@ class DownloadCoordinator extends ChangeNotifier {
         }
         if (storedPaths.isNotEmpty) storedName = p.basename(storedPaths.first);
         // Only once a track uses it, so a failed import leaves no entry.
-        await _cacheThumbnail(record.thumbnail, result.artwork);
+        await _cacheArtwork(imported, result.artwork);
       } catch (failure) {
         debugPrint("Downloaded media could not be imported: $failure");
         status = DownloadStatus.failed;
         error = "Downloaded, but could not add to the library: $failure";
         imported = null;
+        // Retrying downloads it again, so this attempt leaves no stray file.
+        for (final path in result.files) {
+          if (!manager.isPathReferenced(path)) await deleteQuietly(path);
+        }
       }
     }
     record
@@ -599,118 +713,16 @@ class DownloadCoordinator extends ChangeNotifier {
     _expire();
     _prune();
     _persist();
-    if (record.status == DownloadStatus.completed) {
-      await deleteQuietly(
-        receiptPath(_downloader.receiptDirectory, result.task),
-      );
-    }
     _publish(record);
   }
 
-  /// Caches artwork verified in the media file; the file stays canonical.
-  Future<void> _cacheThumbnail(String url, Uint8List? artwork) async {
-    final cache = thumbnails;
-    if (cache == null || url.isEmpty || artwork == null || artwork.isEmpty) {
-      return;
-    }
-    try {
-      await cache.storeBytes(url, artwork);
-    } on Object catch (error) {
-      debugPrint("Could not cache downloaded thumbnail: $error");
+  /// Caches artwork read from the media file; the file stays canonical.
+  Future<void> _cacheArtwork(List<String> trackIds, Uint8List? artwork) async {
+    if (artwork == null) return;
+    for (final trackId in trackIds.toSet()) {
+      await thumbnails?.store(trackId, artwork);
     }
   }
-
-  /// Finishes downloads whose bytes survived but whose registration was
-  /// interrupted, then retires each receipt. Only files that still match
-  /// their checksums are adopted; missing or changed ones are left as they
-  /// are, and unrelated files in the music folder are never touched. A
-  /// receipt is kept only when importing fails, to retry next launch.
-  Future<void> _recoverHandoffs() async {
-    final directory = Directory(_downloader.receiptDirectory);
-    if (!await directory.exists()) return;
-    final receipts = [
-      await for (final entity in directory.list(followLinks: false))
-        if (entity is File &&
-            p.extension(entity.path) == ".json" &&
-            !isTemporaryFile(p.basename(entity.path)))
-          entity,
-    ];
-    for (final file in receipts) {
-      final Receipt receipt;
-      try {
-        receipt = await readReceipt(file.path);
-      } on FormatException catch (error) {
-        // It can vouch for no file, so it goes; the files it names stay.
-        debugPrint("Discarding unreadable receipt ${file.path}: $error");
-        await deleteQuietly(file.path);
-        continue;
-      } on Object catch (error) {
-        debugPrint("Could not read download receipt ${file.path}: $error");
-        continue;
-      }
-      if (receipt.unverified > 0) {
-        debugPrint(
-          "${receipt.unverified} file(s) of download ${receipt.taskId} are "
-          "missing or changed; they are left as they are",
-        );
-      }
-      if (receipt.files.isEmpty) {
-        await deleteQuietly(file.path);
-        continue;
-      }
-      try {
-        final existing = _records[receipt.taskId];
-        final metadata = _DownloadMetadata.url(
-          receipt.url,
-          title:
-              existing?.title ??
-              p.basenameWithoutExtension(receipt.files.first),
-        );
-        final trackIds = <String>[];
-        for (final path in receipt.files) {
-          final (trackId, _) = await _importDownloadedFile(
-            await _intoMusicFolder(path),
-            metadata,
-            title: metadata.title,
-            uploader: existing?.uploader ?? "",
-            thumbnail: existing?.thumbnail ?? "",
-          );
-          trackIds.add(trackId);
-        }
-        final record = _ensureRecord(receipt.taskId, metadata);
-        record
-          ..status = DownloadStatus.completed
-          ..progress = 1.0
-          ..error = ""
-          ..errorKind = ""
-          ..recovery = ""
-          ..trackIds = trackIds
-          ..completedAt = unixSeconds()
-          ..filename = p.basename(manager.trackPath(trackIds.first));
-        _activeBySource.remove(sourceKey(receipt.url));
-        _persist();
-      } on ArgumentError catch (error) {
-        // Can never succeed: retired, and the files stay where they are.
-        debugPrint("Retiring download receipt ${file.path}: $error");
-      } on Object catch (error) {
-        // Such as a disk error: the next launch tries again.
-        debugPrint("Could not reconcile download receipt ${file.path}: $error");
-        continue;
-      }
-      await deleteQuietly(file.path);
-    }
-  }
-
-  /// [path], moved into the music folder first when it is elsewhere: the
-  /// music folder changed after the download finished but before its file
-  /// was registered.
-  Future<String> _intoMusicFolder(String path) =>
-      manager.mutation.run(() async {
-        if (samePath(p.dirname(path), manager.musicFolder)) return path;
-        final target = availablePath(manager.musicFolder, p.basename(path));
-        await moveFile(path, target);
-        return target;
-      });
 
   /// Registers audio or reuses its library identity, keeping existing metadata.
   Future<(String, String)> _importDownloadedFile(
@@ -745,27 +757,28 @@ class DownloadCoordinator extends ChangeNotifier {
     return (trackId, manager.trackPath(trackId));
   });
 
-  /// Keeps intact audio, or repairs the file without replacing the record.
+  /// Keeps the file the track has, which may have been edited since, or
+  /// repairs a missing or empty one without replacing the record.
   Future<String> _reuseLibraryTrack(
     Track track,
     String path,
     String source,
   ) async {
     final previousPath = manager.trackPath(track.id);
-    final problem = await manager.checkTrackIntegrity(track.id);
+    final problem = await manager.checkTrackFile(track.id);
     String stored;
     if (problem == null) {
-      // The library already has this audio intact: the new copy goes.
+      // The library already has this song: the new copy goes.
       stored = previousPath;
       if (!samePath(path, stored)) {
         _files.mark([path]);
         await _files.release([path]);
       }
     } else {
-      // The damaged file goes once the track points at the new one, if
-      // Melody downloaded it.
+      // An empty file goes once the track points at the new one, if Melody
+      // downloaded it.
       final superseded = [
-        if (!samePath(previousPath, path) && LibraryService.ownsFile(track))
+        if (!samePath(previousPath, path) && LibraryService.isDownload(track))
           previousPath,
       ];
       _files.mark(superseded);
@@ -866,25 +879,34 @@ class DownloadCoordinator extends ChangeNotifier {
     return id == null ? null : _records[id];
   }
 
-  /// Completed downloads' tracks whose files exist and are not empty. Cheap
-  /// startup availability, checked in one batch off the UI isolate; full
-  /// hashes remain explicit checks.
-  Future<Set<String>> _availableTrackIds() async {
+  static bool _flaggedLost(DownloadRecord record) =>
+      record.status == DownloadStatus.failed && record.error == _lostFileError;
+
+  /// Library tracks of finished downloads whose files are gone or empty,
+  /// checked in one batch off the UI isolate. A track the library no longer
+  /// has is not lost: the user removed it.
+  Future<Set<String>> _lostTrackIds() async {
     final paths = <String, String>{};
+    final lost = <String>{};
     for (final record in _records.values) {
-      if (record.status != DownloadStatus.completed) continue;
+      if (record.status != DownloadStatus.completed && !_flaggedLost(record)) {
+        continue;
+      }
       for (final trackId in record.trackIds) {
+        if (!manager.hasTrack(trackId)) continue;
         try {
           paths[trackId] ??= manager.trackPath(trackId);
-        } on Object {
-          // An unknown track or invalid path counts as unavailable.
+        } on ArgumentError {
+          // Its stored path is outside the music folders: not playable.
+          lost.add(trackId);
         }
       }
     }
     final existing = await existingFiles(paths.values, nonEmpty: true);
     return {
+      ...lost,
       for (final MapEntry(key: id, value: path) in paths.entries)
-        if (existing.contains(path)) id,
+        if (!existing.contains(path)) id,
     };
   }
 }
@@ -910,8 +932,10 @@ class _DownloadMetadata {
     this.uploader = "",
     this.thumbnail = "",
     this.source = youtubeMusicName,
-    this.kind = "track",
     this.duration = 0,
+    this.progress = 0,
+    this.downloadedBytes = 0,
+    this.totalBytes = 0,
     this.resolveMetadata = false,
     this.createdAt,
     this.batchId = "",
@@ -922,44 +946,45 @@ class _DownloadMetadata {
   /// A search result, with the details YouTube Music listed for it.
   factory _DownloadMetadata.fromResult(SearchResult result) =>
       _DownloadMetadata(
-        url: result.url,
+        url: _canonicalSource(result.url),
         title: result.title,
         uploader: result.uploader,
         thumbnail: result.thumbnail,
         source: result.source,
-        kind: result.kind,
         duration: result.duration,
       );
 
   /// A bare URL, under a placeholder [title] until yt-dlp reports the
   /// song's own details.
-  const _DownloadMetadata.url(
+  factory _DownloadMetadata.url(
     String url, {
     required String title,
     double? createdAt,
     String batchId = "",
     int batchPosition = 0,
     int batchSize = 0,
-  }) : this(
-         url: url,
-         title: title,
-         resolveMetadata: true,
-         createdAt: createdAt,
-         batchId: batchId,
-         batchPosition: batchPosition,
-         batchSize: batchSize,
-       );
+  }) => _DownloadMetadata(
+    url: _canonicalSource(url),
+    title: title,
+    resolveMetadata: true,
+    createdAt: createdAt,
+    batchId: batchId,
+    batchPosition: batchPosition,
+    batchSize: batchSize,
+  );
 
   /// A new attempt at [original], with the details it already has.
   factory _DownloadMetadata.retrying(DownloadRecord original) {
     final batched = original.batchId.isNotEmpty;
     return _DownloadMetadata(
-      url: original.url,
+      url: _canonicalSource(original.url),
       title: original.title,
       uploader: original.uploader,
       thumbnail: original.thumbnail,
       source: original.source,
-      kind: original.kind,
+      progress: original.progress,
+      downloadedBytes: original.downloadedBytes,
+      totalBytes: original.totalBytes,
       // URL batches start with placeholder titles that yt-dlp replaces.
       resolveMetadata: batched,
       // A batch song keeps its place and count in its batch.
@@ -977,10 +1002,14 @@ class _DownloadMetadata {
 
   /// The service shown as the track's source.
   final String source;
-  final String kind;
 
   /// In seconds; 0 when unknown.
   final double duration;
+
+  /// How far earlier attempts got.
+  final double progress;
+  final int downloadedBytes;
+  final int totalBytes;
 
   /// Whether the title, uploader, and artwork yt-dlp reports replace these.
   final bool resolveMetadata;
@@ -998,7 +1027,9 @@ class _DownloadMetadata {
     uploader: uploader,
     thumbnail: thumbnail,
     source: source,
-    kind: kind,
+    progress: progress,
+    downloadedBytes: downloadedBytes,
+    totalBytes: totalBytes,
     createdAt: createdAt,
     batchId: batchId,
     batchPosition: batchPosition,

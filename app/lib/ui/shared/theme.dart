@@ -199,7 +199,14 @@ TextTheme _text(TextTheme base, ColorScheme scheme) {
   );
 }
 
-ThemeData buildTheme(String accent, Brightness brightness) {
+final _themes = <(String, Brightness), ThemeData>{};
+
+/// The theme for [accent], built once: deriving a color scheme is slow, and
+/// the root asks again on every rebuild, several times during startup.
+ThemeData buildTheme(String accent, Brightness brightness) =>
+    _themes[(accent, brightness)] ??= _buildTheme(accent, brightness);
+
+ThemeData _buildTheme(String accent, Brightness brightness) {
   final scheme = _scheme(accentColor(accent), brightness);
   final palette = MelodyPalette.of(brightness);
   final base = ThemeData(

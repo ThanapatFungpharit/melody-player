@@ -1,9 +1,11 @@
 import "../support/temp.dart";
+import "dart:convert";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/store.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 void main() {
@@ -165,6 +167,178 @@ void main() {
     final reopened = await reopen();
     expect(reopened.hasTrackDetails("first"), isFalse);
     expect(reopened.hasTrackDetails("second"), isFalse);
+  });
+
+  test("state nothing reads any more goes at the next launch", () async {
+    store.set("lyrics_not_embedded", {"track": "hash"});
+    await reopen();
+    expect(store.get("lyrics_not_embedded"), isNull);
+    await store.close();
+    final db = SqliteStore.open(p.join(root.path, "state.db"));
+    expect(
+      db.query("SELECT 1 FROM state WHERE key = 'lyrics_not_embedded'"),
+      isEmpty,
+    );
+    await db.close();
+    await reopen();
+  });
+
+  group("playback position", () {
+    /// The stored rows themselves, read over a second connection.
+    Future<Map<String, Object?>> rawRows() async {
+      final db = SqliteStore.open(p.join(root.path, "state.db"));
+      try {
+        return {
+          for (final row in db.query("SELECT key, value FROM state"))
+            row["key"] as String: jsonDecode(row["value"] as String),
+        };
+      } finally {
+        await db.close();
+      }
+    }
+
+    Map<String, Object?> session() =>
+        (store.get("playback") as Map).cast<String, Object?>();
+
+    void saveSession(int positionMs) => store.savePlaybackUpdates({
+      "playback": {
+        "queue": ["a", "b"],
+        "current_index": 1,
+        "position_ms": positionMs,
+        "duration_ms": 9000,
+        "repeat": "off",
+      },
+    }, const {});
+
+    void savePosition(int positionMs) => store.savePlaybackUpdates({
+      "position": {"position_ms": positionMs, "duration_ms": 9000},
+    }, const {});
+
+    test("is saved without the queue and read back over it", () async {
+      saveSession(1000);
+      savePosition(5000);
+      expect(session()["position_ms"], 5000);
+      expect(session()["queue"], ["a", "b"]);
+
+      await reopen();
+      expect(session()["position_ms"], 5000);
+      expect(session()["queue"], ["a", "b"]);
+    });
+
+    test("gives way to a later session save", () async {
+      saveSession(1000);
+      savePosition(5000);
+      saveSession(2000);
+      expect(session()["position_ms"], 2000);
+      await reopen();
+      expect(session()["position_ms"], 2000);
+    });
+
+    test("seeking back to the saved value is not lost", () async {
+      saveSession(1000);
+      savePosition(5000);
+      // The same session row as stored, so it needs no rewrite, but the
+      // newer position must still go.
+      saveSession(1000);
+      expect(session()["position_ms"], 1000);
+      await reopen();
+      expect(session()["position_ms"], 1000);
+    });
+
+    test("moving through the queue leaves the queue's row alone", () async {
+      saveSession(1000);
+      final rowOf = await rawRows();
+      expect(rowOf["playback"], {
+        "queue": ["a", "b"],
+        "repeat": "off",
+      });
+      expect(rowOf["playback_position"], {
+        "current_index": 1,
+        "position_ms": 1000,
+        "duration_ms": 9000,
+      });
+    });
+
+    test("a position saved alone keeps the place in the queue", () async {
+      saveSession(1000);
+      savePosition(5000);
+      expect(session()["current_index"], 1);
+      expect((await rawRows())["playback_position"], {
+        "current_index": 1,
+        "position_ms": 5000,
+        "duration_ms": 9000,
+      });
+    });
+
+    for (final (name, cursor) in [
+      ("an empty position row", <String, Object?>{}),
+      ("only a position", <String, Object?>{"position_ms": 5000}),
+    ]) {
+      test("a session saved before the split reads back with $name", () async {
+        await store.close();
+        final db = SqliteStore.open(p.join(root.path, "state.db"));
+        final old = {
+          "queue": ["a", "b"],
+          "current_index": 1,
+          "position_ms": 1000,
+          "repeat": "playlist",
+        };
+        db.transaction((db) {
+          for (final (key, value) in [
+            ("playback", old),
+            ("playback_position", cursor),
+          ]) {
+            db.execute(
+              "INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)",
+              [key, jsonEncode(value)],
+            );
+          }
+        });
+        await db.close();
+
+        await reopen();
+
+        expect(session(), {...old, ...cursor});
+        // The next save moves it to the two rows without losing anything.
+        savePosition(7000);
+        expect(session(), {
+          ...old,
+          ...cursor,
+          "position_ms": 7000,
+          "duration_ms": 9000,
+        });
+        saveSession(2000);
+        expect(session()["position_ms"], 2000);
+      });
+    }
+
+    test("is cleared with the library", () async {
+      saveSession(1000);
+      savePosition(5000);
+      store.clearLibraryData();
+      expect(session()["position_ms"], 0);
+      await reopen();
+      expect(session()["position_ms"], 0);
+      expect(session()["queue"], isEmpty);
+    });
+  });
+
+  test("a failed commit leaves track details as they were", () async {
+    store.saveTrackDetails("a", TrackDetails(uploader: "One"));
+    store.saveTrackDetails("b", TrackDetails(uploader: "Two"));
+    store.removeTrackDetails("a");
+    expect(store.hasTrackDetails("a"), isFalse);
+    expect(store.trackDetails("b").uploader, "Two");
+
+    await store.close();
+    expect(
+      () => store.saveTrackDetails("b", TrackDetails(uploader: "Three")),
+      throwsA(anything),
+    );
+    expect(store.trackDetails("b").uploader, "Two");
+    store = open();
+    expect(store.trackDetails("b").uploader, "Two");
+    expect(store.hasTrackDetails("a"), isFalse);
   });
 }
 

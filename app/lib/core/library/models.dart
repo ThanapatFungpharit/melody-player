@@ -36,32 +36,31 @@ class Track {
 }
 
 class Playlist {
-  Playlist({required this.id, required this.name, List<String>? trackIds})
-    : trackIds = trackIds ?? [];
+  Playlist({
+    required this.id,
+    required this.name,
+    this.source = "",
+    List<String>? trackIds,
+  }) : trackIds = trackIds ?? [];
 
   final String id;
   String name;
+
+  /// The link it was imported from, so it can be updated; empty for others.
+  final String source;
   List<String> trackIds;
 
-  Playlist copy() => Playlist(id: id, name: name, trackIds: List.of(trackIds));
+  Playlist copy() =>
+      Playlist(id: id, name: name, source: source, trackIds: List.of(trackIds));
 }
 
-class IntegrityProblem {
-  const IntegrityProblem(
-    this.trackId,
-    this.filename,
-    this.kind,
-    this.message, {
-    this.expectedHash = "",
-    this.actualHash = "",
-  });
+class TrackFileProblem {
+  const TrackFileProblem(this.trackId, this.filename, this.kind, this.message);
 
   final String trackId;
   final String filename;
 
-  /// invalid_path, missing, unreadable, empty, or modified.
+  /// invalid_path, missing, unreadable, or empty.
   final String kind;
   final String message;
-  final String expectedHash;
-  final String actualHash;
 }

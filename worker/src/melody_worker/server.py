@@ -58,6 +58,9 @@ _YTMUSIC_METHODS = frozenset(
     {"search", "get_watch_playlist", "get_lyrics", "get_playlist"}
 )
 _MAX_JSON_DEPTH = 32
+_EMBED_COVER = "EmbedThumbnail"
+# Beside a download's partial streams: the format they belong to.
+_STREAM_FORMAT_FILE = ".melody-stream-format"
 
 # Fields the app reads from yt-dlp info dictionaries. Everything else stays
 # here, so a frame never carries formats, cookies, or HTTP headers.
@@ -78,7 +81,8 @@ _INFO_FIELDS = (
     "extractor_key",
 )
 _THUMBNAIL_FIELDS = ("url", "width", "height", "preference")
-_PROGRESS_INTERVAL = 0.1
+# Matches how often the app publishes progress (DownloadCoordinator).
+_PROGRESS_INTERVAL = 0.2
 # Network-bound extraction and FFmpeg-bound downloads. The app enforces the
 # user's download concurrency; this only bounds the worker's own threads.
 _MAX_THREADS = 12
@@ -371,10 +375,15 @@ class Worker:
                 }
             )
 
+        postprocessors = options.get("postprocessors") or []
         merged = {
             **options,
             "paths": {"home": str(directory)},
             "progress_hooks": [hook],
+            # Registered below instead, where a failure cannot lose the audio.
+            "postprocessors": [
+                item for item in postprocessors if item.get("key") != _EMBED_COVER
+            ],
         }
         with self._cancel_lock:
             self._downloading.add(task)
@@ -389,10 +398,15 @@ class Worker:
             if self._is_cancelled(task):
                 return {"cancelled": True}
             with youtube_dl(merged) as client:
+                client.add_post_processor(resume_guard(directory), when="before_dl")
                 if metadata:
                     client.add_post_processor(
                         metadata_fields(metadata), when="pre_process"
                     )
+                # Last, as yt-dlp's own order has it: tags before the cover.
+                for item in postprocessors:
+                    if item.get("key") == _EMBED_COVER:
+                        client.add_post_processor(optional_cover(client, item))
                 client.download([url])
         except Exception as error:
             if self._is_cancelled(task) or any(
@@ -486,6 +500,55 @@ def metadata_fields(fields: dict[str, str]) -> Any:
             return [], information
 
     return MetadataFields()
+
+
+def resume_guard(directory: Path) -> Any:
+    """A yt-dlp postprocessor that clears what an earlier attempt in ``directory``
+    must not hand on: half-written FFmpeg output, and partial streams of another
+    format, which yt-dlp would otherwise continue with the wrong bytes."""
+    from yt_dlp.postprocessor.common import PostProcessor
+
+    class ResumeGuard(PostProcessor):
+        def run(self, information: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+            marker = directory / _STREAM_FORMAT_FILE
+            chosen = str(information.get("format_id") or "")
+            other_format = (
+                marker.is_file() and marker.read_text(encoding="utf-8") != chosen
+            )
+            for item in directory.iterdir():
+                partial = item.name.endswith((".part", ".ytdl")) or (
+                    ".part-" in item.name
+                )
+                if item.is_file() and (
+                    ".temp." in item.name or (other_format and partial)
+                ):
+                    item.unlink(missing_ok=True)
+            marker.write_text(chosen, encoding="utf-8")
+            return [], information
+
+    return ResumeGuard()
+
+
+def optional_cover(client: Any, definition: dict[str, Any]) -> Any:
+    """yt-dlp's cover embedding from its postprocessor ``definition``, except that
+    a failure leaves the audio as it is: a song without an embedded cover is still
+    the song, and losing it would mean downloading it again."""
+    from yt_dlp.postprocessor.embedthumbnail import EmbedThumbnailPP
+    from yt_dlp.utils import prepend_extension
+
+    class OptionalEmbedThumbnailPP(EmbedThumbnailPP):
+        def run(self, information: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+            try:
+                return super().run(information)
+            except Exception as error:  # noqa: BLE001 - the audio is what matters
+                self.report_warning(f"The cover was not embedded: {error}")
+                temporary = prepend_extension(information["filepath"], "temp")
+                Path(temporary).unlink(missing_ok=True)
+                return [], information
+
+    return OptionalEmbedThumbnailPP(
+        client, **{key: value for key, value in definition.items() if key != "key"}
+    )
 
 
 def json_safe(value: Any, *, depth: int = 0) -> Any:

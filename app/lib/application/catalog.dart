@@ -1,7 +1,7 @@
-/// YouTube Music search, playlists, recommendations, lyrics, and stream URLs.
+/// YouTube Music search, playlists, recommendations, and lyrics.
 ///
-/// Metadata comes from YouTube Music itself through ytmusicapi; yt-dlp only
-/// resolves playable streams (and, in the download coordinator, downloads).
+/// All of it comes from YouTube Music itself through ytmusicapi. yt-dlp, in
+/// the download coordinator, only downloads.
 library;
 
 import "dart:io";
@@ -50,13 +50,12 @@ class RemotePlaylist {
 /// YouTube Music through the Python worker. Downloads go through the
 /// download coordinator instead.
 class MusicCatalog {
-  MusicCatalog(this._worker, this._sharedOptions);
+  MusicCatalog(this._worker);
 
   final WorkerClient _worker;
 
-  /// yt-dlp options, read for every request so a changed cookie file
-  /// applies immediately.
-  final Map<String, Object?> Function() _sharedOptions;
+  /// The playlist link last pasted into a search, and what it loaded.
+  (String, RemotePlaylist)? _pastedPlaylist;
 
   /// Songs matching a search term, or a pasted YouTube URL (a track or a
   /// playlist).
@@ -76,7 +75,12 @@ class MusicCatalog {
         );
       }
       if (isYoutubePlaylistUrl(term)) {
-        final playlist = await loadPlaylist(term);
+        // Turning the page must not fetch the whole playlist again.
+        final loaded = _pastedPlaylist;
+        final playlist = start > 0 && loaded != null && loaded.$1 == term
+            ? loaded.$2
+            : await loadPlaylist(term);
+        _pastedPlaylist = (term, playlist);
         return playlist.tracks.skip(start).take(count).toList();
       }
       final identity = MediaIdentity.fromUrl(term);
@@ -96,25 +100,6 @@ class MusicCatalog {
       "limit": start + count,
     });
     return tracksFromYtMusic(found).skip(start).take(count).toList();
-  }
-
-  Future<String> resolveStream(String url) async {
-    var info = await _extract(url, {
-      "format": "bestaudio/best",
-      "noplaylist": true,
-      "extract_flat": false,
-    });
-    final entries = info?["entries"];
-    if (entries is List) {
-      info = entries.whereType<Map>().firstOrNull?.cast<String, Object?>();
-    }
-    final stream = "${info?["url"] ?? ""}";
-    if (stream.isEmpty) {
-      throw ProviderError(
-        "This result does not expose a playable audio stream.",
-      );
-    }
-    return stream;
   }
 
   /// YouTube Music radio recommendations for a seed track.
@@ -220,28 +205,6 @@ class MusicCatalog {
   Future<Object?> _call(String method, Map<String, Object?> arguments) async {
     try {
       return await _worker.ytMusic(method, arguments);
-    } on ProviderError {
-      rethrow;
-    } catch (error) {
-      throw ProviderError(friendlyProviderError(error));
-    }
-  }
-
-  Future<Map<String, Object?>?> _extract(
-    String target, [
-    Map<String, Object?> options = const {},
-  ]) async {
-    try {
-      return await _worker.extract(target, {
-        "quiet": true,
-        "no_warnings": true,
-        "skip_download": true,
-        "noplaylist": false,
-        "extract_flat": "in_playlist",
-        "socket_timeout": 12,
-        ...options,
-        ..._sharedOptions(),
-      });
     } on ProviderError {
       rethrow;
     } catch (error) {

@@ -83,6 +83,8 @@ class DesktopPlayerBar extends StatelessWidget {
                                 : null,
                           ),
                         ),
+                        if (info.canFavorite)
+                          ActionMenu(() => currentTrackActions(context, app)),
                       ],
                     ],
                   ),
@@ -107,10 +109,10 @@ class DesktopPlayerBar extends StatelessWidget {
                             spacing: 6,
                             children: [
                               IconButton(
-                                onPressed: playback.queue.upcomingCount >= 2
-                                    ? playback.shuffleUpcoming
+                                onPressed: playback.queue.canShuffle
+                                    ? app.shuffleQueue
                                     : null,
-                                tooltip: "Shuffle upcoming tracks",
+                                tooltip: "Shuffle the queue",
                                 iconSize: 20,
                                 icon: const Icon(Icons.shuffle_rounded),
                               ),
@@ -220,7 +222,9 @@ class DesktopPlayerBar extends StatelessWidget {
                         ),
                         _SleepTimerButton(app),
                         IconButton(
-                          onPressed: hasMedia ? playback.stop : null,
+                          onPressed: playback.mediaSessionActive
+                              ? playback.stop
+                              : null,
                           tooltip: "Stop playback and clear notification",
                           iconSize: 20,
                           icon: const Icon(Icons.stop_rounded),

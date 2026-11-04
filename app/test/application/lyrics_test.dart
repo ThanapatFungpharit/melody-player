@@ -86,6 +86,18 @@ void main() {
       expect(fetched, hasLength(2));
     });
 
+    test("in the file itself win over asking again", () async {
+      const fixture = "test/fixtures/lyrics/lyrics.opus";
+      reply = () => null;
+      final lyrics = library();
+      const track = (source: _source, path: fixture);
+      final before = await lyrics.forTrack(track);
+      expect(before, isNotNull);
+      final after = await lyrics.forTrack(track, refresh: true);
+      expect(after?.lines.first.text, before!.lines.first.text);
+      expect(fetched, isEmpty);
+    });
+
     test("survive a failed refresh", () async {
       await library().load(_source);
       reply = () => ProviderError("offline");

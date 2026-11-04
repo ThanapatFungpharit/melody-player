@@ -13,7 +13,6 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
-  FlMethodChannel* app_icon_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -23,37 +22,18 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
 }
 
-// Shows the icon Dart draws for the saved accent color on the window. X11 uses
-// it; Wayland shells take the icon from the desktop entry instead.
-static void app_icon_cb(FlMethodChannel* channel, FlMethodCall* call,
-                        gpointer user_data) {
-  GtkWindow* window = GTK_WINDOW(user_data);
-  FlValue* images = fl_method_call_get_args(call);
-  g_autoptr(FlMethodResponse) response = nullptr;
-  if (strcmp(fl_method_call_get_name(call), "setImages") != 0 ||
-      fl_value_get_type(images) != FL_VALUE_TYPE_MAP) {
-    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
-  } else {
-    GList* icons = nullptr;
-    for (size_t i = 0; i < fl_value_get_length(images); i++) {
-      FlValue* png = fl_value_get_map_value(images, i);
-      if (fl_value_get_type(png) != FL_VALUE_TYPE_UINT8_LIST) continue;
-      g_autoptr(GdkPixbufLoader) loader =
-          gdk_pixbuf_loader_new_with_type("png", nullptr);
-      gboolean loaded = gdk_pixbuf_loader_write(
-          loader, fl_value_get_uint8_list(png), fl_value_get_length(png),
-          nullptr);
-      loaded = gdk_pixbuf_loader_close(loader, nullptr) && loaded;
-      GdkPixbuf* pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
-      if (loaded && pixbuf != nullptr) {
-        icons = g_list_append(icons, g_object_ref(pixbuf));
-      }
-    }
-    if (icons != nullptr) gtk_window_set_icon_list(window, icons);
-    g_list_free_full(icons, g_object_unref);
-    response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+// Shows the icon from the bundle's data folder on the window. X11 uses it;
+// Wayland shells take the icon from the desktop entry instead.
+static void set_window_icon(GtkWindow* window) {
+  g_autofree gchar* executable = g_file_read_link("/proc/self/exe", nullptr);
+  if (executable == nullptr) return;
+  g_autofree gchar* directory = g_path_get_dirname(executable);
+  g_autofree gchar* icon =
+      g_build_filename(directory, "data", "app_icon.png", nullptr);
+  g_autoptr(GError) error = nullptr;
+  if (!gtk_window_set_icon_from_file(window, icon, &error)) {
+    g_warning("Could not load the window icon: %s", error->message);
   }
-  fl_method_call_respond(call, response, nullptr);
 }
 
 // Implements GApplication::activate.
@@ -88,6 +68,8 @@ static void my_application_activate(GApplication* application) {
   } else {
     gtk_window_set_title(window, "Melody");
   }
+
+  set_window_icon(window);
 
   // MELODY_WINDOW_SIZE=390x844 opens the window at another size, such as a
   // phone's, while developing (see tools/dev/env.py).
@@ -124,14 +106,6 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
-
-  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
-  self->app_icon_channel = fl_method_channel_new(
-      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
-      "melody/app_icon", FL_METHOD_CODEC(codec));
-  fl_method_channel_set_method_call_handler(
-      self->app_icon_channel, app_icon_cb, g_object_ref(window),
-      g_object_unref);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
@@ -179,7 +153,6 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
-  g_clear_object(&self->app_icon_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

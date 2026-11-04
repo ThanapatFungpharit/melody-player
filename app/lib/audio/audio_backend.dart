@@ -8,13 +8,6 @@ import "../core/storage.dart";
 
 /// The decoder contract the playback controller drives.
 abstract class TrackPlayerBackend {
-  /// [gain] is the source's loudness normalization factor (0 to 1).
-  void load(
-    String source, {
-    bool autoplay = false,
-    int positionMs = 0,
-    double gain = 1,
-  });
   void setQueue(
     List<AudioQueueItem> items,
     int currentIndex, {
@@ -253,30 +246,6 @@ class NativeAudioBackend implements TrackPlayerBackend {
       ),
       _generation,
     );
-  }
-
-  @override
-  void load(
-    String source, {
-    bool autoplay = false,
-    int positionMs = 0,
-    double gain = 1,
-  }) {
-    if (_closing) return;
-    // A new explicit selection is the retry boundary after a failure.
-    _beginSource();
-    final generation = _generation;
-    _schedule(
-      () => _engine.loadSource(
-        source,
-        generation: generation,
-        autoplay: autoplay,
-        position: _milliseconds(positionMs),
-        gain: gain,
-      ),
-      generation,
-    );
-    _watchLoad(generation);
   }
 
   @override

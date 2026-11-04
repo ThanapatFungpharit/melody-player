@@ -17,7 +17,7 @@ import "controllers/library_controller.dart";
 import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
-import "shared/app_icon.dart";
+import "../platform/download_keep_alive.dart";
 import "shared/format.dart" show downloadReportMessage, plural;
 
 /// A listenable that fires on demand.
@@ -68,7 +68,6 @@ class MelodyApp {
       persistence: persistence,
       loudness: services.loudness,
       availableTrackIds: services.availableTrackIds,
-      artworkUri: services.thumbnails.artworkUri,
       onError: showError,
     );
     backend.callbacks
@@ -88,19 +87,9 @@ class MelodyApp {
     search = MusicSearchController(this);
     library = LibraryController(this);
     playlists = PlaylistsController(this);
-    settingsDraft = SettingsController(this);
-    // Leaving Settings without saving (close, Esc, back, another panel)
-    // drops a theme or accent preview, as Cancel does.
-    activePanel.addListener(() {
-      if (activePanel.value != AppPanel.settings) {
-        appearance.value = (settings.theme, settings.accentColor);
-      }
-    });
-    final embedder = services.lyricsEmbedder;
-    if (embedder != null) {
-      embedder.isPlaying = (trackId) => playback.currentTrackId == trackId;
-      embedder.embedLibrary();
-    }
+    settingsControls = SettingsController(this);
+    services.lyricsEmbedder?.isPlaying = (trackId) =>
+        playback.currentTrackId == trackId;
     // Measuring waits for the first view to settle; FFmpeg then runs one
     // file at a time in its own process.
     _loudnessStart = Timer(
@@ -108,19 +97,30 @@ class MelodyApp {
       () => unawaited(services.loudness.analyzeLibrary()),
     );
     libraryRevision.addListener(services.loudness.analyzeNew);
+    // Files are read once the first view has settled, one small batch at a time.
+    _metadataStart = Timer(
+      const Duration(seconds: 5),
+      () => unawaited(
+        run(
+          () => services.library.readMissingMetadata(
+            onChanged: touchLibrary,
+            cancelled: () => _closed,
+          ),
+        ),
+      ),
+    );
+    services.downloads.addListener(_reportActiveDownloads);
+    unawaited(run(services.downloads.resumeInterrupted));
   }
+
+  void _reportActiveDownloads() =>
+      DownloadKeepAlive.report(services.downloads.activeCount());
 
   final AppServices services;
   final bool isMobile;
 
-  /// The saved settings; drafts live in [settingsDraft] until saved.
-  AppSettings get settings => _settings;
-  set settings(AppSettings value) {
-    _settings = value;
-    AppIcon.apply(value.accentColor);
-  }
-
-  late AppSettings _settings;
+  /// The saved settings.
+  late AppSettings settings;
   late final PlaybackPersistence persistence;
   late final NativeAudioBackend backend;
   late final PlaybackController playback;
@@ -129,9 +129,10 @@ class MelodyApp {
   late final MusicSearchController search;
   late final LibraryController library;
   late final PlaylistsController playlists;
-  late final SettingsController settingsDraft;
+  late final SettingsController settingsControls;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
   Timer? _loudnessStart;
+  Timer? _metadataStart;
 
   /// Track, transport, queue, and loading changes.
   final Signal playbackState = Signal();
@@ -164,7 +165,6 @@ class MelodyApp {
 
   final Map<String, PendingTrackAction> pendingDownloadActions = {};
   final Map<String, int> downloadPlayRequests = {};
-  String? _lastAnnouncedTrack;
   Object? _systemMediaKey;
   (String, String, String, String) _systemMediaMetadata = ("", "", "", "");
   bool _systemMediaFavorite = false;
@@ -172,16 +172,27 @@ class MelodyApp {
 
   // -- notifications -------------------------------------------------------
 
+  /// Shows a message while the app is on screen. Off screen, an error or a
+  /// message to [keep] waits for the user's return; the rest only mattered
+  /// while they were looking.
   void showMessage(
     String message, {
     bool error = false,
+    bool keep = false,
     (String, VoidCallback)? action,
   }) {
-    // only show when inside the app else drop
-    if (!_messages.isClosed && _inForeground) {
-      _messages.add(AppMessage(message, error: error, action: action));
+    if (_messages.isClosed) return;
+    final shown = AppMessage(message, error: error, action: action);
+    if (_inForeground) {
+      _messages.add(shown);
+    } else if (error || keep) {
+      _heldMessages.add(shown);
+      if (_heldMessages.length > _maxHeldMessages) _heldMessages.removeAt(0);
     }
   }
+
+  static const _maxHeldMessages = 3;
+  final List<AppMessage> _heldMessages = [];
 
   /// Whether the app's window is on screen.
   static bool get _inForeground {
@@ -241,8 +252,6 @@ class MelodyApp {
       }
     }
     if (change == PlaybackChange.track) {
-      // Files skipped while they played can take their lyrics now.
-      services.lyricsEmbedder?.retryDeferred();
       _saveLyrics([?playback.currentTrackId]);
       _measureUpcoming();
     }
@@ -261,18 +270,6 @@ class MelodyApp {
     }
     playbackState.emit();
     playbackProgress.emit();
-    final current =
-        playback.currentTrackId ??
-        (playback.externalTitle.isNotEmpty
-            ? "stream:${playback.externalTitle}"
-            : null);
-    if (settings.notifications &&
-        playback.playing &&
-        current != null &&
-        current != _lastAnnouncedTrack) {
-      _lastAnnouncedTrack = current;
-      showMessage("Now playing: ${currentTitle()}");
-    }
   }
 
   /// Whether the playback position is moving on its own.
@@ -293,31 +290,10 @@ class MelodyApp {
 
   static const _maxExtrapolationMs = 1500;
 
-  /// The visible title for whatever is playing.
-  String currentTitle() {
-    if (playback.externalTitle.isNotEmpty) return playback.externalTitle;
-    final id = playback.currentTrackId;
-    if (id == null) return "Nothing playing";
-    try {
-      return services.manager.getTrack(id).displayTitle;
-    } on ArgumentError {
-      return "Nothing playing";
-    }
-  }
-
   /// Keeps lock-screen and notification controls aligned with playback.
   void syncSystemMedia({bool refreshMetadata = true}) {
     if (_closed) return;
-    final key = playback.externalTitle.isNotEmpty
-        ? (
-            "stream",
-            playback.externalTitle,
-            playback.externalUploader,
-            playback.externalThumbnail,
-          )
-        : playback.currentTrackId != null
-        ? ("track", playback.currentTrackId)
-        : null;
+    final key = playback.currentTrackId;
     if (refreshMetadata || key != _systemMediaKey) {
       _systemMediaKey = key;
       final (metadata, favorite) = _resolveSystemMediaMetadata();
@@ -326,14 +302,12 @@ class MelodyApp {
     }
     final (title, artist, album, artworkUri) = _systemMediaMetadata;
     final hasMedia = title.isNotEmpty && playback.mediaSessionActive;
-    final libraryTrack = hasMedia && playback.currentLibraryTrackId != null;
     backend.syncMediaSession(
       MediaSessionState(
         title: hasMedia ? title : "",
         artist: artist,
         album: album,
         artworkUri: artworkUri,
-        automaticFocalPoint: settings.autoFocalPointLiveNotifications,
         duration: Duration(milliseconds: playback.durationMs),
         position: Duration(milliseconds: playback.positionMs),
         playing: playback.playing,
@@ -344,12 +318,12 @@ class MelodyApp {
         hasNext: hasMedia,
         hasPrevious: hasMedia,
         repeatMode: audioRepeatMode(playback.queue.repeat),
-        canRepeat: libraryTrack && playback.queue.items.isNotEmpty,
-        canShuffle: libraryTrack && playback.queue.upcomingCount >= 2,
-        canFavorite: libraryTrack,
-        favorite: libraryTrack && _systemMediaFavorite,
+        canRepeat: hasMedia,
+        canShuffle: hasMedia && playback.queue.canShuffle,
+        canFavorite: hasMedia,
+        favorite: hasMedia && _systemMediaFavorite,
         shortcuts: _notificationShortcuts(settings.notificationActionPair),
-        // A paused stream keeps its notification; only Stop clears it.
+        // A paused track keeps its notification; only Stop clears it.
         keepAlive: hasMedia,
       ),
     );
@@ -375,17 +349,6 @@ class MelodyApp {
       };
 
   ((String, String, String, String), bool) _resolveSystemMediaMetadata() {
-    if (playback.externalTitle.isNotEmpty) {
-      return (
-        (
-          playback.externalTitle,
-          playback.externalUploader,
-          "",
-          services.thumbnails.artworkUri(playback.externalThumbnail),
-        ),
-        false,
-      );
-    }
     final id = playback.currentTrackId;
     if (id == null) return (("", "", "", ""), false);
     try {
@@ -397,7 +360,7 @@ class MelodyApp {
           details.uploader,
           // Melody stores no album tags; the source is useful context.
           details.sourceName,
-          services.thumbnails.artworkUri(details.thumbnail),
+          services.library.artworkUri(id),
         ),
         details.favorite,
       );
@@ -408,8 +371,7 @@ class MelodyApp {
 
   /// A command from system media controls the native engine left to the app.
   void _mediaAction(MediaCommand command, int? seekPositionMs) {
-    final libraryCurrent =
-        playback.mediaSessionActive && playback.currentLibraryTrackId != null;
+    final active = playback.mediaSessionActive && playback.hasMedia;
     switch (command) {
       case MediaCommand.play:
         if (!playback.playing) playback.toggle();
@@ -420,7 +382,7 @@ class MelodyApp {
       case MediaCommand.skipToNext:
         playback.next();
       case MediaCommand.skipToPrevious:
-        playback.previous();
+        playback.previous(resume: false);
       case MediaCommand.seekTo:
         if (seekPositionMs != null) playback.seek(seekPositionMs);
       case MediaCommand.rewind:
@@ -432,9 +394,9 @@ class MelodyApp {
           playback.cycleRepeat();
         }
       case MediaCommand.shuffleUpcoming:
-        if (libraryCurrent) playback.shuffleUpcoming();
+        if (active) shuffleQueue();
       case MediaCommand.toggleFavorite:
-        if (libraryCurrent) unawaited(toggleFavorite(playback.currentTrackId!));
+        if (active) unawaited(toggleFavorite(playback.currentTrackId!));
     }
   }
 
@@ -448,6 +410,12 @@ class MelodyApp {
     playback.removeQueueItem(index);
     if (wasCurrent || playback.queue.items.length == before) return;
     _offerQueueUndo("Removed from the queue.", snapshot);
+  }
+
+  /// Reorders the queue at random, offering to put it back.
+  void shuffleQueue() {
+    final snapshot = playback.snapshotQueue();
+    if (playback.shuffle()) _offerQueueUndo("Queue shuffled.", snapshot);
   }
 
   /// Clears every row but the playing one, offering to put them back.
@@ -496,7 +464,7 @@ class MelodyApp {
     services.library.toggleFavorite(trackId);
     touchLibrary();
     playbackState.emit();
-    if (trackId == playback.currentLibraryTrackId) {
+    if (trackId == playback.currentTrackId) {
       syncSystemMedia(refreshMetadata: true);
     }
   });
@@ -506,6 +474,8 @@ class MelodyApp {
     unawaited(backend.refreshState());
     backend.invalidateMediaSession();
     syncSystemMedia(refreshMetadata: false);
+    if (!_messages.isClosed) _heldMessages.forEach(_messages.add);
+    _heldMessages.clear();
   }
 
   /// Adopts a decoder retained across a widget-tree rebuild.
@@ -544,6 +514,7 @@ class MelodyApp {
     showMessage(
       downloadReportMessage(report),
       error: report.hasFailures,
+      keep: true,
       action: activePanel.value == AppPanel.downloads
           ? null
           : ("View", () => openPanel(AppPanel.downloads)),
@@ -554,21 +525,26 @@ class MelodyApp {
     final pending = pendingDownloadActions.remove(record.id);
     if (pending == null) return;
     final generation = downloadPlayRequests.remove(record.id);
-    final relevant =
-        pending.action != TrackAction.play ||
-        (generation != null && playback.isCurrentRequest(generation));
-    if (!relevant) return;
-    if (record.status == DownloadStatus.completed &&
-        record.trackIds.any(services.manager.hasTrack)) {
-      applyTrackAction(record.trackIds, pending.action, pending.playlistId);
-      return;
-    }
+    if (record.status == DownloadStatus.cancelled) return;
+    final completed =
+        record.status == DownloadStatus.completed &&
+        record.trackIds.any(services.manager.hasTrack);
     if (pending.action == TrackAction.play) {
-      // Leave the pending “Preparing track…” state; nothing will load.
-      playback.onBackendError("Couldn’t play ${record.title}.");
+      if (!completed) {
+        showError("Couldn’t play ${record.title}.");
+      } else if (generation != null && playback.isCurrentRequest(generation)) {
+        applyTrackAction(record.trackIds, TrackAction.play);
+      } else {
+        // The listener moved on while it downloaded; it must not interrupt.
+        showMessage("“${record.title}” is now in your library.");
+      }
       return;
     }
-    showError("Couldn’t finish the requested action for ${record.title}.");
+    if (completed) {
+      applyTrackAction(record.trackIds, pending.action, pending.playlistId);
+    } else {
+      showError("Couldn’t finish the requested action for ${record.title}.");
+    }
   }
 
   /// Applies a queue, playlist, favorite, or play action to library tracks.
@@ -608,10 +584,7 @@ class MelodyApp {
           }),
         );
       case TrackAction.play:
-        final autoplay = playback.loading ? playback.playing : true;
-        playback.playTracks(available);
-        if (!autoplay) playback.toggle();
-        showMessage("Preparing track…");
+        playback.playNow(available);
     }
   }
 
@@ -627,16 +600,10 @@ class MelodyApp {
     ], first: true);
   }
 
-  /// Saves lyrics for library tracks in the background so they show
-  /// offline: inside the audio file where Melody can rewrite it.
+  /// Saves lyrics for library tracks in the background so they show offline.
   void _saveLyrics(Iterable<String> trackIds) {
     if (_closed) return;
-    final embedder = services.lyricsEmbedder;
-    if (embedder != null) {
-      embedder.embed(trackIds);
-    } else {
-      services.lyrics.prefetch([for (final id in trackIds) ?lyricsTrack(id)]);
-    }
+    services.lyrics.prefetch([for (final id in trackIds) ?lyricsTrack(id)]);
   }
 
   /// A library track's source and file, for lyrics lookups.
@@ -663,9 +630,12 @@ class MelodyApp {
     persistence.close();
     services.lyricsEmbedder?.close();
     _loudnessStart?.cancel();
+    _metadataStart?.cancel();
     libraryRevision.removeListener(services.loudness.analyzeNew);
     unawaited(services.loudness.close());
     // Running jobs observe cancellation at their next yt-dlp callback.
+    services.downloads.removeListener(_reportActiveDownloads);
+    DownloadKeepAlive.report(0);
     services.downloads.shutdown();
     unawaited(_playbackSubscription.cancel());
     unawaited(_messages.close());

@@ -16,7 +16,29 @@ class MobileQueue extends StatefulWidget {
 }
 
 class _MobileQueueState extends State<MobileQueue> {
-  int? _offset;
+  final ScrollController _scroll = ScrollController();
+  String _query = "";
+
+  @override
+  void initState() {
+    super.initState();
+    // Opens at the current track, then follows the user.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final queue = widget.app.playback.queue;
+      scrollToRow(_scroll, queue.currentIndex, queue.items.length);
+    });
+  }
+
+  void _find(String query) {
+    setState(() => _query = query);
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -27,38 +49,14 @@ class _MobileQueueState extends State<MobileQueue> {
       builder: (context) {
         final queue = app.playback.queue;
         final mode = queueModeStatus(queue);
-        _offset ??=
-            (queue.currentIndex < 0 ? 0 : queue.currentIndex) ~/ 50 * 50;
-        final (start, end) = pageBounds(queue.items.length, _offset!);
-        _offset = start;
-        final rows = <Widget>[];
-        final indexes = <int>[];
-        for (var index = start; index < end; index++) {
-          final trackId = queue.items[index];
-          if (!app.services.manager.hasTrack(trackId)) continue;
-          final track = app.services.manager.getTrack(trackId);
-          final details = app.services.library.details(trackId);
-          final position = index;
-          indexes.add(index);
-          rows.add(
-            TrackRow(
-              key: ValueKey("queue:$index:$trackId"),
-              app: app,
-              title: track.displayTitle,
-              credit:
-                  "${queueItemStatus(queue, index)} · ${details.uploader.isEmpty ? "Queued track" : details.uploader}",
-              artwork: details.thumbnail,
-              selected: index == queue.currentIndex,
-              favorite: details.favorite,
-              onTap: () => app.playback.playQueueIndex(position),
-              leading: reorderHandle(context, rows.length),
-              trailing: MoreButton(
-                track.displayTitle,
-                () => queueRowActions(app, position),
-              ),
-            ),
-          );
-        }
+        final filtering = _query.trim().isNotEmpty;
+        final rows = [
+          for (var index = 0; index < queue.items.length; index++)
+            if (app.services.manager.hasTrack(queue.items[index]) &&
+                (!filtering ||
+                    app.services.library.matches(queue.items[index], _query)))
+              index,
+        ];
         Widget chip(
           IconData icon,
           String label,
@@ -78,10 +76,12 @@ class _MobileQueueState extends State<MobileQueue> {
           label: Text(label),
         );
         return reorderablePage(
+          controller: _scroll,
           onReorder: (oldIndex, newIndex) => app.playback.reorderQueue(
-            indexes[oldIndex],
-            queueDropSlot(indexes, oldIndex, newIndex),
+            rows[oldIndex],
+            queueDropSlot(rows, oldIndex, newIndex),
           ),
+          reorderable: !filtering,
           header: [
             MobileHeading(
               "Queue",
@@ -95,7 +95,7 @@ class _MobileQueueState extends State<MobileQueue> {
                 ),
               ],
             ),
-            if (rows.isNotEmpty) ...[
+            if (queue.items.isNotEmpty) ...[
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -107,17 +107,15 @@ class _MobileQueueState extends State<MobileQueue> {
                     active: true,
                   ),
                   Tooltip(
-                    message: "Shuffle upcoming tracks",
+                    message: "Shuffle the queue",
                     child: chip(
                       Icons.shuffle_rounded,
                       "Shuffle",
-                      queue.upcomingCount < 2
-                          ? null
-                          : app.playback.shuffleUpcoming,
+                      queue.canShuffle ? app.shuffleQueue : null,
                     ),
                   ),
                   Tooltip(
-                    message: "Clear upcoming tracks",
+                    message: "Remove every track but the current one",
                     child: chip(
                       Icons.clear_all_rounded,
                       "Clear",
@@ -127,21 +125,45 @@ class _MobileQueueState extends State<MobileQueue> {
                 ],
               ),
             ],
-          ],
-          items: rows,
-          footer: [
-            if (queue.items.length > 50)
-              PageNavigation(
-                total: queue.items.length,
-                start: start,
-                end: end,
-                onChange: (direction) =>
-                    setState(() => _offset = start + direction * 50),
+            if (queue.items.length > findableRows)
+              TextField(
+                onChanged: _find,
+                decoration: const InputDecoration(
+                  hintText: "Find in the queue",
+                  prefixIcon: Icon(Icons.search_rounded),
+                ),
               ),
+          ],
+          itemCount: rows.length,
+          itemBuilder: (context, row) {
+            final index = rows[row];
+            final trackId = queue.items[index];
+            final track = app.services.manager.getTrack(trackId);
+            final details = app.services.library.details(trackId);
+            return TrackRow(
+              key: ValueKey("queue:$index:$trackId"),
+              app: app,
+              title: track.displayTitle,
+              credit:
+                  "${queueItemStatus(queue, index)} · ${details.uploader.isEmpty ? "Queued track" : details.uploader}",
+              artwork: app.services.library.artwork(trackId),
+              selected: index == queue.currentIndex,
+              favorite: details.favorite,
+              onTap: () => app.playback.playQueueIndex(index),
+              leading: filtering ? null : reorderHandle(context, row),
+              trailing: MoreButton(
+                track.displayTitle,
+                () => queueRowActions(context, app, index, track),
+              ),
+            );
+          },
+          footer: [
             if (rows.isEmpty)
-              const EmptyState(
+              EmptyState(
                 Icons.queue_music_rounded,
-                "Play music or add tracks to start your queue.",
+                filtering
+                    ? "Nothing in the queue matches this."
+                    : "Play music or add tracks to start your queue.",
               ),
           ],
         );

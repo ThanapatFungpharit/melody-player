@@ -9,9 +9,9 @@ import "../../application/queue.dart";
 import "../../core/library/models.dart";
 import "theme.dart";
 
-/// Track or playlist artwork: the offline cache first, then the network,
-/// with a placeholder while loading or on failure. The placeholder takes a
-/// stable tint from [seed] so tracks without covers stay distinguishable.
+/// Track or playlist artwork from a file or the network, with a placeholder
+/// while loading or on failure. The placeholder takes a stable tint from [seed]
+/// so tracks without covers stay distinguishable.
 class Artwork extends StatelessWidget {
   const Artwork(
     this.app,
@@ -46,12 +46,9 @@ class Artwork extends StatelessWidget {
       icon: playlist ? Icons.album_rounded : Icons.music_note_rounded,
     );
     if (source.isEmpty) return placeholder;
-    final cached = app.services.thumbnails.cachedPath(source);
     final cacheWidth = (size * MediaQuery.devicePixelRatioOf(context)).round();
     final ImageProvider provider;
-    if (cached != null) {
-      provider = FileImage(File(cached));
-    } else if (source.startsWith("http://") || source.startsWith("https://")) {
+    if (source.startsWith("http://") || source.startsWith("https://")) {
       provider = NetworkImage(source);
     } else if (p.isAbsolute(source)) {
       // No existence check while building: a missing file decodes to an
@@ -97,7 +94,17 @@ class Artwork extends StatelessWidget {
 String playlistArtwork(MelodyApp app, Playlist playlist) =>
     playlist.trackIds.isEmpty
     ? ""
-    : app.services.library.details(playlist.trackIds.first).thumbnail;
+    : app.services.library.artwork(playlist.trackIds.first);
+
+/// A finished download's cover: its track's, or the one it was listed with.
+String downloadArtwork(MelodyApp app, DownloadRecord record) {
+  for (final trackId in record.trackIds) {
+    if (app.services.manager.hasTrack(trackId)) {
+      return app.services.library.artwork(trackId);
+    }
+  }
+  return record.thumbnail;
+}
 
 /// A stable hue for [seed]; String.hashCode is not stable across runs.
 double seedHue(String seed) {
@@ -461,11 +468,62 @@ class PageNavigation extends StatelessWidget {
   );
 }
 
-/// A full page window, clamping a stale offset after the collection shrank.
-(int, int) pageBounds(int total, int offset, {int pageSize = 50}) {
-  final last = total <= 0 ? 0 : (total - 1) ~/ pageSize * pageSize;
-  final start = offset.clamp(0, last);
-  return (start, (start + pageSize).clamp(0, total));
+/// How far the import into a playlist has come, with a way to stop it. Takes no
+/// room while nothing is being imported into it.
+class ImportProgress extends StatelessWidget {
+  const ImportProgress(this.app, this.playlistId, {super.key});
+
+  final MelodyApp app;
+  final String playlistId;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = app.playlists.importProgress(playlistId);
+    if (progress == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        spacing: 12,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 6,
+              children: [
+                Text(
+                  "Importing ${progress.done} of ${progress.total}",
+                  style: context.text.bodySmall,
+                ),
+                LinearProgressIndicator(
+                  value: progress.total > 0
+                      ? progress.done / progress.total
+                      : null,
+                  minHeight: 4,
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: () => app.playlists.cancelImport(playlistId),
+            child: const Text("Stop"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A list longer than this offers to find rows in it.
+const findableRows = 8;
+
+/// Scrolls a list of [count] equally tall rows to the one at [row]. A header
+/// above the rows only makes this land a little further down.
+void scrollToRow(ScrollController controller, int row, int count) {
+  if (!controller.hasClients || row <= 0 || count <= 0) return;
+  final position = controller.position;
+  final extent =
+      (position.maxScrollExtent + position.viewportDimension) / count;
+  controller.jumpTo((extent * row).clamp(0.0, position.maxScrollExtent));
 }
 
 /// Cross-fades between destinations with a slight rise. Give each
@@ -561,9 +619,8 @@ const brandMarkGlyph = 0.62;
 
 /// The app's mark: an accent tile with the equalizer glyph.
 ///
-/// The running app's window, dock, or taskbar icon is drawn from it by
-/// `AppIcon`. The Android launcher icons reproduce it in the light theme for
-/// every accent; run `tools/build/icons.py` again after changing it.
+/// The bundled app icons reproduce it in the default accent's light theme; run
+/// `tools/build/icons.py` again after changing it.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 36});
 

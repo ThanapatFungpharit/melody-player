@@ -26,7 +26,7 @@ class AudioQueueItem {
 
   final String trackId;
 
-  /// A local path or an http(s) URL.
+  /// A local path.
   final String source;
   final String title;
   final String artist;
@@ -114,7 +114,7 @@ class AudioEngineSnapshot {
   final int generation;
   final String? trackId;
 
-  /// The active path or URL; null when nothing is loaded.
+  /// The active path; null when nothing is loaded.
   final String? source;
   final String title;
   final String artist;
@@ -156,8 +156,30 @@ enum MediaCommand {
   }
 }
 
+/// One row of the decoder's playlist, and the queue row it was made from.
+@immutable
+class _NativeRow {
+  const _NativeRow(this.queueIndex, this.trackId, this.source);
+
+  final int queueIndex;
+  final String trackId;
+  final String source;
+
+  bool sameMedia(_NativeRow other) =>
+      trackId == other.trackId && source == other.source;
+}
+
 /// Process-scoped player shared by the app and the system media session.
-/// just_audio owns decoding, buffering, playlists, automatic next, and repeat.
+/// just_audio owns decoding, buffering, and gapless transitions.
+///
+/// The queue can be any length, but the decoder only ever holds the playing
+/// row and the next [upcomingRows], so the work of a selection or an edit
+/// does not grow with the queue. Its playlist is linear: repeating the queue
+/// appends the first rows again rather than using the decoder's loop mode, and
+/// the window slides forward as tracks finish. Edits change only rows after
+/// the playing one, so they never disturb it or shift its index. (Rows already
+/// played stay behind it until the next selection. Removing them would shift
+/// the index under the decoder's asynchronous events, and they are few.)
 ///
 /// Explicit requests carry an even generation chosen by the caller; queue
 /// transitions the engine makes by itself take the next odd one.
@@ -165,6 +187,11 @@ class AudioEngine {
   AudioEngine._();
 
   static final AudioEngine instance = AudioEngine._();
+
+  /// How many rows the decoder holds after the playing one. A gapless
+  /// transition needs only one; the rest keep music going for about half an
+  /// hour should this isolate ever fall behind the decoder.
+  static const upcomingRows = 8;
 
   SystemMediaSession get _session => SystemMediaSession.instance;
 
@@ -174,7 +201,15 @@ class AudioEngine {
   Future<void>? _sessionFuture;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   List<AudioQueueItem> _queue = const [];
-  List<int> _playlistQueueIndexes = const [];
+  List<_NativeRow> _rows = const [];
+
+  /// The queue row after a playing track whose own row was removed.
+  int _detachedSuccessor = -1;
+
+  /// Serializes changes to the decoder's playlist; [_rowsStale] says a change
+  /// to the queue or the playing row has not reached it yet.
+  Future<void> _rowSync = Future.value();
+  bool _rowsStale = false;
   String? _activeSource;
   String? _activeTrackId;
   AudioRepeatMode _repeatMode = AudioRepeatMode.off;
@@ -202,7 +237,14 @@ class AudioEngine {
   Timer? _boundaryTimer;
   double? _boundaryGain;
   bool _playbackWanted = false;
-  bool _removingGhost = false;
+
+  /// The decoder [_continueQueue] is moving on, so it runs once for it.
+  AudioPlayer? _continuing;
+
+  /// The listener has been told the queue finished. Edits wait for the next
+  /// Play or Next: appending to a finished media_kit decoder starts the new
+  /// row by itself and leaves it unable to advance or report completion.
+  bool _queueFinished = false;
 
   void attach(AudioEngineListener listener, {double volume = 1}) {
     _listener = listener;
@@ -215,33 +257,8 @@ class AudioEngine {
 
   // -- requests ------------------------------------------------------------
 
-  /// Replaces the engine's source with a single path or URL outside any
-  /// queue. [gain] is its normalization gain, as on [AudioQueueItem].
-  Future<void> loadSource(
-    String source, {
-    required int generation,
-    bool autoplay = false,
-    Duration position = Duration.zero,
-    double gain = 1,
-  }) async {
-    await _select(
-      sources: [_source(source)],
-      queue: const [],
-      queueIndexes: const [-1],
-      initialIndex: 0,
-      activeSource: source,
-      activeTrackId: null,
-      generation: generation,
-      repeatMode: AudioRepeatMode.off,
-      autoplay: autoplay,
-      position: position,
-      // A new source starts at its own position, never the old playhead.
-      transferPlayhead: false,
-      gain: gain,
-    );
-  }
-
-  /// Installs a complete queue and selects [currentIndex].
+  /// Installs a complete queue and selects [currentIndex], or the first
+  /// playable row after it. Reads only the rows the decoder will hold.
   Future<void> setQueue(
     List<AudioQueueItem> items, {
     required int currentIndex,
@@ -250,25 +267,28 @@ class AudioEngine {
     bool autoplay = false,
     Duration position = Duration.zero,
   }) async {
-    final queue = items.where((item) => item.isPlayable).toList();
-    if (queue.isEmpty) {
+    final length = items.length;
+    final rows = length == 0
+        ? const <int>[]
+        : upcomingQueueRows(
+            length: length,
+            start: currentIndex.clamp(0, length - 1).toInt(),
+            wrap: repeatMode == AudioRepeatMode.queue,
+            limit: upcomingRows + 1,
+            playable: (row) => items[row].isPlayable,
+          );
+    if (rows.isEmpty) {
       await clearSource();
       return;
     }
-    final index = currentIndex.clamp(0, queue.length - 1).toInt();
     await _select(
-      sources: queue.map((item) => _source(item.source)).toList(),
-      queue: queue,
-      queueIndexes: List.generate(queue.length, (index) => index),
-      initialIndex: index,
-      activeSource: queue[index].source,
-      activeTrackId: queue[index].trackId,
+      rows: [for (final row in rows) _rowFor(items, row)],
+      queue: items,
       generation: generation,
       repeatMode: repeatMode,
       autoplay: autoplay,
       position: position,
-      transferPlayhead: false,
-      gain: queue[index].gain,
+      gain: items[rows.first].gain,
     );
   }
 
@@ -278,14 +298,93 @@ class AudioEngine {
     List<AudioQueueItem> items, {
     required int currentIndex,
     AudioRepeatMode repeatMode = AudioRepeatMode.off,
-  }) async {
-    final queue = items.where((item) => item.isPlayable).toList();
-    // Each retry follows a native track transition during preparation.
-    for (var attempt = 0; attempt < 3; attempt++) {
-      if (await _editQueue(queue, currentIndex, repeatMode)) return;
+  }) {
+    _queue = items;
+    _repeatMode = repeatMode;
+    if (_player == null || _activeSource == null) return Future.value();
+    final position = reconcileNativeQueue(
+      items.length,
+      (row) => items[row].trackId,
+      _activeTrackId,
+      currentIndex,
+    );
+    _queueIndex = position.activeIndex;
+    _detachedSuccessor = position.detachedSuccessorIndex;
+    if (_queueIndex >= 0) {
+      final gain = items[_queueIndex].gain;
+      if (gain != _gain) _applyGain(gain, fade: true);
     }
-    throw StateError("The native queue kept advancing during a queue update");
+    return _syncRows();
   }
+
+  _NativeRow _rowFor(List<AudioQueueItem> items, int row) =>
+      _NativeRow(row, items[row].trackId, items[row].source);
+
+  /// What should follow the playing row, from the queue as it is now.
+  List<_NativeRow> _upcoming() {
+    final queue = _queue;
+    final start = _queueIndex >= 0 ? _queueIndex + 1 : _detachedSuccessor;
+    return [
+      for (final row in upcomingQueueRows(
+        length: queue.length,
+        start: start,
+        wrap: _repeatMode == AudioRepeatMode.queue,
+        limit: upcomingRows,
+        playable: (row) => queue[row].isPlayable,
+      ))
+        _rowFor(queue, row),
+    ];
+  }
+
+  /// Brings the decoder's playlist to the queue. Requests coalesce and run one
+  /// at a time; one that arrives meanwhile, such as a transition during an
+  /// edit, makes the running pass stop early for the next to start from the
+  /// new state.
+  Future<void> _syncRows() {
+    _rowsStale = true;
+    final run = _rowSync.then((_) => _applyRows());
+    _rowSync = run.catchError((Object _) {});
+    return run;
+  }
+
+  /// Keeps the rows that already follow the playing one correctly, removes
+  /// the rest, and appends what is missing. Appending one row at a time is
+  /// the one insertion every backend does correctly: just_audio_media_kit
+  /// cannot insert within a playlist.
+  Future<void> _applyRows() async {
+    final player = _player;
+    if (!_rowsStale || player == null || _queueFinished) return;
+    _rowsStale = false;
+    final wanted = _upcoming();
+    final first = _playlistIndex + 1;
+    var kept = 0;
+    while (kept < wanted.length &&
+        first + kept < _rows.length &&
+        _rows[first + kept].sameMedia(wanted[kept])) {
+      kept++;
+    }
+    final stale = _rows.length;
+    _rows = [..._rows.take(first), ...wanted.take(kept)];
+    if (first + kept < stale) {
+      await player.removeAudioSourceRange(first + kept, stale);
+    }
+    for (final row in wanted.skip(kept)) {
+      if (player != _player || _rowsStale) return;
+      _rows = [..._rows, row];
+      await player.addAudioSource(AudioSource.file(row.source));
+    }
+    if (player != _player || _rowsStale) return;
+    final loopMode = _nativeLoopMode;
+    if (player.loopMode != loopMode) await player.setLoopMode(loopMode);
+    if (player == _player) _planBoundary();
+  }
+
+  /// A playing track whose row was removed does not repeat: its next
+  /// transition returns to the queue.
+  LoopMode get _nativeLoopMode =>
+      _queueIndex < 0 && _repeatMode == AudioRepeatMode.track
+      ? LoopMode.off
+      : _loopMode(_repeatMode);
 
   /// Abandons a selection that is still preparing; the active decoder keeps
   /// playing.
@@ -312,7 +411,11 @@ class AudioEngine {
     _cancelRamp();
     _cancelBoundary();
     _queue = const [];
-    _playlistQueueIndexes = const [];
+    _rows = const [];
+    _rowSync = Future.value();
+    _rowsStale = false;
+    _queueFinished = false;
+    _detachedSuccessor = -1;
     _queueIndex = -1;
     _playlistIndex = -1;
     _activeSource = null;
@@ -450,13 +553,11 @@ class AudioEngine {
   /// differs from the active row's.
   double? _nextGain(AudioPlayer player) {
     final next = player.nextIndex;
-    if (next == null ||
-        next == player.currentIndex ||
-        next >= _playlistQueueIndexes.length) {
+    if (next == null || next == player.currentIndex || next >= _rows.length) {
       return null;
     }
-    final row = _playlistQueueIndexes[next];
-    if (row < 0 || row >= _queue.length) return null;
+    final row = _rows[next].queueIndex;
+    if (row >= _queue.length) return null;
     final gain = _clampGain(_queue[row].gain);
     return (gain - _gain).abs() < 0.001 ? null : gain;
   }
@@ -640,8 +741,15 @@ class AudioEngine {
         return true;
       case MediaCommand.skipToNext:
         if (player == null || _queue.isEmpty) return false;
-        final next = _manualRelativeIndex(player, 1);
-        if (next != null) {
+        if (player.processingState == ProcessingState.completed &&
+            _upcoming().isNotEmpty) {
+          _playbackWanted = true;
+          _retainPlayback();
+          await _continueQueue(player);
+          return true;
+        }
+        final next = _playlistIndex + 1;
+        if (next < _rows.length) {
           await player.seek(Duration.zero, index: next);
         } else {
           _playbackWanted = false;
@@ -651,14 +759,14 @@ class AudioEngine {
         return true;
       case MediaCommand.skipToPrevious:
         if (player == null || _queue.isEmpty) return false;
-        if (player.position > const Duration(seconds: 5)) {
+        // A rewind stays on this decoder. An earlier row is not in its
+        // playlist, so the app selects it like any other row.
+        if (player.position > const Duration(seconds: 5) ||
+            (_queueIndex == 0 && _repeatMode != AudioRepeatMode.queue)) {
           await _seekCurrent(player, Duration.zero);
-        } else if (_manualRelativeIndex(player, -1) case final previous?) {
-          await player.seek(Duration.zero, index: previous);
-        } else {
-          await _seekCurrent(player, Duration.zero);
+          return true;
         }
-        return true;
+        return false;
       case MediaCommand.seekTo:
         if (player == null || seekPosition == null) return false;
         await _seekCurrent(player, seekPosition);
@@ -712,36 +820,19 @@ class AudioEngine {
     );
   }
 
-  AudioSource _source(String source) {
-    final uri = Uri.tryParse(source);
-    return uri?.scheme == "http" || uri?.scheme == "https"
-        ? AudioSource.uri(uri!)
-        : AudioSource.file(source);
-  }
+  /// Repeating the queue needs no native mode: its playlist wraps by itself.
+  LoopMode _loopMode(AudioRepeatMode mode) =>
+      mode == AudioRepeatMode.track ? LoopMode.one : LoopMode.off;
 
-  LoopMode _loopMode(AudioRepeatMode mode) => switch (mode) {
-    AudioRepeatMode.track => LoopMode.one,
-    AudioRepeatMode.queue => LoopMode.all,
-    AudioRepeatMode.off => LoopMode.off,
-  };
-
-  /// Prepares [sources] beside the active decoder and swaps them in when ready.
-  ///
-  /// Returns false, without swapping, when a queue edit that transfers the
-  /// playhead raced a native track transition. The caller must rebuild the
-  /// edit around the new active track.
-  Future<bool> _select({
-    required List<AudioSource> sources,
+  /// Prepares [rows], the playing row first, beside the active decoder and
+  /// swaps them in when ready, so the old selection keeps playing until then.
+  Future<void> _select({
+    required List<_NativeRow> rows,
     required List<AudioQueueItem> queue,
-    required List<int> queueIndexes,
-    required int initialIndex,
-    required String? activeSource,
-    required String? activeTrackId,
     required int generation,
     required AudioRepeatMode repeatMode,
     required bool autoplay,
     required Duration position,
-    required bool transferPlayhead,
     required double gain,
   }) async {
     final token = ++_loadToken;
@@ -750,64 +841,49 @@ class AudioEngine {
     if (autoplay) _retainPlayback();
     final candidate = _newPlayer();
     _preparingPlayer = candidate;
-    // A queue edit continues the playing track at its current level and
-    // fades to a new gain after the swap; a new selection starts at its own.
-    _preparingGain = transferPlayhead ? _gain : _clampGain(gain);
+    _preparingGain = _clampGain(gain);
     try {
       await _ensureSession();
       await _applyLevel(candidate, _level(_preparingGain));
-      await candidate.setLoopMode(
-        queueIndexes.contains(-1) ? LoopMode.off : _loopMode(repeatMode),
-      );
+      await candidate.setLoopMode(_loopMode(repeatMode));
       final duration = await candidate
           .setAudioSources(
-            sources,
-            initialIndex: initialIndex,
+            [for (final row in rows) AudioSource.file(row.source)],
+            initialIndex: 0,
             initialPosition: position < Duration.zero
                 ? Duration.zero
                 : position,
           )
           .timeout(const Duration(seconds: 20));
-      if (token != _loadToken) return true;
+      if (token != _loadToken) return;
       final previous = _player;
-      if (transferPlayhead && previous != null) {
-        // Queue edits prepare while the old player is still moving. Transfer
-        // its latest playhead rather than the position captured at request time.
-        await candidate.seek(previous.position);
-        if (token != _loadToken) return true;
-        // The edit was laid out around the track that was active when it was
-        // requested. A native transition since then would revert the queue.
-        if (_generation != generation) return false;
-      }
+      final active = rows.first;
       _preparingPlayer = null;
       _cancelSubscriptionsSoon();
       _player = candidate;
       _queue = queue;
       _repeatMode = repeatMode;
-      _playlistQueueIndexes = queueIndexes;
-      _playlistIndex = initialIndex;
-      _queueIndex = queueIndexes[initialIndex];
-      _activeSource = activeSource;
-      _activeTrackId = activeTrackId;
+      _rows = rows;
+      // Whatever the old decoder is doing, even hung, is no longer relevant.
+      _rowSync = Future.value();
+      _rowsStale = false;
+      _queueFinished = false;
+      _playlistIndex = 0;
+      _queueIndex = active.queueIndex;
+      _detachedSuccessor = -1;
+      _activeSource = active.source;
+      _activeTrackId = active.trackId;
       _generation = generation;
       _reportedErrorGeneration = null;
       _pendingLoadedGeneration = null;
       _positionBucket = -1;
       _reportedDuration = null;
       _listen(candidate);
-      if (transferPlayhead) {
-        _setPlayerVolume(_appliedVolume);
-        _applyGain(gain, fade: true);
-      } else {
-        // The candidate was prepared at this level.
-        _cancelRamp();
-        _gain = _preparingGain;
-        _appliedVolume = _level(_gain);
-      }
-
-      if (!transferPlayhead && _queueIndex >= 0) {
-        _announceTrack(queue[_queueIndex]);
-      }
+      // The candidate was prepared at this level.
+      _cancelRamp();
+      _gain = _preparingGain;
+      _appliedVolume = _level(_gain);
+      _announceTrack(queue[_queueIndex]);
       if (previous != null) {
         try {
           await previous.pause();
@@ -821,9 +897,8 @@ class AudioEngine {
       _pendingSeekPosition = null;
       if (pendingSeek != null) await _seekCurrent(candidate, pendingSeek);
       if (token == _loadToken && _playbackWanted) _startPlaying(candidate);
-      return true;
     } catch (_) {
-      if (token != _loadToken) return true;
+      if (token != _loadToken) return;
       if (!identical(_player, candidate)) _restorePlaybackIntent();
       rethrow;
     } finally {
@@ -871,6 +946,12 @@ class AudioEngine {
             state.processingState == ProcessingState.idle) {
           return;
         }
+        final completed = state.processingState == ProcessingState.completed;
+        if (_queueFinished && !completed) {
+          // Playing again: edits held since the queue finished can land.
+          _queueFinished = false;
+          if (_rowsStale) _syncRowsInBackground(player);
+        }
         _onIndex(player, player.currentIndex);
         // Playing, pausing, buffering, and completing move the boundary.
         _planBoundary();
@@ -892,7 +973,16 @@ class AudioEngine {
           );
           return;
         }
-        final phase = state.processingState == ProcessingState.completed
+        // The decoder ran out of rows while the queue has more: this isolate
+        // fell behind, or an edit removed the row it had just moved to.
+        if (completed && !_queueFinished) {
+          if (_upcoming().isNotEmpty) {
+            unawaited(_continueQueue(player));
+            return;
+          }
+          _queueFinished = true;
+        }
+        final phase = completed
             ? AudioPlaybackState.completed
             : state.playing
             ? AudioPlaybackState.playing
@@ -905,20 +995,30 @@ class AudioEngine {
   void _onIndex(AudioPlayer player, int? index) {
     if (player != _player ||
         index == null ||
-        _removingGhost ||
         index == _playlistIndex ||
-        index >= _playlistQueueIndexes.length) {
+        index >= _rows.length) {
       return;
     }
-    final wasGhost =
-        _playlistIndex >= 0 &&
-        _playlistIndex < _playlistQueueIndexes.length &&
-        _playlistQueueIndexes[_playlistIndex] < 0;
+    final row = _rows[index];
     _playlistIndex = index;
-    final queueIndex = _playlistQueueIndexes[index];
-    if (queueIndex < 0 || queueIndex >= _queue.length) return;
-    _queueIndex = queueIndex;
-    final item = _queue[queueIndex];
+    // An edit waiting its turn may already have renumbered the queue.
+    final queue = _queue;
+    final position = reconcileNativeQueue(
+      queue.length,
+      (row) => queue[row].trackId,
+      row.trackId,
+      row.queueIndex,
+    );
+    _queueIndex = position.activeIndex;
+    _detachedSuccessor = position.detachedSuccessorIndex;
+    if (_queueIndex < 0) {
+      // Its row left the queue just as the decoder moved to it.
+      _activeSource = row.source;
+      _activeTrackId = row.trackId;
+      _syncRowsInBackground(player);
+      return;
+    }
+    final item = queue[_queueIndex];
     _activeSource = item.source;
     _activeTrackId = item.trackId;
     // Explicit app requests use even generations; native transitions use
@@ -931,28 +1031,39 @@ class AudioEngine {
     // The new track starts at its own level straight away.
     _applyGain(item.gain, fade: false);
     _announceTrack(item);
-    _event(AudioTrackChanged(item.trackId, queueIndex, _generation));
+    _event(AudioTrackChanged(item.trackId, _queueIndex, _generation));
     if (player.processingState == ProcessingState.ready) {
       _pendingLoadedGeneration = null;
       _announceLoaded(player, _generation);
     }
-    if (wasGhost) unawaited(_removeGhost(player));
+    // Slides the window forward.
+    _syncRowsInBackground(player);
   }
 
-  Future<void> _removeGhost(AudioPlayer player) async {
-    final ghost = _playlistQueueIndexes.indexOf(-1);
-    if (player != _player || ghost < 0) return;
-    _removingGhost = true;
+  void _syncRowsInBackground(AudioPlayer player) => unawaited(
+    _syncRows().catchError((Object error) => _playerError(player, error)),
+  );
+
+  /// Moves a decoder that ended early on to the queue's next row.
+  Future<void> _continueQueue(AudioPlayer player) async {
+    if (identical(_continuing, player)) return;
+    _continuing = player;
+    _queueFinished = false;
     try {
-      await player.removeAudioSourceAt(ghost);
-      if (player != _player) return;
-      _playlistQueueIndexes = List.of(_playlistQueueIndexes)..removeAt(ghost);
-      if (ghost < _playlistIndex) _playlistIndex--;
-      await player.setLoopMode(_loopMode(_repeatMode));
+      // A completed decoder drops play() until a pause clears it.
+      await player.pause();
+      // Released first, so the new rows reach the reload rather than a
+      // finished media_kit decoder.
+      if (_completionOutlivesSeek) await player.stop();
+      await _syncRows();
+      final next = _playlistIndex + 1;
+      if (player != _player || next >= _rows.length) return;
+      await player.seek(Duration.zero, index: next);
+      if (_playbackWanted) _startPlaying(player);
     } catch (error) {
       _playerError(player, error);
     } finally {
-      _removingGhost = false;
+      if (identical(_continuing, player)) _continuing = null;
     }
   }
 
@@ -983,6 +1094,14 @@ class AudioEngine {
   /// Starts the active decoder. just_audio ignores play() on a completed
   /// source, so a Play press after completion restarts it like a new request.
   Future<void> _resume(AudioPlayer player, {Duration? position}) async {
+    // Rows added since the queue finished come next, unless the caller asked
+    // for a place in the finished track.
+    if (player.processingState == ProcessingState.completed &&
+        (position == null || position <= Duration.zero) &&
+        _upcoming().isNotEmpty) {
+      await _continueQueue(player);
+      return;
+    }
     if (player.processingState == ProcessingState.completed && player.playing) {
       // just_audio keeps `playing` true after completion and drops play()
       // until a pause clears it; media_kit also stays at the end after a seek.
@@ -1000,81 +1119,6 @@ class AudioEngine {
   /// edits, which rebuild the retained decoder with the current intent.
   void _restorePlaybackIntent() {
     _playbackWanted = _player?.playing ?? false;
-  }
-
-  int? _manualRelativeIndex(AudioPlayer player, int offset) {
-    final current = player.currentIndex ?? _playlistIndex;
-    if (current < 0 || current >= _playlistQueueIndexes.length) return null;
-    final next = current + offset;
-    if (next >= 0 && next < _playlistQueueIndexes.length) return next;
-    if (_repeatMode == AudioRepeatMode.queue &&
-        _playlistQueueIndexes.isNotEmpty) {
-      return next < 0 ? _playlistQueueIndexes.length - 1 : 0;
-    }
-    return null;
-  }
-
-  Future<bool> _editQueue(
-    List<AudioQueueItem> items,
-    int requestedIndex,
-    AudioRepeatMode repeatMode,
-  ) async {
-    final old = _queue;
-    final unchanged =
-        old.length == items.length &&
-        List.generate(old.length, (index) => index).every(
-          (index) =>
-              old[index].trackId == items[index].trackId &&
-              old[index].source == items[index].source,
-        );
-    final player = _player;
-    if (unchanged && player != null && !_playlistQueueIndexes.contains(-1)) {
-      _queue = items;
-      _repeatMode = repeatMode;
-      if (_queueIndex >= 0 && _queueIndex < items.length) {
-        final gain = items[_queueIndex].gain;
-        if (gain != _gain) {
-          _applyGain(gain, fade: true);
-        } else {
-          // The next row, or its gain, may have changed.
-          _planBoundary();
-        }
-      }
-      await player.setLoopMode(_loopMode(repeatMode));
-      return true;
-    }
-    final activeSource = _activeSource;
-    if (player == null || activeSource == null) {
-      _queue = items;
-      _repeatMode = repeatMode;
-      return true;
-    }
-    final layout = nativePlaylistLayout(
-      items.length,
-      reconcileNativeQueue(
-        items.map((item) => item.trackId).toList(growable: false),
-        _activeTrackId,
-        requestedIndex,
-      ),
-    );
-    final active = layout.queueIndexes[layout.initialIndex];
-    return _select(
-      sources: [
-        for (final index in layout.queueIndexes)
-          _source(index < 0 ? activeSource : items[index].source),
-      ],
-      queue: items,
-      queueIndexes: layout.queueIndexes,
-      initialIndex: layout.initialIndex,
-      activeSource: activeSource,
-      activeTrackId: _activeTrackId,
-      generation: _generation,
-      repeatMode: repeatMode,
-      autoplay: _playbackWanted,
-      position: player.position,
-      transferPlayhead: true,
-      gain: active >= 0 ? items[active].gain : _gain,
-    );
   }
 
   void _cancelSubscriptionsSoon() {

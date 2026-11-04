@@ -147,9 +147,7 @@ class AppSettings {
     // jobs keep downloads responsive without overwhelming low-core devices.
     this.concurrentDownloads = 2,
     this.resumeSession = true,
-    this.notifications = true,
     this.notificationActionPair = "shuffle_favorite",
-    this.autoFocalPointLiveNotifications = false,
     this.accentColor = "violet",
     this.downloadHistoryDays = 30,
     this.normalizeLoudness = true,
@@ -165,9 +163,7 @@ class AppSettings {
   String audioQuality;
   int concurrentDownloads;
   bool resumeSession;
-  bool notifications;
   String notificationActionPair;
-  bool autoFocalPointLiveNotifications;
   String accentColor;
 
   /// Days a finished download stays in the history; 0 keeps it forever.
@@ -210,12 +206,9 @@ class AppSettings {
         defaults.concurrentDownloads,
       ).clamp(1, 8),
       resumeSession: _bool(data["resume_session"], defaults.resumeSession),
-      notifications: _bool(data["notifications"], defaults.notifications),
       notificationActionPair: notificationActionPairs.contains(pair)
           ? pair
           : defaults.notificationActionPair,
-      autoFocalPointLiveNotifications:
-          data["auto_focal_point_live_notifications"] == true,
       accentColor: _string(data["accent_color"], defaults.accentColor),
       downloadHistoryDays: switch (data["download_history_days"]) {
         final int days when downloadHistoryChoices.contains(days) => days,
@@ -242,9 +235,7 @@ class AppSettings {
     "audio_quality": audioQuality,
     "concurrent_downloads": concurrentDownloads,
     "resume_session": resumeSession,
-    "notifications": notifications,
     "notification_action_pair": notificationActionPair,
-    "auto_focal_point_live_notifications": autoFocalPointLiveNotifications,
     "accent_color": accentColor,
     "download_history_days": downloadHistoryDays,
     "normalize_loudness": normalizeLoudness,
@@ -283,8 +274,7 @@ class TrackDetails {
   String sourceName;
 
   factory TrackDetails.fromJson(Map<String, Object?> data) => TrackDetails(
-    // Before version 0.2 the uploader/channel was stored as an artist.
-    uploader: _string(data["uploader"] ?? data["artist"], ""),
+    uploader: _string(data["uploader"], ""),
     duration: _seconds(data["duration"]),
     thumbnail: _string(data["thumbnail"], ""),
     favorite: data["favorite"] == true,
@@ -322,9 +312,7 @@ class SearchResult {
     required this.url,
     required this.source,
     this.providerId = youtubeProviderId,
-    this.kind = "track",
     this.playlistTitle = "",
-    this.entryCount = 0,
   });
 
   final String id;
@@ -335,11 +323,7 @@ class SearchResult {
   final String url;
   final String source;
   final String providerId;
-  final String kind;
   final String playlistTitle;
-  final int entryCount;
-
-  bool get isPlaylist => kind == "playlist";
 
   SearchResult withPlaylistTitle(String title) => SearchResult(
     id: id,
@@ -350,16 +334,12 @@ class SearchResult {
     url: url,
     source: source,
     providerId: providerId,
-    kind: kind,
     playlistTitle: title,
-    entryCount: entryCount,
   );
 
-  MediaIdentity? get identity {
-    if (isPlaylist) return null;
-    return MediaIdentity.fromUrl(url) ??
-        (id.isNotEmpty ? MediaIdentity(providerId, id) : null);
-  }
+  MediaIdentity? get identity =>
+      MediaIdentity.fromUrl(url) ??
+      (id.isNotEmpty ? MediaIdentity(providerId, id) : null);
 }
 
 class DownloadRecord {
@@ -370,7 +350,6 @@ class DownloadRecord {
     this.uploader = "",
     this.thumbnail = "",
     this.source = youtubeMusicName,
-    this.kind = "track",
     this.status = DownloadStatus.queued,
     this.progress = 0,
     this.filename = "",
@@ -394,7 +373,6 @@ class DownloadRecord {
   String uploader;
   String thumbnail;
   String source;
-  String kind;
   DownloadStatus status;
   double progress;
   String filename;
@@ -403,6 +381,10 @@ class DownloadRecord {
   String error;
   String errorKind;
   String recovery;
+
+  /// Whether only a newer download engine can make this download work.
+  bool get needsEngineUpdate =>
+      status.isUnsuccessful && recovery == "update_downloader";
   double createdAt;
   double completedAt;
   List<String> trackIds;
@@ -414,10 +396,9 @@ class DownloadRecord {
     id: _string(data["id"], ""),
     url: _string(data["url"], ""),
     title: _string(data["title"], ""),
-    uploader: _string(data["uploader"] ?? data["artist"], ""),
+    uploader: _string(data["uploader"], ""),
     thumbnail: _string(data["thumbnail"], ""),
     source: _string(data["source"], youtubeMusicName),
-    kind: _string(data["kind"], "track"),
     status: DownloadStatus.parse(data["status"]),
     progress: _double(data["progress"], 0).clamp(0.0, 1.0),
     filename: _string(data["filename"], ""),
@@ -445,7 +426,6 @@ class DownloadRecord {
     "uploader": uploader,
     "thumbnail": thumbnail,
     "source": source,
-    "kind": kind,
     "status": status.name,
     "progress": progress,
     "filename": filename,

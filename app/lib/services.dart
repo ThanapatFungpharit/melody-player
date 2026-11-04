@@ -16,8 +16,7 @@ import "application/store.dart";
 import "application/thumbnails.dart";
 import "core/library/manager.dart";
 import "audio/audio_backend.dart" show audioLimiterHeadroomDb, audioMaxBoostDb;
-import "core/loudness.dart"
-    show ffmpegAudioHasher, ffmpegExecutable, ffmpegLoudnessMeter;
+import "core/loudness.dart" show ffmpegExecutable, ffmpegLoudnessMeter;
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
 import "package:melody_audio/melody_audio.dart"
     show useNotificationArtworkDirectory;
@@ -75,33 +74,22 @@ class AppServices {
   }) async {
     onStage?.call("Finding your music");
     final paths = await AppPaths.resolve();
-    final legacy = LegacyLayout(paths);
-    // Before anything opens a folder that moved.
-    await relocateLegacyFolders(legacy);
+    requireSupportedDataFolder(paths);
+    await removeRetiredFiles(paths);
+    mergeStateDatabase(paths);
     useNotificationArtworkDirectory(paths.notificationArtworkCache);
-    final storesExisted =
-        File(paths.stateDatabase).existsSync() &&
-        File(paths.libraryDatabase).existsSync();
     final store = ApplicationStore.open(
-      paths.stateDatabase,
+      paths.database,
       defaultDownloadDirectory: paths.defaultMusicDirectory,
-      legacyPath: legacy.stateJson,
     );
     onStoreReady?.call(store);
     onStage?.call("Opening your library");
     final manager = MusicManager.open(
-      paths.libraryDatabase,
+      paths.database,
       store.settings.downloadDirectory,
       additionalMusicFolders: [?paths.publicMusicRoot],
-      legacyMetadataPath: legacy.libraryMmdb,
-      syncInBackground: true,
       moveJournal: paths.musicMoveJournal,
-    );
-    await upgradeLegacyState(
-      legacy,
-      store,
-      manager,
-      storesExisted: storesExisted,
+      checkIntegrity: false,
     );
     onStage?.call("Starting the music engine");
     const packages = [ytDlpRuntimeInfo, ytMusicRuntimeInfo];
@@ -130,14 +118,13 @@ class AppServices {
       cacheDirectory: paths.ytDlpCache,
       cookieFile: paths.cookieFile,
     );
-    final catalog = MusicCatalog(worker, sharedOptions);
+    final catalog = MusicCatalog(worker);
     final lyrics = LyricsLibrary(paths.lyrics, catalog.lyrics);
     final lyricsEmbedder = Platform.isAndroid
         ? null
         : LyricsEmbedder(
             manager,
             lyrics,
-            store,
             (source, target, tags) => worker.tag(
               source: source,
               target: target,
@@ -164,17 +151,14 @@ class AppServices {
       worker,
       thumbnails: thumbnails,
       lyrics: lyrics,
-      // Download options apply from the next launch (Settings says so).
-      sharedOptions: sharedOptions(),
+      sharedOptions: sharedOptions,
       stagingDirectory: paths.downloadStaging,
-      receiptDirectory: paths.downloadReceipts,
     );
     final ffmpeg = ffmpegExecutable(paths.ffmpegLocation);
     final loudness = await LoudnessNormalizer.open(
       manager,
       paths.loudnessCache,
       ffmpegLoudnessMeter(ffmpeg),
-      hasher: ffmpegAudioHasher(ffmpeg),
       enabled: store.settings.normalizeLoudness,
       targetLufs: store.settings.loudnessTarget.toDouble(),
       maxBoostDb: audioMaxBoostDb,
@@ -202,8 +186,7 @@ class AppServices {
 
   /// Startup housekeeping that needs no ordering: temporary files a crash
   /// left mid-write (in Melody's data and beside library tracks), and
-  /// yt-dlp's cache. Download staging and receipts are the download
-  /// coordinator's.
+  /// yt-dlp's cache. Download staging is the download coordinator's.
   static Future<void> _removeLeftovers(
     AppPaths paths,
     MusicManager manager,

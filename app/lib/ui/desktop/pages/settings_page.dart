@@ -1,7 +1,6 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
-import "../../shared/dialogs.dart";
 import "../../shared/settings_sections.dart";
 import "../../shared/theme.dart";
 import "../controls.dart";
@@ -20,8 +19,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
   @override
   void initState() {
     super.initState();
-    widget.app.settingsDraft.reset();
-    widget.app.settingsDraft.refreshPackageStatus();
+    widget.app.settingsControls.reset();
+    widget.app.settingsControls.refreshPackageStatus();
   }
 
   @override
@@ -45,7 +44,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
       ),
     );
     return ListenableBuilder(
-      listenable: app.settingsDraft,
+      listenable: app.settingsControls,
       builder: (context, _) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         spacing: 20,
@@ -78,37 +77,6 @@ class _SettingsPanelState extends State<SettingsPanel> {
                   ),
                 ],
               ),
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.only(top: 16),
-            decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: scheme.outlineVariant)),
-            ),
-            child: Row(
-              spacing: 10,
-              children: [
-                Icon(
-                  Icons.lock_outline_rounded,
-                  size: 16,
-                  color: scheme.onSurfaceVariant,
-                ),
-                Expanded(
-                  child: Text(
-                    "Changes are saved locally on this device.",
-                    style: context.text.bodySmall,
-                  ),
-                ),
-                TextButton(
-                  onPressed: app.settingsDraft.cancel,
-                  child: const Text("Cancel"),
-                ),
-                FilledButton.icon(
-                  onPressed: () => saveSettings(context, app),
-                  icon: const Icon(Icons.check_rounded, size: 20),
-                  label: const Text("Save settings"),
-                ),
-              ],
             ),
           ),
         ],

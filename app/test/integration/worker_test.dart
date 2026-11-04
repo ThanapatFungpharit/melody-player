@@ -14,6 +14,7 @@ import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:melody/worker/transport.dart";
 import "package:melody/worker/worker_client.dart";
 import "package:path/path.dart" as p;
@@ -68,7 +69,7 @@ void main() {
   test(
     "lyrics come from YouTube Music",
     () async {
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final song = (await catalog.search(
         "Daft Punk Get Lucky",
         limit: 1,
@@ -84,7 +85,7 @@ void main() {
   test(
     "search results map to YouTube Music tracks",
     () async {
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final results = await catalog.search("Debussy Clair de Lune", limit: 3);
       expect(results, isNotEmpty);
       expect(
@@ -108,7 +109,7 @@ void main() {
       );
       final manager = MusicManager.open(p.join(root.path, "library.db"), music);
       final thumbnails = ThumbnailCache(p.join(root.path, "cache", "artwork"));
-      final catalog = MusicCatalog(worker, () => {});
+      final catalog = MusicCatalog(worker);
       final result = (await catalog.search(
         "Erik Satie Gymnopedie 1",
         limit: 1,
@@ -119,12 +120,11 @@ void main() {
         store.settings,
         worker,
         thumbnails: thumbnails,
-        sharedOptions: sharedYtDlpOptions(
+        sharedOptions: () => sharedYtDlpOptions(
           ffmpegLocation: ffmpeg,
           cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
         ),
         stagingDirectory: p.join(root.path, "downloads", "staging"),
-        receiptDirectory: p.join(root.path, "downloads", "receipts"),
       );
       final finished = Completer<DownloadRecord>();
       coordinator.onRecord = (record) {
@@ -139,8 +139,8 @@ void main() {
       final path = manager.trackPath(track.id);
       expect(p.extension(path), ".mp3");
       expect(await readEmbeddedArtwork(path), isNotEmpty);
-      expect(thumbnails.cachedPath(result.thumbnail), isNotNull);
-      expect(await manager.checkTrackIntegrity(track.id), isNull);
+      expect(thumbnails.cachedPath(track.id), isNotNull);
+      expect(track.contentHash, await sha256File(path));
       // yt-dlp's intermediate files went with the staging folder.
       expect([
         for (final entity in Directory(music).listSync())
@@ -169,7 +169,7 @@ void main() {
         );
         store.saveSettings(store.settings..audioFormat = format);
         final manager = MusicManager.open(p.join(folder, "library.db"), music);
-        final catalog = MusicCatalog(worker, () => {});
+        final catalog = MusicCatalog(worker);
         final result = (await catalog.search(
           "Daft Punk Get Lucky",
           limit: 1,
@@ -180,12 +180,11 @@ void main() {
           store.settings,
           worker,
           lyrics: LyricsLibrary(p.join(folder, "lyrics"), catalog.lyrics),
-          sharedOptions: sharedYtDlpOptions(
+          sharedOptions: () => sharedYtDlpOptions(
             ffmpegLocation: ffmpeg,
             cacheDirectory: p.join(root.path, "cache", "yt-dlp"),
           ),
           stagingDirectory: p.join(root.path, "downloads", "staging"),
-          receiptDirectory: p.join(root.path, "downloads", "receipts"),
         );
         final finished = Completer<DownloadRecord>();
         coordinator.onRecord = (record) {
@@ -205,7 +204,7 @@ void main() {
         expect(embedded.synced, isTrue);
         expect(embedded.lines.length, greaterThan(10));
         expect(await readEmbeddedArtwork(path), isNotEmpty);
-        expect(await manager.checkTrackIntegrity(id), isNull);
+        expect(manager.getTrack(id).contentHash, await sha256File(path));
         manager.close();
         store.close();
       },

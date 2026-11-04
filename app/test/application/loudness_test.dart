@@ -18,30 +18,13 @@ void main() {
   /// Integrated loudness by file name; a missing name cannot be measured.
   late Map<String, double> loudness;
   late List<String> measured;
-  late List<String> hashed;
-
-  /// The fake files' audio is their text before any `#`; what follows is
-  /// tags.
-  Future<String> audioOf(String path) async =>
-      (await File(path).readAsString()).split("#").first;
 
   Future<LoudnessMeasurement> meter(String path, {Future<void>? cancel}) async {
     final name = p.basename(path);
     measured.add(name);
     final lufs = loudness[name];
     if (lufs == null) throw const LoudnessUnmeasurable("Invalid data");
-    return LoudnessMeasurement(
-      integratedLufs: lufs,
-      truePeakDb: -3,
-      audioHash: await audioOf(path),
-    );
-  }
-
-  Future<String> hasher(String path, {Future<void>? cancel}) async {
-    hashed.add(p.basename(path));
-    final audio = await audioOf(path);
-    if (audio.isEmpty) throw const LoudnessUnmeasurable("No audio");
-    return audio;
+    return LoudnessMeasurement(integratedLufs: lufs, truePeakDb: -3);
   }
 
   Future<LoudnessNormalizer> open({
@@ -53,7 +36,6 @@ void main() {
     manager,
     cache,
     using ?? meter,
-    hasher: hasher,
     enabled: enabled,
     targetLufs: -14,
     maxBoostDb: maxBoostDb,
@@ -76,7 +58,6 @@ void main() {
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
     loudness = {};
     measured = [];
-    hashed = [];
   });
 
   tearDown(() async {
@@ -100,7 +81,6 @@ void main() {
     expect(normalizer.gainFor(loud), closeTo(linearGain(-10), 1e-9));
     normalizer.configure(enabled: false, targetLufs: -18);
     expect(normalizer.gainFor(loud), 1);
-    expect(normalizer.fallbackGain, 1);
     await normalizer.close();
   });
 
@@ -121,7 +101,6 @@ void main() {
 
       // Gains -4, -3, and 0 dB: the median is -3 dB.
       expect(normalizer.gainFor(ids[3]), closeTo(linearGain(-3), 1e-9));
-      expect(normalizer.fallbackGain, closeTo(linearGain(-3), 1e-9));
       await normalizer.close();
     },
   );
@@ -149,71 +128,6 @@ void main() {
     // To the target; the faint one by as much as 6 dB of limiting allows.
     expect(normalizer.gainFor(quiet), closeTo(linearGain(4), 1e-9));
     expect(normalizer.gainFor(faint), closeTo(linearGain(8), 1e-9));
-    await normalizer.close();
-  });
-
-  test("rewriting only the tags keeps the measurement", () async {
-    final id = await track("song.mp3");
-    loudness["song.mp3"] = -9;
-    var normalizer = await open();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-    final gain = normalizer.gainFor(id);
-    // Let the first pass's announcement go out.
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    final changes = <LoudnessChange>[];
-    normalizer.changes.listen(changes.add);
-
-    // The lyrics embedder rewrites the file: new size and time, same audio.
-    final path = manager.trackPath(id);
-    await File(path).writeAsString("song.mp3#USLT lyrics and a cover");
-    await File(path).setLastModified(DateTime(2030));
-    measured.clear();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-    expect(hashed, ["song.mp3"]);
-    expect(measured, isEmpty);
-    expect(normalizer.gainFor(id), gain);
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    expect(changes, isEmpty);
-    await normalizer.close();
-
-    // The cache follows the rewritten file, so the next launch does nothing.
-    hashed.clear();
-    normalizer = await open();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-    expect(hashed, isEmpty);
-    expect(measured, isEmpty);
-    await normalizer.close();
-  });
-
-  test("new audio, or audio that cannot be hashed, is measured", () async {
-    final id = await track("song.mp3");
-    loudness["song.mp3"] = -9;
-    final normalizer = await open();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-
-    final path = manager.trackPath(id);
-    await File(path).writeAsString("a remaster#same tags");
-    await File(path).setLastModified(DateTime(2030));
-    loudness["song.mp3"] = -12;
-    measured.clear();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-    expect(measured, ["song.mp3"]);
-    expect(normalizer.gainFor(id), closeTo(linearGain(-2), 1e-9));
-
-    await File(path).writeAsString("#tags around broken audio");
-    await File(path).setLastModified(DateTime(2031));
-    loudness.remove("song.mp3");
-    measured.clear();
-    await normalizer.analyzeLibrary();
-    await normalizer.idle;
-    // Measured, which records the file as unmeasurable.
-    expect(measured, ["song.mp3"]);
-    expect(normalizer.gainFor(id), normalizer.fallbackGain);
     await normalizer.close();
   });
 

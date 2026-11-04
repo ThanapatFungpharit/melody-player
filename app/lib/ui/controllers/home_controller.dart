@@ -85,16 +85,9 @@ class HomeController extends ChangeNotifier {
     return (manager.counts().$1, recent, favorites);
   }
 
-  void playLibrary() => app.playback.playTracks([
-    for (final track in app.services.manager.listTracks()) track.id,
-  ]);
-
   void shuffleLibrary() => app.playback.playTracksShuffled([
     for (final track in app.services.manager.listTracks()) track.id,
   ]);
-
-  void queueLibrary() =>
-      queueCollection(app, app.services.manager.listTracks());
 
   /// Loads a related mix without blocking the Home view, returning whether
   /// the visible state changed. A [quiet] refresh keeps the current mix on
@@ -185,8 +178,7 @@ class HomeController extends ChangeNotifier {
           final before = results.length;
           for (final result in fetched) {
             final key = result.identity?.key ?? result.url;
-            if (result.isPlaylist ||
-                key.isEmpty ||
+            if (key.isEmpty ||
                 seen.contains(key) ||
                 app.services.manager.findTrackBySource(result.url) != null) {
               continue;

@@ -2,18 +2,18 @@ import "dart:convert";
 import "dart:io";
 import "dart:isolate";
 
-import "package:crypto/crypto.dart";
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
 
 import "../core/artwork.dart" show maxArtworkBytes;
 import "../core/storage.dart";
 
-/// Durable, offline-first thumbnail storage keyed by remote URL.
+/// Cover art for library tracks, one file per track ID.
 ///
-/// The authoritative artwork is embedded in each downloaded media file. This
-/// cache holds a copy derived from those verified bytes so the UI and the
-/// system media session can show artwork without the network.
+/// The authoritative artwork is embedded in each media file. This cache holds
+/// a copy so the UI and the system media session can show it without opening
+/// the file or using the network. An empty entry records that the file holds
+/// none, so it is not read again. Everything here can be deleted.
 class ThumbnailCache {
   /// A cache that discovers entries on first lookup. Prefer [open], which
   /// indexes the folder once off the UI isolate.
@@ -25,10 +25,10 @@ class ThumbnailCache {
     final cache = ThumbnailCache(directory);
     await Directory(directory).create(recursive: true);
     try {
-      final keys = await Isolate.run(() => _scanEntries(directory));
-      for (final key in keys) {
+      final entries = await Isolate.run(() => _scanEntries(directory));
+      for (final MapEntry(:key, :value) in entries.entries) {
         // An answer recorded while the scan ran is newer.
-        cache._present.putIfAbsent(key, () => true);
+        cache._entries.putIfAbsent(key, () => value);
       }
       cache._indexed = true;
     } on FileSystemException catch (error) {
@@ -39,119 +39,103 @@ class ThumbnailCache {
 
   final String directory;
 
-  /// Whether each entry exists. Only this object writes the directory, so an
-  /// answer stays valid until it changes that entry. Once [_indexed], a key
-  /// missing here has no entry; before that, a lookup asks the disk once and
-  /// remembers the answer.
-  final Map<String, bool> _present = {};
+  /// Each track with an entry, and whether the entry holds artwork. Only this
+  /// object writes the directory, so an answer stays valid until it changes
+  /// that entry. Once [_indexed], a track missing here has no entry; before
+  /// that, a lookup asks the disk once and remembers the answer.
+  final Map<String, bool?> _entries = {};
   bool _indexed = false;
 
-  /// Entry keys by URL. Artwork widgets ask on every build and queue
-  /// activation asks for every item, so the hash is remembered. Bounded
-  /// because search results add URLs.
-  final Map<String, String?> _keys = {};
-  static const _maxKeys = 1024;
+  /// The directory as a file URI ending in a slash; entry names need no
+  /// escaping, so every entry's URI is this plus its name.
+  late final String _directoryUri = Uri.directory(
+    File(directory).absolute.path,
+  ).toString();
 
-  static String? _key(String url) {
-    final trimmed = url.trim();
-    final uri = Uri.tryParse(trimmed);
-    final scheme = uri?.scheme.toLowerCase();
-    if ((scheme != "http" && scheme != "https") || (uri?.host ?? "").isEmpty) {
-      return null;
-    }
-    return sha256.convert(utf8.encode(trimmed)).toString();
-  }
+  String _entryPath(String trackId) => p.join(directory, "$trackId.thumb");
 
-  String? _keyFor(String url) {
-    if (_keys.containsKey(url)) return _keys[url];
-    if (_keys.length >= _maxKeys) _keys.clear();
-    return _keys[url] = _key(url);
-  }
+  bool? _entry(String trackId) => _indexed
+      ? _entries[trackId]
+      : _entries.containsKey(trackId)
+      ? _entries[trackId]
+      : _entries[trackId] = _readEntry(_entryPath(trackId));
 
-  String _entryPath(String key) => p.join(directory, "$key.thumb");
+  /// Whether the track's file has been read for artwork, with or without any.
+  bool known(String trackId) => _entry(trackId) != null;
 
-  /// The durable entry for a remote URL, without touching the network.
-  String? cachedPath(String url) {
-    final key = _keyFor(url);
-    if (key == null) return null;
-    final present = _indexed
-        ? _present[key] ?? false
-        : _present[key] ??= _entryExists(_entryPath(key));
-    return present ? _entryPath(key) : null;
-  }
+  /// The cached artwork of a track, without touching the network.
+  String? cachedPath(String trackId) =>
+      _entry(trackId) == true ? _entryPath(trackId) : null;
 
-  static bool _entryExists(String path) {
+  /// The cached artwork of a track as a file URI, for system media controls.
+  String? artworkUri(String trackId) =>
+      _entry(trackId) == true ? "$_directoryUri$trackId.thumb" : null;
+
+  /// Whether an entry holds artwork; null without an entry.
+  static bool? _readEntry(String path) {
     try {
       final status = File(path).statSync();
-      return status.type == FileSystemEntityType.file && status.size > 0;
+      return status.type == FileSystemEntityType.file ? status.size > 0 : null;
     } on FileSystemException {
-      return false;
+      return null;
     }
   }
 
-  static List<String> _scanEntries(String directory) => [
+  static Map<String, bool> _scanEntries(String directory) => {
     for (final entity in Directory(directory).listSync(followLinks: false))
       if (entity is File && _entryName.hasMatch(p.basename(entity.path)))
-        if (_entryExists(entity.path)) p.basenameWithoutExtension(entity.path),
-  ];
+        p.basenameWithoutExtension(entity.path): ?_readEntry(entity.path),
+  };
 
-  void _forget(String key) {
+  void _forget(String trackId) {
     if (_indexed) {
-      _present.remove(key);
+      _entries.remove(trackId);
     } else {
-      _present[key] = false;
+      _entries[trackId] = null;
     }
   }
 
-  /// Artwork for an operating-system media session, as a file URI when a
-  /// cached or local copy exists.
-  String artworkUri(String source) {
-    var path = cachedPath(source);
-    if (path == null && source.isNotEmpty && _key(source) == null) {
-      // Reattached native sessions report local paths.
-      if (p.isAbsolute(source) && File(source).existsSync()) path = source;
-    }
-    return path != null
-        ? Uri.file(File(path).absolute.path).toString()
-        : source;
-  }
-
-  /// Drops the entry for a remote URL. Failures only log.
-  Future<void> remove(String url) async {
-    final key = _key(url);
-    if (key == null) return;
+  /// Drops a track's entry. Failures only log.
+  Future<void> remove(String trackId) async {
     try {
-      await File(_entryPath(key)).delete();
+      await File(_entryPath(trackId)).delete();
     } on PathNotFoundException {
       // Already gone.
     } on FileSystemException catch (error) {
       debugPrint("Could not remove a cached thumbnail: $error");
     } finally {
-      _forget(key);
+      _forget(trackId);
     }
   }
 
-  /// Deletes cached entries for every URL not in [urls], such as artwork of
-  /// a download whose registration reused an existing track. Other files in
-  /// the folder are left alone. Returns how many entries were removed.
-  Future<int> retainOnly(Iterable<String> urls) async {
-    final keep = {
-      for (final url in urls)
-        if (_key(url) case final key?) "$key.thumb",
-    };
-    var removed = 0;
+  /// Deletes the entries of every track not in [trackIds], and those of earlier
+  /// releases, which were named after a URL's hash. Other files in the folder
+  /// are left alone. Returns how many entries were removed. Runs in a
+  /// background isolate: it lists the folder.
+  Future<int> retainOnly(Iterable<String> trackIds) async {
+    final keep = {for (final id in trackIds) "$id.thumb"};
+    final removed = await _pruneEntries(directory, keep);
+    removed.forEach(_forget);
+    return removed.length;
+  }
+
+  /// Top-level in effect: the closure must not capture the cache.
+  static Future<List<String>> _pruneEntries(
+    String directory,
+    Set<String> keep,
+  ) => Isolate.run(() {
+    final removed = <String>[];
     try {
-      await for (final entity in Directory(directory).list()) {
+      for (final entity in Directory(directory).listSync(followLinks: false)) {
         final name = p.basename(entity.path);
         if (entity is! File ||
-            !_entryName.hasMatch(name) ||
+            !(_entryName.hasMatch(name) || _legacyEntryName.hasMatch(name)) ||
             keep.contains(name)) {
           continue;
         }
         try {
-          await entity.delete();
-          removed++;
-          _forget(p.basenameWithoutExtension(name));
+          entity.deleteSync();
+          removed.add(p.basenameWithoutExtension(name));
         } on FileSystemException catch (error) {
           debugPrint("Could not remove a cached thumbnail: $error");
         }
@@ -160,26 +144,24 @@ class ThumbnailCache {
       debugPrint("Could not prune cached thumbnails: $error");
     }
     return removed;
-  }
+  });
 
-  static final _entryName = RegExp(r"^[0-9a-f]{64}\.thumb$");
+  static final _entryName = RegExp(r"^[0-9a-f-]{36}\.thumb$");
+  static final _legacyEntryName = RegExp(r"^[0-9a-f]{64}\.thumb$");
 
-  /// Atomically retains image bytes already downloaded with the media.
-  Future<bool> storeBytes(String url, Uint8List data) async {
-    final key = _key(url);
-    if (key == null || data.isEmpty) return false;
-    if (!isSupportedImage(data)) {
-      debugPrint("Downloaded thumbnail has an unsupported image format");
-      return false;
+  /// Atomically keeps a track's artwork, or records that it has none when
+  /// [data] is empty or not an image Melody can show.
+  Future<void> store(String trackId, Uint8List data) async {
+    final usable = isSupportedImage(data);
+    if (!usable && data.isNotEmpty) {
+      debugPrint("Artwork of $trackId has an unsupported image format");
     }
     try {
       // Replace even a non-empty entry: an earlier write may be corrupt.
-      await atomicWrite(_entryPath(key), data);
-      _present[key] = true;
-      return true;
+      await atomicWrite(_entryPath(trackId), usable ? data : const []);
+      _entries[trackId] = usable;
     } on FileSystemException catch (error) {
       debugPrint("Could not cache thumbnail: $error");
-      return false;
     }
   }
 }

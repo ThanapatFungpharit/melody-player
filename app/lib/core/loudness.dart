@@ -14,7 +14,6 @@ class LoudnessMeasurement {
   const LoudnessMeasurement({
     required this.integratedLufs,
     required this.truePeakDb,
-    this.audioHash,
   });
 
   /// Integrated loudness in LUFS. FFmpeg reports -70 (the absolute gate)
@@ -24,9 +23,6 @@ class LoudnessMeasurement {
   /// True peak in dBTP (dBFS of the 4x oversampled signal); negative
   /// infinity for digital silence.
   final double truePeakDb;
-
-  /// The [AudioHasher] identity of the measured audio, when known.
-  final String? audioHash;
 
   /// Nothing rose above the absolute gate: there is no loudness to match.
   bool get silent => integratedLufs <= silenceLufs;
@@ -57,13 +53,6 @@ class LoudnessCancelled implements Exception {
 /// file.
 typedef LoudnessMeter =
     Future<LoudnessMeasurement> Function(String path, {Future<void>? cancel});
-
-/// Identifies the audio of one file regardless of its tags: a hash of the
-/// first audio stream's encoded packets. Rewriting tags, lyrics, or cover
-/// art keeps it; re-encoding or replacing the audio changes it. Throws as
-/// [LoudnessMeter] does.
-typedef AudioHasher =
-    Future<String> Function(String path, {Future<void>? cancel});
 
 /// The FFmpeg executable for yt-dlp's `ffmpeg_location` (see `AppPaths`): a
 /// directory on desktop, the executable itself on Android, or null to look
@@ -99,56 +88,16 @@ LoudnessMeter ffmpegLoudnessMeter(
       "-f",
       "null",
       "-",
-      ..._hashOutput,
     ],
     cancel: cancel,
     timeout: timeout,
   );
   final measurement = run.exitCode == 0 ? parseEbur128Summary(run.log) : null;
   if (measurement == null) throw run.failure;
-  return LoudnessMeasurement(
-    integratedLufs: measurement.integratedLufs,
-    truePeakDb: measurement.truePeakDb,
-    audioHash: _audioHash(run.output),
-  );
+  return measurement;
 };
 
-/// An [AudioHasher] that reads the file's packets with FFmpeg without
-/// decoding them, which takes about as long as reading the file.
-AudioHasher ffmpegAudioHasher(
-  String executable, {
-  Duration timeout = const Duration(minutes: 2),
-}) => (path, {cancel}) async {
-  final run = await _runFfmpeg(
-    executable,
-    ["-i", path, ..._hashOutput],
-    cancel: cancel,
-    timeout: timeout,
-  );
-  final hash = run.exitCode == 0 ? _audioHash(run.output) : null;
-  if (hash == null) throw run.failure;
-  return hash;
-};
-
-/// An output that copies the first audio stream into FFmpeg's `streamhash`
-/// muxer, which prints `0,a,SHA256=<hex>` on stdout.
-const _hashOutput = [
-  "-map",
-  "0:a:0",
-  "-c",
-  "copy",
-  "-f",
-  "streamhash",
-  "-hash",
-  "sha256",
-  "-",
-];
-
-final _streamHash = RegExp(r"SHA256=([0-9a-f]{64})");
-
-String? _audioHash(String output) => _streamHash.firstMatch(output)?[1];
-
-typedef _FfmpegRun = ({int exitCode, String output, List<String> log});
+typedef _FfmpegRun = ({int exitCode, List<String> log});
 
 extension on _FfmpegRun {
   /// What FFmpeg said last, as the reason the file cannot be read.
@@ -162,7 +111,7 @@ extension on _FfmpegRun {
   );
 }
 
-/// Runs FFmpeg to completion, keeping its stdout and the tail of its log.
+/// Runs FFmpeg to completion, keeping the tail of its log.
 Future<_FfmpegRun> _runFfmpeg(
   String executable,
   List<String> arguments, {
@@ -184,11 +133,7 @@ Future<_FfmpegRun> _runFfmpeg(
         if (tail.length > 40) tail.removeAt(0);
       })
       .asFuture<void>();
-  final output = StringBuffer();
-  final stdoutDone = process.stdout
-      .transform(const Utf8Decoder(allowMalformed: true))
-      .listen(output.write)
-      .asFuture<void>();
+  final stdoutDone = process.stdout.drain<void>();
   var cancelled = false;
   unawaited(
     cancel?.then((_) {
@@ -205,7 +150,7 @@ Future<_FfmpegRun> _runFfmpeg(
   }
   if (cancelled) throw const LoudnessCancelled();
   await Future.wait([stderrDone, stdoutDone]);
-  return (exitCode: exitCode, output: "$output", log: tail);
+  return (exitCode: exitCode, log: tail);
 }
 
 final _integrated = RegExp(r"^\s*I:\s*(-?[\d.]+|-?inf|nan)\s*LUFS");

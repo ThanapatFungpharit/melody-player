@@ -28,7 +28,7 @@ enum LoudnessChange {
 typedef _Fingerprint = ({int size, int modified});
 
 class _Entry {
-  const _Entry(this.file, {this.measurement, this.error});
+  _Entry(this.file, {this.measurement, this.error});
 
   final _Fingerprint file;
   final LoudnessMeasurement? measurement;
@@ -36,10 +36,6 @@ class _Entry {
   /// Why FFmpeg could not measure the file; it is not tried again until
   /// the file changes.
   final String? error;
-
-  /// The same result for the file as it is now, when only its tags changed.
-  _Entry movedTo(_Fingerprint file) =>
-      _Entry(file, measurement: measurement, error: error);
 
   static _Entry? fromJson(Object? data) {
     if (data is! Map) return null;
@@ -58,10 +54,6 @@ class _Entry {
           truePeakDb: peak is num && peak.isFinite
               ? peak.toDouble()
               : double.negativeInfinity,
-          audioHash: switch (data["audio"]) {
-            final String hash => hash,
-            _ => null,
-          },
         ),
       );
     }
@@ -69,13 +61,16 @@ class _Entry {
     return error is String ? _Entry(file, error: error) : null;
   }
 
-  Map<String, Object?> toJson() => {
+  /// This entry's cache text. Kept, because the whole cache is written
+  /// every few seconds during a library pass while only new entries differ.
+  late final String json = jsonEncode(_toJson());
+
+  Map<String, Object?> _toJson() => {
     "size": file.size,
     "modified": file.modified,
     if (measurement case final measured?) ...{
       "lufs": measured.integratedLufs,
       if (measured.truePeakDb.isFinite) "peak": measured.truePeakDb,
-      "audio": ?measured.audioHash,
     },
     "error": ?error,
   };
@@ -100,7 +95,6 @@ class LoudnessNormalizer {
     required this._targetLufs,
     this.maxBoostDb = 0,
     this.limiterHeadroomDb = 0,
-    this._hasher,
     this.saveDelay = const Duration(seconds: 3),
     this.notifyDelay = const Duration(seconds: 1),
   });
@@ -114,7 +108,6 @@ class LoudnessNormalizer {
     required double targetLufs,
     double maxBoostDb = 0,
     double limiterHeadroomDb = 0,
-    AudioHasher? hasher,
     Duration saveDelay = const Duration(seconds: 3),
     Duration notifyDelay = const Duration(seconds: 1),
   }) async {
@@ -132,7 +125,6 @@ class LoudnessNormalizer {
       targetLufs: targetLufs,
       maxBoostDb: maxBoostDb,
       limiterHeadroomDb: limiterHeadroomDb,
-      hasher: hasher,
       saveDelay: saveDelay,
       notifyDelay: notifyDelay,
     ).._entries.addAll(entries);
@@ -141,10 +133,6 @@ class LoudnessNormalizer {
   final MusicManager _manager;
   final String _cachePath;
   final LoudnessMeter _meter;
-
-  /// Tells a tag-only rewrite (lyrics, cover art) from new audio, so it is
-  /// not measured again.
-  final AudioHasher? _hasher;
 
   /// How far a quiet track may be raised (the audio engine's limit here).
   final double maxBoostDb;
@@ -216,9 +204,6 @@ class LoudnessNormalizer {
     limiterHeadroomDb: limiterHeadroomDb,
   );
 
-  /// The factor for a track that is not measured, such as a stream.
-  double get fallbackGain => _enabled ? linearGain(_typicalGain()) : 1;
-
   /// The median gain of the measured, non-silent tracks; 0 dB before any.
   double _typicalGain() => _typicalGainDb ??= () {
     final gains = [
@@ -263,7 +248,7 @@ class LoudnessNormalizer {
       _typicalGainDb = null;
       _scheduleSave();
     }
-    final paths = _trackPaths(_manager.listTracks().map((track) => track.id));
+    final paths = _trackPaths(_manager.trackIds);
     final Map<String, _Fingerprint?> files;
     try {
       files = await _fingerprintAll(paths);
@@ -280,8 +265,8 @@ class LoudnessNormalizer {
   /// Queues tracks the library has but the cache has never seen, such as
   /// new downloads and imports. Needs no disk access.
   void analyzeNew() => analyze([
-    for (final track in _manager.listTracks())
-      if (!_entries.containsKey(track.id)) track.id,
+    for (final id in _manager.trackIds)
+      if (!_entries.containsKey(id)) id,
   ]);
 
   /// Completes once nothing is queued.
@@ -338,16 +323,8 @@ class LoudnessNormalizer {
     if (known?.file == file) return;
     _Entry entry;
     try {
-      final hash = known?.measurement?.audioHash;
-      if (hash != null &&
-          _hasher != null &&
-          await _sameAudio(path, hash, _hasher)) {
-        // Only the tags changed: keep the measurement for the new file.
-        entry = known!.movedTo(file);
-      } else {
-        final measurement = await _meter(path, cancel: _closing.future);
-        entry = _Entry(file, measurement: measurement);
-      }
+      final measurement = await _meter(path, cancel: _closing.future);
+      entry = _Entry(file, measurement: measurement);
     } on LoudnessUnmeasurable catch (error) {
       debugPrint("Loudness of $path cannot be measured: ${error.message}");
       entry = _Entry(file, error: error.message);
@@ -367,19 +344,8 @@ class LoudnessNormalizer {
     if (_closed || !_manager.hasTrack(trackId)) return;
     _entries[trackId] = entry;
     _scheduleSave();
-    if (identical(entry.measurement, known?.measurement)) return;
     _typicalGainDb = null;
     _scheduleNotify();
-  }
-
-  /// Whether the file at [path] still holds the audio hashed as [hash]. A
-  /// file whose audio cannot be read is measured, which records why.
-  Future<bool> _sameAudio(String path, String hash, AudioHasher hasher) async {
-    try {
-      return await hasher(path, cancel: _closing.future) == hash;
-    } on LoudnessUnmeasurable {
-      return false;
-    }
   }
 
   Map<String, String> _trackPaths(Iterable<String> trackIds) {
@@ -413,15 +379,19 @@ class LoudnessNormalizer {
   Future<void> _save() async {
     if (!_dirty) return;
     _dirty = false;
-    final json = jsonEncode({
-      "version": 1,
-      "tracks": {
-        for (final MapEntry(:key, :value) in _entries.entries)
-          key: value.toJson(),
-      },
-    });
+    final json = StringBuffer('{"version":1,"tracks":{');
+    var separator = "";
+    for (final MapEntry(:key, :value) in _entries.entries) {
+      json
+        ..write(separator)
+        ..write(jsonEncode(key))
+        ..write(":")
+        ..write(value.json);
+      separator = ",";
+    }
+    json.write("}}");
     try {
-      await atomicWrite(_cachePath, utf8.encode(json));
+      await atomicWrite(_cachePath, utf8.encode(json.toString()));
     } on Object catch (error) {
       // Only a cache: the measurements are taken again next launch.
       debugPrint("Could not save loudness measurements: $error");

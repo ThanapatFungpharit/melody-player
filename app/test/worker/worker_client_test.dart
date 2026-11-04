@@ -47,7 +47,7 @@ void main() {
         ),
       );
       await expectLater(
-        worker.extract("query", const {}),
+        worker.ytMusic("search", const {}),
         throwsA(isA<WorkerFailure>()),
       );
       expect(
@@ -121,7 +121,7 @@ void main() {
   test("a request that cannot be sent fails instead of hanging", () async {
     final worker = WorkerClient(_ScriptedTransport()..failSends = true);
     await expectLater(
-      worker.extract("query", const {}),
+      worker.ytMusic("search", const {}),
       throwsA(isA<WorkerFailure>()),
     );
     await worker.close();

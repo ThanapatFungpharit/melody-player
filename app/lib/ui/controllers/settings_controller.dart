@@ -14,17 +14,22 @@ import "../../core/errors.dart";
 import "../../core/media.dart";
 import "../../core/storage.dart" show deleteQuietly, samePath;
 
-/// In-progress settings choices and the save/reset workflows.
+/// What the Settings page changes. Every setting applies and is saved the
+/// moment it changes; only a new music folder waits to be confirmed, since it
+/// can move the whole library.
 class SettingsController extends ChangeNotifier {
   SettingsController(this.app) {
     reset();
   }
 
   final MelodyApp app;
-  late AppSettings draft;
-  ValidatedCookieFile? pendingCookie;
-  String pendingCookieName = "";
-  bool removeCookieRequested = false;
+
+  /// The music folder text as typed, not applied yet.
+  String folderInput = "";
+
+  /// The text the folder field starts from. It changes only from outside the
+  /// field, which rebuilds the field; typing never does.
+  String folderField = "";
 
   /// Status per worker package, keyed by package name.
   final Map<String, PackageStatus> packageStatus = {};
@@ -32,6 +37,7 @@ class SettingsController extends ChangeNotifier {
   /// Packages with an update check in progress.
   final Set<String> checkingPackages = {};
   bool cleaningUp = false;
+  bool writingLyrics = false;
   bool _statusRefreshPending = false;
 
   /// Whether the uploaded cookie file exists, checked asynchronously so
@@ -40,12 +46,9 @@ class SettingsController extends ChangeNotifier {
   int _cookieCheck = 0;
   bool _disposed = false;
 
-  /// Starts editing from the saved settings.
+  /// Starts from the saved settings.
   void reset() {
-    draft = app.settings.copy();
-    pendingCookie = null;
-    pendingCookieName = "";
-    removeCookieRequested = false;
+    folderInput = folderField = app.settings.downloadDirectory;
     unawaited(_checkSavedCookie());
   }
 
@@ -74,169 +77,122 @@ class SettingsController extends ChangeNotifier {
     super.dispose();
   }
 
-  void update(void Function(AppSettings draft) change) {
-    change(draft);
-    notifyListeners();
-  }
-
-  /// Previews theme and accent immediately; persisted only on save.
-  void previewAppearance({String? theme, String? accent}) {
-    if (theme != null) draft.theme = theme;
-    if (accent != null) draft.accentColor = accent;
-    app.appearance.value = (draft.theme, draft.accentColor);
-    notifyListeners();
-  }
-
-  void cancel() {
-    reset();
-    app.appearance.value = (app.settings.theme, app.settings.accentColor);
-    app.closePanel();
-    notifyListeners();
-  }
-
-  /// The visible cookie status line and whether it is a problem.
-  (String, bool) cookieStatus() {
-    if (pendingCookie != null) {
-      final count = pendingCookie!.cookieCount;
-      return (
-        "Ready to save $pendingCookieName (${plural(count, "cookie")}).",
-        false,
-      );
-    }
-    if (removeCookieRequested) {
-      return (
-        "The cookie file will be removed when settings are saved.",
-        false,
-      );
-    }
-    if (!_savedCookieExists) return ("No cookie file uploaded.", false);
-    return ("Using the uploaded cookie file.", false);
-  }
-
-  bool get hasCookie =>
-      pendingCookie != null || (!removeCookieRequested && savedCookieAvailable);
-
-  void stageCookie(String name, List<int> content) {
+  /// Changes settings, which apply and are saved at once.
+  void update(void Function(AppSettings next) change) {
+    final next = _withLiveVolume(app.settings.copy());
+    change(next);
     try {
-      pendingCookie = validateCookieFile(content);
-      pendingCookieName = name;
-      removeCookieRequested = false;
+      app.services.store.saveSettings(next);
+      _takeEffect(next);
+    } on Object catch (error) {
+      app.reportFailure(error);
+    }
+    notifyListeners();
+  }
+
+  /// The playback controller owns volume; keep its current values.
+  AppSettings _withLiveVolume(AppSettings settings) => settings
+    ..volume = app.playback.volume
+    ..previousVolume = app.playback.previousVolume
+    ..muted = app.playback.muted;
+
+  void _takeEffect(AppSettings settings) {
+    final old = app.settings;
+    app.settings = settings;
+    app.services.downloads.applySettings(settings);
+    app.services.loudness.configure(
+      enabled: settings.normalizeLoudness,
+      targetLufs: settings.loudnessTarget.toDouble(),
+    );
+    if (settings.notificationActionPair != old.notificationActionPair) {
+      app.syncSystemMedia(refreshMetadata: false);
+    }
+    app.appearance.value = (settings.theme, settings.accentColor);
+  }
+
+  String get cookieStatus => _savedCookieExists
+      ? "Using the uploaded cookie file."
+      : "No cookie file uploaded.";
+
+  /// Starts using a cookie file for later downloads.
+  Future<void> uploadCookie(String name, List<int> content) async {
+    try {
+      final cookie = validateCookieFile(content);
+      await installCookieFile(cookie, app.services.paths.cookieFile);
+      _savedCookieExists = true;
+      app.services.downloads.applySettings(app.settings);
+      app.showMessage("Using $name (${plural(cookie.cookieCount, "cookie")}).");
     } on CookieFileError catch (error) {
       app.showError(error.message);
     }
     notifyListeners();
   }
 
-  void removeCookie() {
-    pendingCookie = null;
-    pendingCookieName = "";
-    removeCookieRequested = true;
+  /// Stops using the cookie file for later downloads.
+  Future<void> removeCookie() async {
+    await deleteQuietly(app.services.paths.cookieFile);
+    app.services.downloads.applySettings(app.settings);
+    await _checkSavedCookie();
+    app.showMessage("The cookie file was removed.");
     notifyListeners();
   }
 
-  /// The music folder the draft asks for, made absolute so it never depends
-  /// on the launch directory.
-  String get draftMusicFolder =>
-      p.normalize(p.absolute(_expandHome(draft.downloadDirectory)));
+  void typeMusicFolder(String value) {
+    folderInput = value;
+    notifyListeners();
+  }
 
-  /// Library tracks that saving would move to a new music folder; zero when
-  /// the folder is unchanged.
+  void chooseMusicFolder(String value) {
+    folderInput = folderField = value;
+    notifyListeners();
+  }
+
+  /// The music folder asked for, made absolute so it never depends on the
+  /// launch directory.
+  String get requestedMusicFolder =>
+      p.normalize(p.absolute(_expandHome(folderInput.trim())));
+
+  bool get musicFolderChanged =>
+      folderInput.trim().isNotEmpty &&
+      !samePath(requestedMusicFolder, app.settings.downloadDirectory);
+
+  /// Library tracks that a new music folder would move; zero when the folder
+  /// is unchanged.
   int get tracksToMove =>
-      samePath(draftMusicFolder, app.settings.downloadDirectory)
-      ? 0
-      : app.services.manager.counts().$1;
+      musicFolderChanged ? app.services.manager.counts().$1 : 0;
 
-  /// Saves the draft. A new music folder for a library with tracks needs
+  /// Applies the requested music folder. A library with tracks needs
   /// [moveLibrary], which moves their files there.
-  Future<void> save({bool moveLibrary = false}) async {
-    final old = app.settings.copy();
-    final settings = draft.copy()
-      // The playback controller owns volume; keep its current values.
-      ..volume = app.playback.volume
-      ..previousVolume = app.playback.previousVolume
-      ..muted = app.playback.muted;
-    final pending = pendingCookie;
-    final removing = removeCookieRequested;
-    final folder = draftMusicFolder;
-    var moved = 0;
-    if (samePath(folder, old.downloadDirectory)) {
-      app.showMessage("Saving settings…");
-      await Directory(folder).create(recursive: true);
-    } else {
-      app.showMessage(moveLibrary ? "Moving the library…" : "Saving settings…");
+  Future<void> applyMusicFolder({bool moveLibrary = false}) async {
+    if (!musicFolderChanged) return;
+    final folder = requestedMusicFolder;
+    final previous = app.settings.downloadDirectory;
+    if (moveLibrary) {
+      app.showMessage("Moving the library…");
       // The player may hold a track file open, which can't be moved.
-      if (moveLibrary) app.playback.releaseLibrarySource();
-      // Applied now: a download before a restart must land where the
-      // library will look for it afterwards.
-      moved = await app.services.downloads.changeDirectory(
-        folder,
-        moveLibrary: moveLibrary,
-      );
+      app.playback.releaseLibrarySource();
     }
-    settings.downloadDirectory = folder;
-    final managed = app.services.paths.cookieFile;
-    final cookieChanged =
-        pending != null || (removing && await File(managed).exists());
-    List<int>? previousCookie;
-    if (cookieChanged && await File(managed).exists()) {
-      previousCookie = await File(managed).readAsBytes();
-    }
+    final moved = await app.services.downloads.changeDirectory(
+      folder,
+      moveLibrary: moveLibrary,
+    );
+    final next = _withLiveVolume(app.settings.copy())
+      ..downloadDirectory = folder;
     try {
-      if (pending != null) {
-        await installCookieFile(pending, managed);
-      } else if (cookieChanged) {
-        await File(managed).delete();
-      }
-      app.services.store.saveSettings(settings);
+      app.services.store.saveSettings(next);
     } catch (_) {
-      await _revertMusicFolder(folder, old.downloadDirectory);
-      if (cookieChanged) {
-        try {
-          if (previousCookie != null) {
-            await installCookieFile(
-              ValidatedCookieFile(previousCookie, 0),
-              managed,
-            );
-          } else if (await File(managed).exists()) {
-            await File(managed).delete();
-          }
-        } on FileSystemException catch (error) {
-          debugPrint("Could not restore the managed cookie file: $error");
-        }
-      }
+      await _revertMusicFolder(folder, previous);
       rethrow;
     }
-    app.settings = settings;
-    app.services.downloads.historyDays = settings.downloadHistoryDays;
-    _applyLoudness(settings);
-    if (settings.autoFocalPointLiveNotifications !=
-        old.autoFocalPointLiveNotifications) {
-      app.syncSystemMedia(refreshMetadata: true);
-    } else if (settings.notificationActionPair != old.notificationActionPair) {
-      app.syncSystemMedia(refreshMetadata: false);
-    }
-    app.appearance.value = (settings.theme, settings.accentColor);
+    _takeEffect(next);
     reset();
     notifyListeners();
-    final restart = [
-      old.audioFormat != settings.audioFormat,
-      old.audioQuality != settings.audioQuality,
-      old.concurrentDownloads != settings.concurrentDownloads,
-      cookieChanged,
-    ].any((changed) => changed);
-    final saved = moved > 0
-        ? "Moved ${plural(moved, "file")} to the new music folder. "
-              "Settings saved."
-        : "Settings saved.";
     app.showMessage(
-      restart ? "$saved Restart to apply download changes." : saved,
+      moved > 0
+          ? "Moved ${plural(moved, "file")} to the new music folder."
+          : "New downloads now go to $folder.",
     );
   }
-
-  void _applyLoudness(AppSettings settings) => app.services.loudness.configure(
-    enabled: settings.normalizeLoudness,
-    targetLufs: settings.loudnessTarget.toDouble(),
-  );
 
   /// A short account of loudness measurement for Settings.
   String get loudnessStatus {
@@ -298,7 +254,7 @@ class SettingsController extends ChangeNotifier {
         final alreadyDefault = await _restoreDefaults();
         return alreadyDefault
             ? "Settings already use their default values."
-            : "Settings restored to defaults. Download engine changes apply after restart.";
+            : "Settings restored to defaults.";
       case "everything":
         final (tracks, playlists) = await _clearLibrary(deleteImported: true);
         final alreadyDefault = await _restoreDefaults();
@@ -306,8 +262,7 @@ class SettingsController extends ChangeNotifier {
           return "The library, playlists, and settings are already reset.";
         }
         return "Library, playlists, and settings were reset, and library audio was "
-            "deleted. Unrelated history was kept. Download engine changes apply "
-            "after restart.";
+            "deleted. Unrelated history was kept.";
     }
     throw ArgumentError("Unknown data-management action: $action");
   }
@@ -326,8 +281,8 @@ class SettingsController extends ChangeNotifier {
 
   Future<bool> _restoreDefaults() async {
     final current = app.settings;
-    // Library files are recorded relative to the music folder, so like
-    // [save], the folder only changes while the library is empty, and then
+    // Library files are recorded relative to the music folder, so here the
+    // folder only changes while the library is empty, and then
     // takes effect immediately. Busy downloads keep the current folder.
     var folder = current.downloadDirectory;
     final defaultFolder = app.services.paths.defaultMusicDirectory;
@@ -353,17 +308,8 @@ class SettingsController extends ChangeNotifier {
     // The default is no cookies. Best effort: the other defaults are
     // already saved.
     await deleteQuietly(cookies);
-    app.settings = defaults;
     app.playback.applySettings(defaults);
-    _applyLoudness(defaults);
-    if (current.autoFocalPointLiveNotifications !=
-        defaults.autoFocalPointLiveNotifications) {
-      app.syncSystemMedia(refreshMetadata: true);
-    } else if (current.notificationActionPair !=
-        defaults.notificationActionPair) {
-      app.syncSystemMedia(refreshMetadata: false);
-    }
-    app.appearance.value = (defaults.theme, defaults.accentColor);
+    _takeEffect(defaults);
     reset();
     notifyListeners();
     return alreadyDefault;
@@ -479,6 +425,31 @@ class SettingsController extends ChangeNotifier {
       return null;
     } finally {
       cleaningUp = false;
+      notifyListeners();
+    }
+  }
+
+  /// Writes lyrics into the library files that have none, where Melody can.
+  Future<void> writeLyricsIntoFiles() async {
+    final embedder = app.services.lyricsEmbedder;
+    if (embedder == null || writingLyrics) return;
+    writingLyrics = true;
+    notifyListeners();
+    try {
+      final report = await embedder.embedLibrary();
+      app.showMessage(
+        [
+          report.written > 0
+              ? "Wrote lyrics into ${plural(report.written, "file")}."
+              : "No file took new lyrics.",
+          if (report.failed > 0)
+            "${plural(report.failed, "file")} could not be changed.",
+          if (report.playing > 0) "The playing track was left alone.",
+        ].join(" "),
+        error: report.failed > 0,
+      );
+    } finally {
+      writingLyrics = false;
       notifyListeners();
     }
   }

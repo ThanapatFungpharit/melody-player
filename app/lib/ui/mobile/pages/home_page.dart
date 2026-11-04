@@ -75,8 +75,10 @@ class _MobileHomeState extends State<MobileHome> {
                   app: app,
                   title: track.displayTitle,
                   subtitle: details.credit,
-                  artwork: details.thumbnail,
-                  onTap: () => app.playback.playTrack(track.id),
+                  artwork: app.services.library.artwork(track.id),
+                  onTap: () => app.playback.playTracks([
+                    for (final favorite in favorites) favorite.id,
+                  ], startIndex: index),
                 );
               },
             ),
@@ -115,7 +117,7 @@ class _MobileHomeState extends State<MobileHome> {
             EmptyState(Icons.cloud_off_rounded, home.recommendationsError)
           else if (home.recommendations.isNotEmpty) ...[
             for (final result in home.visibleRecommendations())
-              searchResultRow(context, app, result, playlists),
+              searchResultRow(context, app, result),
             if (home.recommendations.length > 8)
               PageNavigation(
                 total: home.recommendations.length,
@@ -154,7 +156,7 @@ class _QuickGrid extends StatelessWidget {
         spacing: gap,
         runSpacing: gap,
         children: [
-          for (final track in tracks)
+          for (final (index, track) in tracks.indexed)
             SizedBox(
               width: width,
               child: Tooltip(
@@ -164,12 +166,14 @@ class _QuickGrid extends StatelessWidget {
                   borderRadius: BorderRadius.circular(Radii.small),
                   clipBehavior: Clip.antiAlias,
                   child: InkWell(
-                    onTap: () => app.playback.playTrack(track.id),
+                    onTap: () => app.playback.playTracks([
+                      for (final recent in tracks) recent.id,
+                    ], startIndex: index),
                     child: Row(
                       children: [
                         Artwork(
                           app,
-                          app.services.library.details(track.id).thumbnail,
+                          app.services.library.artwork(track.id),
                           size: 52,
                           seed: track.displayTitle,
                           radius: 0,

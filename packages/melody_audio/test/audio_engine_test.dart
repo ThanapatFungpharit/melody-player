@@ -1,4 +1,5 @@
 import "dart:async";
+import "dart:collection";
 
 import "package:melody_audio/src/audio_engine.dart";
 import "package:melody_audio/src/system_media_session.dart";
@@ -13,6 +14,12 @@ import "support/fakes.dart";
 List<AudioQueueItem> _items(List<String> ids) => [
   for (final id in ids)
     AudioQueueItem(trackId: id, source: "/music/$id.mp3", title: id),
+];
+
+/// The decoder's playlist, as track IDs.
+List<String> _rowIds(FakeAudioPlayer player) => [
+  for (final source in player.sources)
+    source.split("/").last.replaceAll(".mp3", ""),
 ];
 
 Future<void> _settle() =>
@@ -71,16 +78,12 @@ void main() {
       first.advanceTo(const Duration(seconds: 42));
       await _settle();
 
-      await engine.loadSource(
-        "/music/preview.mp3",
-        generation: 4,
-        position: const Duration(seconds: 5),
-      );
+      await setQueue(["b"], 0, generation: 4, positionMs: 5000);
 
-      final preview = audio.last;
-      expect(preview, isNot(same(first)));
-      expect(preview.loadRequest!.initialPosition, const Duration(seconds: 5));
-      expect(preview.seeks, isEmpty);
+      final next = audio.last;
+      expect(next, isNot(same(first)));
+      expect(next.loadRequest!.initialPosition, const Duration(seconds: 5));
+      expect(next.seeks, isEmpty);
       expect(playbackState().position, const Duration(seconds: 5));
     },
   );
@@ -149,7 +152,8 @@ void main() {
       final replay = audio.last;
       expect(replay, isNot(same(finished)));
       expect(finished.disposed, isTrue);
-      expect(replay.loadRequest!.initialIndex, 1);
+      expect(_rowIds(replay).first, "b");
+      expect(replay.loadRequest!.initialIndex, 0);
       expect(replay.loadRequest!.initialPosition, const Duration(seconds: 30));
       expect(replay.playing, isTrue);
       expect(states, isNot(contains(AudioPlaybackState.paused)));
@@ -188,6 +192,7 @@ void main() {
     "a cancelled selection's autoplay does not start later queue edits",
     () async {
       await setQueue(["a", "b"], 0);
+      final original = audio.last;
       final gate = audio.loadGate = Completer<void>();
       final selection = setQueue(["c"], 0, generation: 4, autoplay: true);
       await _settle();
@@ -198,53 +203,311 @@ void main() {
       await updateQueue(["b", "a"], 1);
       await _settle();
 
-      expect(audio.last.sourceCount, 2);
-      expect(audio.last.playing, isFalse);
+      expect(_rowIds(original), ["a"]);
+      expect(original.playing, isFalse);
       expect(playbackState().trackId, "a");
     },
   );
 
-  test(
-    "a removed active track plays before its successor in queue order",
-    () async {
+  group("the decoder's window", () {
+    List<String> tracks(int count) => [for (var i = 0; i < count; i++) "t$i"];
+
+    test(
+      "holds the playing row and the next few, however long the queue is",
+      () async {
+        await setQueue(tracks(5000), 1000);
+        final player = audio.last;
+        expect(player.sourceCount, AudioEngine.upcomingRows + 1);
+        expect(_rowIds(player).first, "t1000");
+        expect(_rowIds(player).last, "t${1000 + AudioEngine.upcomingRows}");
+        expect(player.loadRequest!.initialIndex, 0);
+        expect(playbackState().queueIndex, 1000);
+      },
+    );
+
+    test("reads only the rows it needs", () async {
+      final items = _CountingItems(tracks(5000));
+      await engine.setQueue(items, currentIndex: 10, generation: 2);
+      expect(items.reads, lessThan(40));
+      items.reads = 0;
+      await engine.updateQueue(items, currentIndex: 10);
+      expect(items.reads, lessThan(40));
+    });
+
+    test("slides forward as tracks finish, without a new decoder", () async {
+      final events = <AudioEngineEvent>[];
+      engine.attach(events.add);
+      addTearDown(() => engine.detach(events.add));
+      await setQueue(tracks(50), 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+
+      for (var row = 1; row <= 3; row++) {
+        player.autoAdvance(row);
+        await _settle();
+        expect(playbackState().queueIndex, row);
+        expect(playbackState().trackId, "t$row");
+        expect(_rowIds(player).last, "t${row + AudioEngine.upcomingRows}");
+      }
+      expect(audio.players, hasLength(1));
+      // Played rows stay, so the playing row's index never shifts.
+      expect(player.index, 3);
+      expect(_rowIds(player).first, "t0");
+      expect(
+        events.whereType<AudioTrackChanged>().map((event) => event.index),
+        [1, 2, 3],
+      );
+      expect(player.playing, isTrue);
+    });
+
+    test("stops at the end of the queue", () async {
+      final completed = <AudioStateChanged>[];
+      void listener(AudioEngineEvent event) {
+        if (event is AudioStateChanged &&
+            event.state == AudioPlaybackState.completed) {
+          completed.add(event);
+        }
+      }
+
+      engine.attach(listener);
+      addTearDown(() => engine.detach(listener));
+      await setQueue(["a", "b"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      expect(_rowIds(player), ["a", "b"]);
+      expect(completed, isEmpty);
+
+      player.autoAdvance(1);
+      await _settle();
+      expect(_rowIds(player), ["a", "b"]);
+      player.complete();
+      await _settle();
+      expect(completed, hasLength(1));
+    });
+
+    test("wraps with repeat, returning to the first rows", () async {
+      await engine.setQueue(
+        _items(["a", "b", "c"]),
+        currentIndex: 2,
+        generation: 2,
+        repeatMode: AudioRepeatMode.queue,
+        autoplay: true,
+      );
+      final player = audio.last;
+      await _settle();
+      expect(player.sourceCount, AudioEngine.upcomingRows + 1);
+      expect(_rowIds(player).take(4), ["c", "a", "b", "c"]);
+      expect(player.loopMode, LoopModeMessage.off);
+
+      player.autoAdvance(1);
+      await _settle();
+      final state = playbackState();
+      expect(state.trackId, "a");
+      expect(state.queueIndex, 0);
+    });
+
+    test("repeats a one-row queue gaplessly", () async {
+      await engine.setQueue(
+        _items(["a"]),
+        currentIndex: 0,
+        generation: 2,
+        repeatMode: AudioRepeatMode.queue,
+        autoplay: true,
+      );
+      final player = audio.last;
+      await _settle();
+      expect(_rowIds(player).toSet(), {"a"});
+      expect(player.sourceCount, AudioEngine.upcomingRows + 1);
+
+      player.autoAdvance(1);
+      await _settle();
+      expect(playbackState().queueIndex, 0);
+      expect(playbackState().trackId, "a");
+    });
+
+    test("repeat-track loops the decoder and Next still moves on", () async {
+      await engine.setQueue(
+        _items(["a", "b"]),
+        currentIndex: 0,
+        generation: 2,
+        repeatMode: AudioRepeatMode.track,
+        autoplay: true,
+      );
+      final player = audio.last;
+      await _settle();
+      expect(player.loopMode, LoopModeMessage.one);
+
+      await engine.handleMediaAction(MediaCommand.skipToNext);
+      await _settle();
+      expect(playbackState().trackId, "b");
+    });
+
+    test("unplayable rows are skipped", () async {
+      await engine.setQueue(
+        const [
+          AudioQueueItem(trackId: "a", source: "/music/a.mp3"),
+          AudioQueueItem(trackId: "gone", source: ""),
+          AudioQueueItem(trackId: "c", source: "/music/c.mp3"),
+        ],
+        currentIndex: 0,
+        generation: 2,
+      );
+      final player = audio.last;
+      expect(_rowIds(player), ["a", "c"]);
+      player.autoAdvance(1);
+      await _settle();
+      // Queue rows keep their numbers, which the app's queue also uses.
+      expect(playbackState().queueIndex, 2);
+    });
+
+    test("a selection of nothing playable releases the decoder", () async {
+      await setQueue(["a"], 0);
+      final player = audio.last;
+      await engine.setQueue(
+        const [AudioQueueItem(trackId: "gone", source: "")],
+        currentIndex: 0,
+        generation: 4,
+      );
+      await _settle();
+      expect(player.disposed, isTrue);
+      expect(playbackState().hasSource, isFalse);
+    });
+  });
+
+  group("editing the queue", () {
+    test("keeps the decoder and its position", () async {
+      await setQueue(["a", "b", "c"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      player.advanceTo(const Duration(seconds: 42));
+
+      await updateQueue(["a", "x", "b", "c"], 0);
+      await _settle();
+
+      expect(audio.players, hasLength(1));
+      expect(_rowIds(player), ["a", "x", "b", "c"]);
+      expect(player.playing, isTrue);
+      expect(player.position, const Duration(seconds: 42));
+      expect(player.seeks, isEmpty);
+      expect(playbackState().trackId, "a");
+    });
+
+    test("touches only rows after the first difference", () async {
+      await setQueue(["a", "b", "c", "d"], 0);
+      final player = audio.last;
+
+      await updateQueue(["a", "b", "x", "d"], 0);
+      expect(_rowIds(player), ["a", "b", "x", "d"]);
+      // One removal of c and d, then two appends.
+      expect(player.edits, 3);
+
+      player.edits = 0;
+      await updateQueue(["a", "b", "x", "d"], 0);
+      expect(player.edits, 0);
+    });
+
+    test("beyond the window needs no native work", () async {
+      final queue = [for (var i = 0; i < 100; i++) "t$i"];
+      await setQueue(queue, 0);
+      final player = audio.last;
+
+      await updateQueue([...queue, "added"], 0);
+      expect(player.edits, 0);
+      await updateQueue(queue.sublist(0, 50), 0);
+      expect(player.edits, 0);
+      expect(player.sourceCount, AudioEngine.upcomingRows + 1);
+    });
+
+    test("a track moved under the playing row keeps playing there", () async {
+      await setQueue(["a", "b", "c"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+
+      await updateQueue(["c", "a", "b"], 1);
+      await _settle();
+
+      final state = playbackState();
+      expect(state.trackId, "a");
+      expect(state.queueIndex, 1);
+      expect(_rowIds(player), ["a", "b"]);
+      player.autoAdvance(1);
+      await _settle();
+      expect(playbackState().queueIndex, 2);
+    });
+
+    test("a removed active track plays before its successor", () async {
       await setQueue(["a", "b", "c", "d"], 1);
+      final player = audio.last;
       await updateQueue(["a", "c", "d"], 1);
 
-      final edited = audio.last;
-      expect(edited.sourceCount, 4);
-      expect(edited.loadRequest!.initialIndex, 1);
-      expect(edited.loopMode, LoopModeMessage.off);
+      expect(audio.players, hasLength(1));
+      expect(_rowIds(player), ["b", "c", "d"]);
+      expect(player.index, 0);
       var state = playbackState();
       expect(state.trackId, "b");
       expect(state.queueIndex, -1);
 
-      edited.autoAdvance(2);
+      player.autoAdvance(1);
       await _settle();
       state = playbackState();
       expect(state.trackId, "c");
       expect(state.queueIndex, 1);
       expect(state.generation.isOdd, isTrue);
-      expect(edited.sourceCount, 3);
 
-      // The predecessor of the removed track stays reachable.
-      await engine.handleMediaAction(MediaCommand.skipToPrevious);
+      // The predecessor of the removed track is the app's to select.
+      expect(
+        await engine.handleMediaAction(MediaCommand.skipToPrevious),
+        isFalse,
+      );
+    });
+
+    test("a removed active track does not repeat", () async {
+      await engine.setQueue(
+        _items(["a", "b"]),
+        currentIndex: 0,
+        generation: 2,
+        repeatMode: AudioRepeatMode.track,
+      );
+      final player = audio.last;
+      expect(player.loopMode, LoopModeMessage.one);
+
+      await engine.updateQueue(
+        _items(["b"]),
+        currentIndex: 0,
+        repeatMode: AudioRepeatMode.track,
+      );
+      expect(player.loopMode, LoopModeMessage.off);
+      player.autoAdvance(1);
       await _settle();
-      state = playbackState();
-      expect(state.trackId, "a");
-      expect(state.queueIndex, 0);
-    },
-  );
+      expect(player.loopMode, LoopModeMessage.one);
+    });
 
-  test(
-    "a queue edit racing a native transition follows the new track",
-    () async {
+    test("changing the repeat mode applies in place", () async {
+      await setQueue(["a", "b"], 1);
+      final player = audio.last;
+      expect(_rowIds(player), ["b"]);
+
+      await engine.updateQueue(
+        _items(["a", "b"]),
+        currentIndex: 1,
+        repeatMode: AudioRepeatMode.queue,
+      );
+      expect(_rowIds(player).take(3), ["b", "a", "b"]);
+
+      await engine.updateQueue(_items(["a", "b"]), currentIndex: 1);
+      expect(_rowIds(player), ["b"]);
+      expect(audio.players, hasLength(1));
+    });
+
+    test("a transition during an edit is followed", () async {
       await setQueue(["a", "b", "c"], 0, autoplay: true);
-      final original = audio.last;
-      final gate = audio.loadGate = Completer<void>();
-      final edit = updateQueue(["a", "b", "c", "d"], 0);
+      final player = audio.last;
+      await _settle();
+      final gate = player.editGate = Completer<void>();
+      final edit = updateQueue(["a", "b", "x", "y"], 0);
       await _settle();
 
-      original.autoAdvance(1);
+      player.autoAdvance(1);
       await _settle();
       gate.complete();
       await edit;
@@ -253,10 +516,313 @@ void main() {
       final state = playbackState();
       expect(state.trackId, "b");
       expect(state.queueIndex, 1);
-      expect(audio.last.loadRequest!.initialIndex, 1);
-      expect(audio.last.sourceCount, 4);
-    },
-  );
+      expect(_rowIds(player), ["a", "b", "x", "y"]);
+      expect(audio.players, hasLength(1));
+    });
+
+    test("a transition reports the row an edit has just moved", () async {
+      final events = <AudioTrackChanged>[];
+      void listener(AudioEngineEvent event) {
+        if (event is AudioTrackChanged) events.add(event);
+      }
+
+      engine.attach(listener);
+      addTearDown(() => engine.detach(listener));
+      await setQueue(["a", "b", "c"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      // Holds the first edit's native work, so the second waits its turn.
+      final gate = player.editGate = Completer<void>();
+      final first = updateQueue(["a", "b", "x"], 0);
+      await _settle();
+      final second = updateQueue(["b", "a", "x"], 1);
+
+      player.autoAdvance(1);
+      await _settle();
+      expect(events.single.trackId, "b");
+      expect(events.single.index, 0);
+      expect(playbackState().queueIndex, 0);
+
+      gate.complete();
+      await Future.wait([first, second]);
+    });
+
+    test("a row leaving the queue as the decoder reaches it", () async {
+      await setQueue(["a", "b", "c"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      final gate = player.editGate = Completer<void>();
+      final first = updateQueue(["a", "b", "x"], 0);
+      await _settle();
+      final second = updateQueue(["a", "x"], 0);
+
+      player.autoAdvance(1);
+      await _settle();
+      final state = playbackState();
+      expect(state.trackId, "b");
+      expect(state.queueIndex, -1);
+
+      gate.complete();
+      await Future.wait([first, second]);
+    });
+
+    test("adding to a finished queue does not restart playback", () async {
+      await setQueue(["a"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      player.complete();
+      await _settle();
+      final seeks = player.seeks.length;
+      final edits = player.edits;
+
+      await updateQueue(["a", "b"], 0);
+      await _settle();
+      // Appending would make a finished media_kit decoder start the row.
+      expect(player.edits, edits);
+      expect(_rowIds(player), ["a"]);
+      expect(player.index, 0);
+      expect(player.seeks, hasLength(seeks));
+      expect(playbackState().trackId, "a");
+    });
+
+    group("on a finished queue", () {
+      late FakeAudioPlayer player;
+      late List<AudioEngineEvent> events;
+
+      setUp(() async {
+        await setQueue(["a"], 0, autoplay: true);
+        player = audio.last;
+        await _settle();
+        player.complete();
+        await _settle();
+        await updateQueue(["a", "b", "c"], 0);
+        await _settle();
+        events = [];
+        void listener(AudioEngineEvent event) => events.add(event);
+        engine.attach(listener);
+        addTearDown(() => engine.detach(listener));
+      });
+
+      Future<void> expectPlayingNewRow() async {
+        expect(_rowIds(player), ["a", "b", "c"]);
+        expect(player.index, 1);
+        expect(player.playing, isTrue);
+        expect(playbackState().trackId, "b");
+        expect(events.whereType<AudioTrackChanged>().map((e) => e.trackId), [
+          "b",
+        ]);
+        // It carries on through the rows and finishes again.
+        player.autoAdvance(2);
+        await _settle();
+        expect(playbackState().trackId, "c");
+        player.complete();
+        await _settle();
+        expect(
+          events.whereType<AudioStateChanged>().map((e) => e.state),
+          contains(AudioPlaybackState.completed),
+        );
+      }
+
+      test("Play moves on to the new row", () async {
+        await engine.play();
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("Resume moves on to the new row", () async {
+        await engine.resume();
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("system Play moves on to the new row", () async {
+        await engine.handleMediaAction(MediaCommand.play);
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("system Next moves on to the new row", () async {
+        await engine.handleMediaAction(MediaCommand.skipToNext);
+        await _settle();
+        await expectPlayingNewRow();
+      });
+
+      test("Play at a position stays in the finished track", () async {
+        await engine.play(position: const Duration(seconds: 30));
+        await _settle();
+        expect(player.index, 0);
+        expect(playbackState().trackId, "a");
+        expect(player.playing, isTrue);
+        // Back in the track, the held edit reaches the decoder.
+        expect(_rowIds(player), ["a", "b", "c"]);
+      });
+    });
+
+    test("edits arriving together end at the last one", () async {
+      await setQueue(["a", "b"], 0);
+      final player = audio.last;
+      await Future.wait([
+        updateQueue(["a", "x"], 0),
+        updateQueue(["a", "y"], 0),
+        updateQueue(["a", "z"], 0),
+      ]);
+      expect(_rowIds(player), ["a", "z"]);
+    });
+
+    test("a hung edit on a retired decoder does not block the next", () async {
+      await setQueue(["a", "b"], 0);
+      final retired = audio.last;
+      retired.editGate = Completer<void>();
+      unawaited(updateQueue(["a", "x"], 0));
+      await _settle();
+
+      await setQueue(["c", "d"], 0, generation: 4);
+      final player = audio.last;
+      await updateQueue(["c", "e"], 0).timeout(const Duration(seconds: 2));
+      expect(_rowIds(player), ["c", "e"]);
+    });
+
+    test(
+      "a late edit on a retired decoder leaves the new rows alone",
+      () async {
+        await setQueue(["a", "b"], 0);
+        final retired = audio.last;
+        final gate = retired.editGate = Completer<void>();
+        unawaited(updateQueue(["a", "x", "y"], 0));
+        await _settle();
+
+        await setQueue(["c", "d"], 0, generation: 4);
+        final player = audio.last;
+        gate.complete();
+        await _settle();
+        expect(_rowIds(player), ["c", "d"]);
+        player.autoAdvance(1);
+        await _settle();
+        expect(playbackState().trackId, "d");
+      },
+    );
+
+    test("an edit that fails is reported to its caller", () async {
+      await setQueue(["a", "b"], 0);
+      final player = audio.last;
+      final gate = player.editGate = Completer<void>();
+      final edit = updateQueue(["a", "x"], 0);
+      await _settle();
+      gate.completeError(StateError("gone"));
+      await expectLater(edit, throwsStateError);
+      // The app releases a decoder that fails, but the next edit still runs.
+      await updateQueue(["a", "y"], 0).timeout(const Duration(seconds: 2));
+      expect(_rowIds(player), contains("y"));
+    });
+  });
+
+  group("skipping", () {
+    test("Next plays the next row on the same decoder", () async {
+      await setQueue(["a", "b", "c"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+
+      expect(await engine.handleMediaAction(MediaCommand.skipToNext), isTrue);
+      await _settle();
+      expect(playbackState().trackId, "b");
+      expect(audio.players, hasLength(1));
+      expect(player.playing, isTrue);
+    });
+
+    test("Next at the end of the queue pauses and rewinds", () async {
+      await setQueue(["a"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+
+      expect(await engine.handleMediaAction(MediaCommand.skipToNext), isTrue);
+      await _settle();
+      expect(player.playing, isFalse);
+      expect(player.seeks, [Duration.zero]);
+    });
+
+    test("Previous rewinds a track already under way", () async {
+      await setQueue(["a", "b"], 1, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      player.advanceTo(const Duration(seconds: 30));
+      await _settle();
+
+      expect(
+        await engine.handleMediaAction(MediaCommand.skipToPrevious),
+        isTrue,
+      );
+      expect(player.seeks, [Duration.zero]);
+    });
+
+    test("Previous leaves earlier rows to the app", () async {
+      await setQueue(["a", "b"], 1, autoplay: true);
+      await _settle();
+      expect(
+        await engine.handleMediaAction(MediaCommand.skipToPrevious),
+        isFalse,
+      );
+      expect(audio.last.seeks, isEmpty);
+    });
+
+    test("Previous on the first row rewinds, unless the queue wraps", () async {
+      await setQueue(["a", "b"], 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      expect(
+        await engine.handleMediaAction(MediaCommand.skipToPrevious),
+        isTrue,
+      );
+      expect(player.seeks, [Duration.zero]);
+
+      await engine.setQueue(
+        _items(["a", "b"]),
+        currentIndex: 0,
+        generation: 4,
+        repeatMode: AudioRepeatMode.queue,
+      );
+      expect(
+        await engine.handleMediaAction(MediaCommand.skipToPrevious),
+        isFalse,
+      );
+    });
+  });
+
+  group("a decoder that runs out of rows", () {
+    test("continues with the queue instead of completing", () async {
+      final states = <AudioPlaybackState>[];
+      void listener(AudioEngineEvent event) {
+        if (event is AudioStateChanged) states.add(event.state);
+      }
+
+      engine.attach(listener);
+      addTearDown(() => engine.detach(listener));
+      final queue = [for (var i = 0; i < 30; i++) "t$i"];
+      await setQueue(queue, 0, autoplay: true);
+      final player = audio.last;
+      await _settle();
+      states.clear();
+
+      // It reached the end of its rows before this isolate could top them up.
+      player.complete();
+      await _settle();
+
+      expect(states, isNot(contains(AudioPlaybackState.completed)));
+      expect(playbackState().trackId, "t1");
+      expect(player.index, 1);
+      expect(player.playing, isTrue);
+    });
+
+    test("stays paused when the listener paused", () async {
+      final queue = [for (var i = 0; i < 30; i++) "t$i"];
+      await setQueue(queue, 0);
+      final player = audio.last;
+      await _settle();
+      player.complete();
+      await _settle();
+      expect(playbackState().trackId, "t1");
+      expect(player.playing, isFalse);
+    });
+  });
 
   test("negative seeks clamp to the start", () async {
     await setQueue(["a"], 0);
@@ -415,11 +981,6 @@ void main() {
       expect(audio.last.volumes.last, closeTo(0.5, 1e-9));
     });
 
-    test("a preview stream plays at its own gain", () async {
-      await engine.loadSource("/music/preview.mp3", generation: 2, gain: 0.7);
-      expect(audio.last.volumes.last, closeTo(0.7, 1e-9));
-    });
-
     group("boosting quiet tracks", () {
       tearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -567,6 +1128,35 @@ void main() {
         },
       );
 
+      test("still fades when the backend forgets the duration", () async {
+        // just_audio_media_kit clears it whenever the playlist changes, which
+        // sliding the window does right after each transition; just_audio
+        // keeps the row's last known duration.
+        final player = await playing({"a": 1, "b": 0.25, "c": 1});
+        player.forgetsDurationOnEdit = true;
+        await engine.updateQueue(
+          gained({"a": 1, "b": 0.25, "x": 1}),
+          currentIndex: 0,
+        );
+        await _settle();
+
+        player.advanceTo(end - const Duration(milliseconds: 300));
+        await wait(450);
+        expect(player.volumes.last, closeTo(0.25, 1e-9));
+      });
+
+      test("the gain of a row that became next is used", () async {
+        final player = await playing({"a": 1, "b": 1});
+        await engine.updateQueue(
+          gained({"a": 1, "quiet": 0.25, "b": 1}),
+          currentIndex: 0,
+        );
+        await _settle();
+        player.advanceTo(end - const Duration(milliseconds: 300));
+        await wait(450);
+        expect(player.volumes.last, closeTo(0.25, 1e-9));
+      });
+
       test("equal gains and repeat-one leave the volume alone", () async {
         var player = await playing({"a": 0.5, "b": 0.5});
         player.advanceTo(end - const Duration(milliseconds: 100));
@@ -588,4 +1178,29 @@ void main() {
       });
     });
   });
+}
+
+/// A queue that counts how many rows the engine reads.
+class _CountingItems extends ListBase<AudioQueueItem> {
+  _CountingItems(this._ids);
+
+  final List<String> _ids;
+  int reads = 0;
+
+  @override
+  int get length => _ids.length;
+
+  @override
+  set length(int value) => throw UnsupportedError("read-only");
+
+  @override
+  AudioQueueItem operator [](int index) {
+    reads++;
+    final id = _ids[index];
+    return AudioQueueItem(trackId: id, source: "/music/$id.mp3");
+  }
+
+  @override
+  void operator []=(int index, AudioQueueItem value) =>
+      throw UnsupportedError("read-only");
 }

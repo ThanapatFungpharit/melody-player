@@ -9,13 +9,12 @@ import "package:path_provider/path_provider.dart";
 /// Everything Melody owns lives under [dataDirectory]:
 ///
 /// ```text
-/// library.db              tracks and playlists (MusicManager)
-/// state.db                settings, history, queue (ApplicationStore)
+/// library.db              tracks and playlists (MusicManager), with settings,
+///                         history, and the queue (ApplicationStore)
 /// cookies.txt             uploaded cookies; present means they are used
 /// music-move.json         a music folder move in progress (MusicManager)
 /// lyrics/                 saved lyrics, one JSON file per song
 /// downloads/staging/      one locked folder per running download
-/// downloads/receipts/     completed downloads not yet registered
 /// runtime/<package>/      ytmusicapi and yt-dlp updates (the worker's)
 /// cache/artwork/          artwork copied out of downloaded files
 /// cache/yt-dlp/           yt-dlp's player and signature cache
@@ -52,8 +51,7 @@ class AppPaths {
 
   String _data(String relative) => p.join(dataDirectory, relative);
 
-  String get libraryDatabase => _data("library.db");
-  String get stateDatabase => _data("state.db");
+  String get database => _data("library.db");
   String get cookieFile => _data("cookies.txt");
   String get musicMoveJournal => _data("music-move.json");
 
@@ -61,7 +59,6 @@ class AppPaths {
   String get lyrics => _data("lyrics");
 
   String get downloadStaging => _data(p.join("downloads", "staging"));
-  String get downloadReceipts => _data(p.join("downloads", "receipts"));
 
   /// The worker's folder for runtime updates of a Python [package]
   /// (`yt-dlp`, `ytmusicapi`), separate from the bundled copy.
@@ -82,12 +79,13 @@ class AppPaths {
   /// Loudness measurements of library tracks (LoudnessNormalizer).
   String get loudnessCache => p.join(cache, "loudness.json");
 
+  /// Content hashes of library files known to hold lyrics (LyricsEmbedder).
+
   /// Folders holding files Melody writes atomically, where a crash can
   /// leave a temporary file behind.
   List<String> get atomicWriteFolders => [
     dataDirectory,
     lyrics,
-    downloadReceipts,
     artworkCache,
     cache,
   ];

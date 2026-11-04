@@ -281,7 +281,7 @@ class _DownloadRow extends StatelessWidget {
           )
         : completed && playable.isNotEmpty
         ? IconButton(
-            onPressed: () => app.playback.playTracks(playable),
+            onPressed: () => app.playback.playNow(playable),
             tooltip: "Play",
             icon: const Icon(Icons.play_arrow_rounded),
           )
@@ -294,10 +294,9 @@ class _DownloadRow extends StatelessWidget {
         children: [
           Artwork(
             app,
-            record.thumbnail,
+            downloadArtwork(app, record),
             size: 52,
             seed: record.title,
-            playlist: record.kind == "playlist",
           ),
           Expanded(
             child: Column(
@@ -333,6 +332,14 @@ class _DownloadRow extends StatelessWidget {
                     color: record.error.isNotEmpty ? scheme.error : null,
                   ),
                 ),
+                if (record.needsEngineUpdate)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => app.openPanel(AppPanel.settings),
+                      child: const Text("Open Settings"),
+                    ),
+                  ),
                 if (active) ...[
                   const SizedBox(height: 6),
                   LinearProgressIndicator(

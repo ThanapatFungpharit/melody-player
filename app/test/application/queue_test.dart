@@ -71,25 +71,64 @@ void main() {
     expect(broken.toJson().containsKey("shuffle"), isFalse);
   });
 
-  test("shuffle reorders only upcoming tracks", () {
+  test("shuffle reorders the whole queue around the current track", () {
     final queue = PlaybackQueue(random: Random(4))
-      ..replace(["a", "b", "c", "d", "e"], startIndex: 1);
-    expect(queue.shuffleUpcoming(), isTrue);
-    expect(queue.items.take(2), ["a", "b"]);
-    expect(queue.items.skip(2).toSet(), {"c", "d", "e"});
-    expect(queue.current, "b");
+      ..replace(["a", "b", "c", "d", "e"], startIndex: 2);
+    expect(queue.canShuffle, isTrue);
+    expect(queue.shuffle(), isTrue);
+    expect(queue.current, "c");
+    expect(queue.currentIndex, 0);
+    expect(queue.items.toSet(), {"a", "b", "c", "d", "e"});
+    expect(queue.nextIndex(), 1);
+  });
+
+  test("shuffle reaches rows that already played", () {
+    // With rows above the current one, repeat replays them too; none of the
+    // seeds may leave them all in their old place at the end of the queue.
+    final order = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    final moved = <bool>[
+      for (var seed = 0; seed < 8; seed++)
+        () {
+          final queue = PlaybackQueue(
+            random: Random(seed),
+            repeat: RepeatMode.playlist,
+          )..replace(order, startIndex: 4);
+          queue.shuffle();
+          return queue.items.indexOf("a") != queue.items.indexOf("b") - 1;
+        }(),
+    ];
+    expect(moved, contains(true));
+  });
+
+  test("shuffle works from the last row", () {
+    final queue = PlaybackQueue(random: Random(1), repeat: RepeatMode.playlist)
+      ..replace(["a", "b", "c", "d"], startIndex: 3);
+    expect(queue.canShuffle, isTrue);
+    expect(queue.shuffle(), isTrue);
+    expect(queue.current, "d");
+    expect(queue.items.first, "d");
   });
 
   test("shuffle changes the order even when the random order is unchanged", () {
     final queue = PlaybackQueue(random: IdentityRandom())
       ..replace(["a", "b", "c"]);
-    expect(queue.shuffleUpcoming(), isTrue);
+    expect(queue.shuffle(), isTrue);
     expect(queue.items, ["a", "c", "b"]);
   });
 
-  test("shuffle does nothing with one remaining track", () {
+  test("shuffle has nothing to offer with one other track after this one", () {
     final queue = PlaybackQueue()..replace(["a", "b"]);
-    expect(queue.shuffleUpcoming(), isFalse);
+    expect(queue.canShuffle, isFalse);
+    expect(queue.shuffle(), isFalse);
+    expect(queue.items, ["a", "b"]);
+  });
+
+  test("shuffle brings the current track to the top of two", () {
+    final queue = PlaybackQueue()..replace(["a", "b"], startIndex: 1);
+    expect(queue.canShuffle, isTrue);
+    expect(queue.shuffle(), isTrue);
+    expect(queue.items, ["b", "a"]);
+    expect(queue.currentIndex, 0);
   });
 
   test("a shuffled replacement reorders the whole collection once", () {
@@ -106,7 +145,7 @@ void main() {
     queue
       ..addLast("b")
       ..addLast("b");
-    expect(queue.shuffleUpcoming(), isFalse);
+    expect(queue.shuffle(), isFalse);
     expect(queue.items, ["a", "b", "b"]);
   });
 
@@ -114,7 +153,7 @@ void main() {
     final queue = PlaybackQueue(random: Random(2))
       ..replace(["a", "b", "c", "d"]);
     queue
-      ..shuffleUpcoming()
+      ..shuffle()
       ..addNextAll(["n"]);
     expect(queue.items[queue.nextIndex()!], "n");
   });

@@ -62,13 +62,11 @@ opens your real data.
 For stateful changes, test failure boundaries: persistence failing after bytes
 are written, a callback from an obsolete decoder generation, simultaneous
 commands, cancellation just before completion, and restart with an interrupted
-receipt. Include native-device checks for background audio changes; headless
+download. Include native-device checks for background audio changes; headless
 tests cannot validate OS audio focus, process recreation, or lock-screen
 controls.
 
-## Licensing status
+## License
 
-No project license has been selected in this checkout. This documentation does
-not grant new modification or redistribution permissions. The maintainer must
-choose a license for Melody and its local plugin before presenting the project
-as licensed open source. Third-party components retain their own licenses.
+Contributions are released under the project's [MIT License](LICENSE).
+Third-party components retain their own licenses.

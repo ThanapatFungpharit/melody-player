@@ -1,15 +1,17 @@
 import "dart:async";
 import "dart:convert";
-import "dart:io";
 
 import "package:sqlite3/sqlite3.dart";
 
+import "../core/library/manager.dart" show trackDetailsSchema;
 import "../core/storage.dart";
 import "models.dart";
 
-const _schema = """
-CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-CREATE TABLE track_details (track_id TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+/// The application's own tables, beside the library's in the same file.
+const applicationStateSchema =
+    """
+CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+$trackDetailsSchema
 """;
 const _upsertState =
     "INSERT INTO state (key, value) VALUES (?, ?) "
@@ -35,10 +37,13 @@ bool _sameJson(Object? a, Object? b) => _encode(a) == _encode(b);
 /// SQLite persistence for state outside MusicManager's domain: preferences,
 /// playback session, enriched metadata, favorites, histories, and download
 /// history. Each top-level value is one JSON row and each track's details
-/// another, so a position save rewrites one small row.
+/// another, so a change rewrites one row. Where playback is has a small row of
+/// its own ([_cursorKey]), so moving through the queue never rewrites the queue.
 ///
-/// Commits survive application crashes; a power loss can drop only the most
-/// recent commits (`synchronous=NORMAL`).
+/// It shares the library's file over a connection of its own, which is what lets
+/// its commits differ from the library's: they survive application crashes, and a
+/// power loss can drop only the most recent ones (`synchronous=NORMAL`). A track's
+/// row here goes with the track ([trackDetailsSchema]).
 class ApplicationStore {
   ApplicationStore._(this.path, this._db, this._defaultDownloadDirectory);
 
@@ -49,8 +54,8 @@ class ApplicationStore {
 
   /// The JSON last written for each top-level row (except the per-track
   /// details), so a commit encodes each value once instead of re-encoding
-  /// the stored copy to compare it. `_data` is only ever replaced, never
-  /// changed in place, which keeps these current.
+  /// the stored copy to compare it. Top-level values are only ever replaced,
+  /// never changed in place, which keeps these current.
   final Map<String, String> _written = {};
 
   /// The most download history entries kept.
@@ -64,6 +69,15 @@ class ApplicationStore {
 
   static const _searchHistoryKey = "search_history";
 
+  /// Where playback is in the queue, laid over the `playback` row when read.
+  /// A `playback` row written before this split still holds these fields
+  /// itself, and they count until the cursor row has its own.
+  static const _cursorKey = "playback_position";
+  static const _cursorFields = {"current_index", "position_ms", "duration_ms"};
+
+  /// State the launch pass over the library's lyrics kept.
+  static const _retiredKeys = ["lyrics_not_embedded"];
+
   /// How many earlier searches the search history keeps.
   static const _searchHistoryLimit = 20;
 
@@ -74,12 +88,11 @@ class ApplicationStore {
   static ApplicationStore open(
     String path, {
     required String defaultDownloadDirectory,
-    String? legacyPath,
   }) {
     final db = SqliteStore.open(path, fullSync: false);
     final store = ApplicationStore._(path, db, defaultDownloadDirectory);
     try {
-      store._data = store._open(legacyPath);
+      store._data = store._open();
     } catch (_) {
       unawaited(db.close());
       rethrow;
@@ -89,17 +102,13 @@ class ApplicationStore {
 
   Future<void> close() => _db.close();
 
-  Map<String, Object?> _open(String? legacyPath) {
-    if (_db.hasTable("state")) {
-      if (legacyPath != null) retireLegacyFile(legacyPath);
-      return _load();
-    }
-    final data = legacyPath != null ? _loadLegacy(legacyPath) : _defaults();
+  Map<String, Object?> _open() {
+    if (_db.hasTable("state")) return _load();
+    final data = _defaults();
     _db.transaction((db) {
-      db.execute(_schema);
+      db.execute(applicationStateSchema);
       _writeRows(db, data, const {}, const {});
     });
-    if (legacyPath != null) retireLegacyFile(legacyPath);
     return data;
   }
 
@@ -116,77 +125,18 @@ class ApplicationStore {
         ))
           row["track_id"] as String: jsonDecode(row["value"] as String),
       };
+      if (_retiredKeys.any(raw.containsKey)) {
+        _db.transaction((db) {
+          for (final key in _retiredKeys) {
+            db.execute("DELETE FROM state WHERE key = ?", [key]);
+            raw.remove(key);
+          }
+        });
+      }
     } on FormatException catch (error) {
       throw FormatException("Could not read application settings: $error");
     }
-    return _migrate({..._defaults(), ...raw});
-  }
-
-  Map<String, Object?> _loadLegacy(String path) {
-    final file = File(path);
-    if (!file.existsSync()) return _defaults();
-    final contents = file.readAsStringSync();
-    if (contents.isEmpty) return _defaults();
-    final Object? raw;
-    try {
-      raw = jsonDecode(contents);
-    } on FormatException catch (error) {
-      throw FormatException("Could not read application settings: $error");
-    }
-    if (raw is! Map<String, Object?>) {
-      throw const FormatException(
-        "Application settings must contain a JSON object",
-      );
-    }
-    return _migrate({..._defaults(), ...raw});
-  }
-
-  static int _version(Map<String, Object?> data) => switch (data["version"]) {
-    num value when value.isFinite => value.toInt(),
-    _ => 1,
-  };
-
-  static Map<String, Object?> _migrate(Map<String, Object?> data) {
-    if (_version(data) < 2) {
-      final details = data["track_details"];
-      if (details is Map) {
-        for (final value in details.values) {
-          if (value is! Map) continue;
-          if (!value.containsKey("uploader") && value.containsKey("artist")) {
-            value["uploader"] = value["artist"];
-          }
-          value
-            ..remove("artist")
-            ..remove("album");
-        }
-      }
-      final downloads = data["downloads"];
-      if (downloads is List) {
-        for (final record in downloads) {
-          if (record is! Map) continue;
-          if (!record.containsKey("uploader") && record.containsKey("artist")) {
-            record["uploader"] = record["artist"];
-          }
-          record.remove("artist");
-        }
-      }
-      data["version"] = 2;
-    }
-    if (_version(data) < 3) {
-      final settings = data["settings"];
-      if (settings is Map) {
-        // Browser cookie extraction was removed; a user must upload a cookie
-        // file before authenticated requests are enabled again.
-        settings
-          ..remove("use_browser_cookies")
-          ..remove("cookie_browser")
-          ..remove("cookie_profile");
-      }
-      data["version"] = 3;
-    }
-    final playback = data["playback"];
-    if (playback is Map) playback.remove("shuffle");
-    return data;
+    return {..._defaults(), ...raw};
   }
 
   Map<String, Object?> _defaults() => {
@@ -235,12 +185,6 @@ class ApplicationStore {
   TrackDetails trackDetails(String trackId) =>
       TrackDetails.fromJson(_detailsJson(trackId));
 
-  /// One metadata snapshot for a multi-row render.
-  Map<String, TrackDetails> trackDetailsMany(Iterable<String> trackIds) => {
-    for (final id in trackIds)
-      if (id.isNotEmpty) id: TrackDetails.fromJson(_detailsJson(id)),
-  };
-
   bool hasTrackDetails(String trackId) => _details.containsKey(trackId);
 
   Set<String> favoriteTrackIds() => {
@@ -262,11 +206,14 @@ class ApplicationStore {
   }
 
   void removeTrackDetails(String trackId) {
-    final histories = {
+    final lists = {
       for (final (name, _) in _playHistories)
         name: _stringList(name).where((item) => item != trackId).toList(),
+      "favorites_order": favoritesOrder()
+          .where((item) => item != trackId)
+          .toList(),
     };
-    _commit(histories, trackDetails: {trackId: _missing});
+    _commit(lists, trackDetails: {trackId: _missing});
     _deletedTrackIds.add(trackId);
   }
 
@@ -287,7 +234,7 @@ class ApplicationStore {
         "queue": <Object?>[],
         "current_index": -1,
         "position_ms": 0,
-      }..remove("shuffle");
+      };
     } else {
       cleared = _defaults()["playback"] as Map<String, Object?>;
     }
@@ -301,8 +248,14 @@ class ApplicationStore {
     _deletedTrackIds.addAll(removed);
   }
 
-  Object? get(String key, [Object? fallback]) =>
-      _data.containsKey(key) ? _clone(_data[key]) : fallback;
+  Object? get(String key, [Object? fallback]) {
+    if (!_data.containsKey(key)) return fallback;
+    if (key == "playback") {
+      final playback = _data[key];
+      if (playback is Map) return _clone({...playback, ..._cursor});
+    }
+    return _clone(_data[key]);
+  }
 
   void set(String key, Object? value) => _commit({key: _clone(value)});
 
@@ -390,6 +343,8 @@ class ApplicationStore {
     final updates = <String, Object?>{};
     if (changes.containsKey("playback")) {
       updates["playback"] = changes["playback"];
+    } else if (changes["position"] case final Map position) {
+      updates[_cursorKey] = {..._cursor, ...position};
     }
     if (changes["volume"] case final Map volume) {
       updates["settings"] = {
@@ -432,7 +387,10 @@ class ApplicationStore {
   }) {
     final updates = <String, Object?>{};
     final encoded = <String, String>{};
-    for (final MapEntry(:key, :value) in changes.entries) {
+    final rows = changes["playback"] is Map
+        ? {...changes, ..._splitSession(changes["playback"] as Map)}
+        : changes;
+    for (final MapEntry(:key, :value) in rows.entries) {
       if (trackDetails.isNotEmpty && key == "track_details") continue;
       final json = _encode(value);
       if (_data.containsKey(key) && json == _storedJson(key)) continue;
@@ -449,11 +407,11 @@ class ApplicationStore {
           entry.key: entry.value,
     };
     if (updates.isEmpty && changedDetails.isEmpty) return;
-    final candidate = {..._data, ...updates};
+    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
+    // Committed. A failure above leaves the model as it was.
+    _data = {..._data, ...updates};
     if (changedDetails.isNotEmpty) {
-      final details = Map<String, Object?>.of(
-        (candidate["track_details"] as Map).cast<String, Object?>(),
-      );
+      final details = _data["track_details"] as Map;
       for (final entry in changedDetails.entries) {
         if (identical(entry.value, _missing)) {
           details.remove(entry.key);
@@ -461,13 +419,27 @@ class ApplicationStore {
           details[entry.key] = entry.value;
         }
       }
-      candidate["track_details"] = details;
     }
-    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
-    _data = candidate;
     encoded.remove("track_details");
     _written.addAll(encoded);
   }
+
+  Map<Object?, Object?> get _cursor => switch (_data[_cursorKey]) {
+    final Map cursor => cursor,
+    _ => const {},
+  };
+
+  /// A whole session as its two rows.
+  static Map<String, Object?> _splitSession(Map session) => {
+    "playback": {
+      for (final MapEntry(:key, :value) in session.entries)
+        if (!_cursorFields.contains(key)) key: value,
+    },
+    _cursorKey: {
+      for (final MapEntry(:key, :value) in session.entries)
+        if (_cursorFields.contains(key)) key: value,
+    },
+  };
 
   String _storedJson(String key) => key == "track_details"
       ? _encode(_data[key])

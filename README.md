@@ -5,30 +5,31 @@ Flutter app written in Dart; Python is embedded only to run two libraries with
 no Dart equivalent: [`ytmusicapi`](https://github.com/sigma67/ytmusicapi),
 which finds songs, radio mixes, playlists, and lyrics on YouTube Music, and
 [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), which downloads them. It
-provides one continuous workflow for searching, previewing, downloading,
+provides one continuous workflow for searching, downloading,
 organizing, queueing, and playing music, with dedicated desktop and mobile
 interfaces for the same shared capabilities.
 
 ## What is implemented
 
 - Paged YouTube Music song search (YouTube Music's own song results, with artists, album artwork, and durations) with track-list and artwork-grid views; pasted playlist URLs load their tracks with playlist-aware pagination
-- Lyrics, timed when available: the current line follows playback and tapping a line seeks to it. Lyrics download with each track and are saved inside its audio file (a standard `USLT` frame in MP3, `©lyr` in M4A, `LYRICS` in FLAC/Ogg/Opus), not in a separate file, so other players see them too. On desktop, tracks already in the library get their lyrics embedded automatically in the background. Imported files show lyrics from their own tags or a `.lrc` with the same name; everything works offline
-- Optional manually uploaded cookie-file sessions for stream previews and downloads that need a signed-in session
-- Stream previews directly from Search
-- Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in every downloaded media file plus a derived offline UI cache
-- Search actions have one clear intent: Play reuses the intact library file or downloads it and starts playback when ready; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
+- Lyrics, timed when available: the current line follows playback and tapping a line seeks to it. Lyrics download with each track and are saved inside its audio file (a standard `USLT` frame in MP3, `©lyr` in M4A, `LYRICS` in FLAC/Ogg/Opus), not in a separate file, so other players see them too. Other tracks save their lyrics when first played, and on desktop **Write lyrics into files** in Settings → Maintenance adds them to older tracks' files. Imported files show lyrics from their own tags or a `.lrc` with the same name; lyrics Melody has saved or found in a file work offline
+- Optional manually uploaded cookie-file sessions for downloads that need a signed-in session
+- Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in downloaded media files plus a derived offline UI cache. A cover that cannot be embedded does not fail the download: the audio is kept and Melody shows the downloaded image
+- Search actions have one clear intent: Play reuses the intact library file or downloads it, keeping the current music going until it is ready and then playing it ahead of the rest of the queue; Download stores it without playing. Both reuse an existing file or join an in-flight request instead of creating another copy.
 - Automatic import of completed audio into the SQLite music library
-- Native multi-file import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, with content-hash duplicate detection
-- Persistent playlists with duplicate-aware YouTube Music playlist import, bulk multi-select track adding, ordered tracks, desktop drag-to-reorder, touch move-up/down actions, rename/delete, copy/move, and safe removal that does not delete audio files
+- Downloads that keep going off screen (with a foreground service on Android) and pick up where they left off at the next launch if Melody closes or crashes first
+- Sharing: copy a track's or playlist's links, and make a playlist from pasted links
+- Native multi-file and desktop folder import for MP3, M4A, Opus, WAV, FLAC, OGG, and AAC, plus M3U files that name them, with content-hash duplicate detection, using the title, artist, and cover art each file is tagged with
+- Persistent playlists with duplicate-aware YouTube Music playlist import that shows its progress, can be stopped, and can be updated from its link later, bulk multi-select track adding, ordered tracks, find-in-playlist, drag-to-reorder, move-up/down actions, rename/delete, add/move between playlists, and safe removal that does not delete audio files
 - Portable M3U8 playlist export and import: downloaded tracks are listed by their source link (missing ones download on import), other tracks by a relative path plus a `#MELODY-SHA256:` content line, so another device finds the same audio even when it is stored elsewhere or renamed. Entries that still match nothing can be located on disk after the import, and Library cleanup can relink any track whose file moved
-- Searchable/sortable track library, favorites, title editing, explicit uploader/channel credits, duplicate-by-source detection, and integrity-aware file paths
-- Persistent playback queue with play-next, append, reorder, remove and clear-upcoming (both undoable), a visible one-time shuffle reorder, repeat-track, and repeat-queue
+- Searchable track library, sorted by date, title, artist, length, or plays, with multi-select to queue, add to a playlist, or delete; favorites, title and artist editing, duplicate-by-source detection, and repair of missing files
+- Persistent playback queue with play-next, append, reorder, remove, clear, and shuffle (all undoable), where shuffle is a visible one-time reorder of the whole queue around the current track, plus repeat-track and repeat-queue. A track that cannot be played is skipped with a message, and playback stops after three skips in a row
 - Sleep timer that pauses playback after 15–90 minutes or when the playing track ends
 - Background playback while Melody is minimized, another app is active, or a mobile device is locked
-- Android lock-screen and notification-panel controls, plus Windows and macOS system-media controls (not on Linux), with synchronized artwork, title, artist, playback state, seeking, and previous/next actions; Pause keeps the session available and explicit Stop removes it
+- Android lock-screen and notification-panel controls, plus Windows and macOS system-media controls (not on Linux), with synchronized artwork, title, artist, playback state, seeking, and previous/next actions; Pause keeps the session available and explicit Stop removes it, keeping the queue
 - Desktop seek, precise volume, media keys, and keyboard shortcuts for playback, volume, seeking, and navigation (Ctrl+/ lists them); mobile touch controls with mute/restore while the device provides media volume buttons
 - Separate desktop (navigation rail, docked queue, hover states, menus, drag-to-reorder) and mobile (bottom navigation, full-screen panels, touch targets, bottom-sheet menus) presentations
-- Recent tracks, playback/search history, session queue state, light/dark/system themes, accent palettes, and YouTube Music/download settings
+- Recent tracks, playback/search history, session queue state, light/dark/system themes, accent palettes, and YouTube Music/download settings, all applied and saved as soon as they change, except a new music folder, which asks first
 
 ## Layout
 
@@ -85,15 +86,12 @@ any of them with `uv run <name> --help` for details:
 | `melody-version` | `tools/build/` | Print and validate the release version |
 | `melody-android-key` | `tools/build/` | Create an Android release keystore |
 
-The app icon is the in-app `BrandMark` in the saved accent color. Android
-switches between per-accent launcher entries (`icon.<accent>` aliases in the
-manifest) once Melody leaves the screen; desktop builds draw it for the window,
-taskbar, or Dock at run time, while shortcuts and the bundle keep the violet
-icon. `tools/build/icons.py` renders the bundled icons from
-`tools/build/icon_accents.json` with the Flutter SDK's Material Icons font;
-after changing `BrandMark` or the accents, regenerate them with
-`uv run python -m tools.build.icons` (`app/test/ui/app_icon_test.dart`
-fails until the table matches the theme).
+The app icon is the in-app `BrandMark` in the default violet accent, the same on
+every platform whichever accent you choose. `tools/build/icons.py` renders the
+bundled icons from `tools/build/icon_colors.json` with the Flutter SDK's Material
+Icons font; after changing `BrandMark` or the default accent, regenerate them with
+`uv run python -m tools.build.icons` (`app/test/ui/app_icon_test.dart` fails until
+the colors match the theme).
 
 Flutter tools are found on `PATH`, or in `$FLUTTER_ROOT/bin`. Every tool loads
 local settings such as `FLUTTER_ROOT` and `JAVA_HOME` from `.env` in the
@@ -121,10 +119,16 @@ Downloaded audio defaults to `~/Music/Melody` on desktop. On Android (11 or newe
 downloads are saved straight to the public `Music/Melody` folder, or another
 folder inside `Music` chosen in Settings, without any storage permission. The
 music folder only ever receives finished audio: each download stages in the app
-data folder (partial streams, thumbnails, receipts), and that staging is
-removed when the download ends. On desktop, Settings shows the app data folder
-with buttons to open it or copy its path. Its `cache` folder is safe to delete
-while Melody is closed.
+data folder (partial streams and thumbnails), and that staging is removed when
+the download ends, or kept for up to a week if another attempt can pick up from
+there. On desktop, Settings shows the app data folder with buttons to open it or
+copy its path. Its `cache` folder is safe to delete while Melody is closed.
+
+Melody upgrades from 1.0.2 or newer. If yours is older, install 1.0.3 and open it
+once first; Melody tells you so rather than start over beside your old library.
+The first launch after 1.0.3 moves settings, history, and the queue from
+`state.db` into `library.db`. This is one-way: an earlier release opened afterwards
+finds your tracks and playlists but not your settings.
 
 YouTube Music access is anonymous by default. To use a signed-in session, export
 a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody
@@ -138,8 +142,9 @@ schedules it; the next launch downloads, verifies, and activates it before the
 package is imported, and keeps the working version if anything fails. YouTube
 Music changes its private API often, so updating ytmusicapi is the first step
 when search, recommendations, or lyrics stop working. Maintenance also offers **Clean up
-library**, which removes references to deleted tracks and lists stray audio
-files without deleting anything.
+library**, which removes references to deleted tracks and lists missing tracks and
+stray audio files, including those in subfolders, without deleting anything until
+you choose.
 
 ## Test
 
@@ -199,6 +204,6 @@ commit it. `--allow-debug-signing` is for local testing only.
 The **Application builds** workflow builds Windows, Linux, Intel and Apple
 Silicon macOS, Android APKs, and the Android App Bundle on tagged releases.
 
-## License status
+## License
 
-A project license has not yet been selected. See [Contributing](CONTRIBUTING.md#licensing-status); this repository currently contains no new license grant for Melody or its local plugin.
+Melody and its local plugin are released under the [MIT License](LICENSE). Third-party components retain their own licenses.

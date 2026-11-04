@@ -1,12 +1,16 @@
 import "../support/temp.dart";
+import "dart:async";
+import "dart:convert";
 import "dart:io";
 
 import "package:flutter/material.dart";
+import "package:flutter/rendering.dart";
 import "package:flutter/services.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
 import "package:flutter_test/flutter_test.dart";
 import "package:melody_audio/melody_audio.dart" show AudioEngineSnapshot;
 import "package:melody/ui/app_state.dart";
+import "package:melody/ui/controllers/playlists_controller.dart";
 import "package:melody/services.dart";
 import "package:melody/application/downloads.dart";
 import "package:melody/application/library_service.dart";
@@ -19,11 +23,16 @@ import "package:melody/application/thumbnails.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/package_runtime.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/library/models.dart";
 import "package:melody/platform/paths.dart";
+import "package:melody/ui/desktop/controls.dart";
+import "package:melody/ui/desktop/pages/library_page.dart";
 import "package:melody/ui/desktop/player_bar.dart";
 import "package:melody/ui/desktop/shell.dart";
+import "package:melody/ui/mobile/controls.dart" show TrackRow;
 import "package:melody/ui/mobile/player.dart";
 import "package:melody/ui/mobile/shell.dart";
+import "package:melody/ui/shared/dialogs.dart";
 import "package:melody/ui/shared/actions.dart"
     show playlistActions, queueDropSlot;
 import "package:melody/ui/shared/theme.dart";
@@ -105,11 +114,20 @@ Future<void> _loadFonts() async {
 
 /// [defaultMusic] is the platform default folder, when the library was
 /// set up in a different one.
+const _cookieFile =
+    "# Netscape HTTP Cookie File\n"
+    ".youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalue\n";
+
+/// Rows never load here. Long enough for each row's load watchdog to lapse, and
+/// for playback to skip along the queue until it stops.
+const _loadsGiveUp = Duration(seconds: 52);
+
 Future<MelodyApp> _app(
   Directory root, {
   required bool mobile,
   String? defaultMusic,
   FakeWorkerTransport? transport,
+  List<DownloadRecord> extraDownloads = const [],
 }) async {
   final music = p.join(root.path, "Music");
   final paths = AppPaths(
@@ -117,10 +135,10 @@ Future<MelodyApp> _app(
     defaultMusicDirectory: defaultMusic ?? music,
   );
   final store = ApplicationStore.open(
-    paths.stateDatabase,
+    paths.database,
     defaultDownloadDirectory: music,
   );
-  final manager = MusicManager.open(paths.libraryDatabase, music);
+  final manager = MusicManager.open(paths.database, music);
   final library = LibraryService(manager, store);
   final ids = <String>[];
   for (final (index, title) in [
@@ -172,6 +190,7 @@ Future<MelodyApp> _app(
       status: DownloadStatus.failed,
       error: "The network request failed. Check your connection and retry.",
     ),
+    ...extraDownloads,
   ]);
   final worker = WorkerClient(transport ?? FakeWorkerTransport());
   final thumbnails = ThumbnailCache(paths.artworkCache);
@@ -182,9 +201,8 @@ Future<MelodyApp> _app(
     worker,
     thumbnails: thumbnails,
     stagingDirectory: paths.downloadStaging,
-    receiptDirectory: paths.downloadReceipts,
   );
-  final catalog = MusicCatalog(worker, () => const {});
+  final catalog = MusicCatalog(worker);
   final services = AppServices(
     paths: paths,
     store: store,
@@ -253,12 +271,18 @@ void main() {
     required Size size,
     String theme = "light",
     FakeWorkerTransport? transport,
+    List<DownloadRecord> extraDownloads = const [],
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final app = (await tester.runAsync(
-      () => _app(root, mobile: mobile, transport: transport),
+      () => _app(
+        root,
+        mobile: mobile,
+        transport: transport,
+        extraDownloads: extraDownloads,
+      ),
     ))!;
     addTearDown(app.close);
     await tester.pumpWidget(
@@ -280,7 +304,7 @@ void main() {
     final folder = app.settings.downloadDirectory;
     expect(folder, isNot(defaultMusic));
 
-    await app.settingsDraft.runDataAction("settings");
+    await app.settingsControls.runDataAction("settings");
     // The library's files live in its folder; moving it would lose them.
     expect(app.settings.downloadDirectory, folder);
     expect(app.services.store.settings.downloadDirectory, folder);
@@ -292,11 +316,138 @@ void main() {
     );
 
     // Once the library is empty, the default folder applies again.
-    await app.settingsDraft.runDataAction("everything");
+    await app.settingsControls.runDataAction("everything");
     expect(app.settings.downloadDirectory, defaultMusic);
     expect(app.services.store.settings.downloadDirectory, defaultMusic);
     // Applied without a restart, so new downloads land where it records.
     expect(app.services.manager.musicFolder, defaultMusic);
+  });
+
+  test("Reset everything deletes library audio, not originals", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final manager = app.services.manager;
+    final downloaded = manager.trackPath(manager.listTracks().first.id);
+    final original = p.join(root.path, "Original.mp3");
+    await File("test/fixtures/artwork/cover.mp3").copy(original);
+    await File(original).writeAsBytes([9], mode: FileMode.append);
+    final imported = manager.trackPath(
+      await app.services.library.importLocalFile(original),
+    );
+    expect(File(downloaded).existsSync(), isTrue);
+    expect(File(imported).existsSync(), isTrue);
+
+    await app.settingsControls.runDataAction("everything");
+
+    expect(File(downloaded).existsSync(), isFalse);
+    expect(File(imported).existsSync(), isFalse);
+    expect(File(original).existsSync(), isTrue);
+  });
+
+  group("a playlist imported from a link", () {
+    const link = "https://music.youtube.com/watch?v=x&list=PLroad&si=tracking";
+    const stored = "https://music.youtube.com/playlist?list=PLroad";
+
+    Map<String, Object?> song(String id, String title) => {
+      "videoId": id,
+      "title": title,
+      "artists": [
+        {"name": "Band"},
+      ],
+    };
+
+    late FakeWorkerTransport transport;
+    late MelodyApp app;
+
+    /// Runs one import, or update, through to its end.
+    Future<void> imported() async {
+      await app.playlists.importFromUrl(link);
+      expect(app.playlists.importing, isFalse);
+    }
+
+    setUp(() async {
+      transport = FakeWorkerTransport()
+        ..ytMusicResults["get_playlist"] = {
+          "title": "Road trip",
+          "tracks": [song("roadsong001", "One")],
+        };
+      app = await _app(root, mobile: false, transport: transport);
+      addTearDown(app.close);
+    });
+
+    Playlist road() => app.services.manager.findPlaylistBySource(stored)!;
+
+    test("keeps its link, and importing it again updates it", () async {
+      await imported();
+      final playlist = road();
+      expect(playlist.name, "Road trip");
+      expect(playlist.trackIds, hasLength(1));
+      final before = app.services.manager.counts().$2;
+
+      // The link gained a song; the fake's identical bytes need a new name.
+      transport
+        ..audioFixture = "test/fixtures/artwork/cover_v24.mp3"
+        ..downloadedName = "Two.mp3"
+        ..ytMusicResults["get_playlist"] = {
+          "title": "Road trip",
+          "tracks": [song("roadsong001", "One"), song("roadsong002", "Two")],
+        };
+      await imported();
+
+      expect(app.services.manager.counts().$2, before);
+      expect(road().id, playlist.id);
+      expect(road().trackIds, hasLength(2));
+      expect(road().trackIds.first, playlist.trackIds.first);
+    });
+
+    test("an update keeps a name and tracks given here", () async {
+      await imported();
+      final playlist = road();
+      app.services.manager.renamePlaylist(playlist.id, "My road trip");
+      final mine = app.services.manager.listTracks().last.id;
+      app.services.manager.addToPlaylist(playlist.id, mine);
+
+      await app.playlists.updateFromSource(road());
+
+      expect(road().name, "My road trip");
+      expect(road().trackIds, hasLength(2));
+      expect(road().trackIds.last, mine);
+    });
+
+    test("an update tries again what failed", () async {
+      transport.audioFixture = "missing-file.mp3";
+      await imported();
+      expect(road().trackIds, isEmpty);
+
+      transport.audioFixture = "test/fixtures/artwork/cover_v24.mp3";
+      await app.playlists.updateFromSource(road());
+      expect(road().trackIds, hasLength(1));
+    });
+
+    test("reports its progress and can be stopped", () async {
+      transport.downloadGate = Completer();
+      final import = app.playlists.importFromUrl(link);
+      while (app.playlists.importProgress(
+            app.services.manager.findPlaylistBySource(stored)?.id ?? "",
+          ) ==
+          null) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      final progress = app.playlists.importProgress(road().id)!;
+      expect(progress.done, 0);
+      expect(progress.total, 1);
+
+      app.playlists.cancelImport(road().id);
+      transport.downloadGate!.complete();
+      await import;
+      expect(app.playlists.importing, isFalse);
+      expect(app.playlists.importProgress(road().id), isNull);
+    });
+
+    test("a plain playlist has no link to update from", () async {
+      final id = app.services.manager.createPlaylist("Mine");
+      expect(app.services.manager.getPlaylist(id).source, isEmpty);
+    });
   });
 
   test(
@@ -342,50 +493,163 @@ void main() {
     },
   );
 
-  test("leaving Settings unsaved drops an appearance preview", () async {
+  test("a playlist file's files import, and the rest can be located", () async {
     final app = await _app(root, mobile: false);
     addTearDown(app.close);
-    final saved = (app.settings.theme, app.settings.accentColor);
-    expect(saved.$2, isNot("rose"));
+    final folder = p.join(root.path, "Elsewhere");
+    await Directory(folder).create();
+    Future<String> audio(String name, int mark) async {
+      final path = p.join(folder, name);
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      await File(path).writeAsBytes([mark], mode: FileMode.append);
+      return path;
+    }
 
-    app.openPanel(AppPanel.settings);
-    app.settingsDraft.previewAppearance(theme: "dark", accent: "rose");
+    await audio("listed.mp3", 90);
+    final found = await audio("found elsewhere.mp3", 91);
+    final messages = <AppMessage>[];
+    final listening = app.messages.listen(messages.add);
+    addTearDown(listening.cancel);
+    MissingPlaylistTracks? missing;
+
+    await app.playlists.importFromFile(
+      utf8.encode(
+        "#EXTM3U\n#PLAYLIST:Mixed\n#EXTINF:-1,Gone\ngone.mp3\nlisted.mp3\n",
+      ),
+      "Mixed.m3u8",
+      directory: folder,
+      onLocate: (located) => missing = located,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final summary = messages.last;
+    expect(summary.text, contains("1 track was not found"));
+    summary.action!.$2();
+    final pending = missing!.pending.single;
+    expect(missing!.entries[pending].title, "Gone");
+    final playlist = app.playlists.selectedPlaylistId!;
+    final listed = app.services.manager.getPlaylist(playlist).trackIds.single;
+
+    await app.playlists.locateMissing(missing!, pending, found);
+
+    expect(missing!.pending, isEmpty);
+    final trackIds = app.services.manager.getPlaylist(playlist).trackIds;
+    // The located file takes the place the entry had in the file.
+    expect(trackIds, hasLength(2));
+    expect(trackIds.last, listed);
+  });
+
+  test("a setting applies and is saved the moment it changes", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    expect(app.settings.accentColor, isNot("rose"));
+
+    app.settingsControls.update(
+      (next) => next
+        ..theme = "dark"
+        ..accentColor = "rose",
+    );
+
     expect(app.appearance.value, ("dark", "rose"));
-    app.closePanel();
-    expect(app.appearance.value, saved);
-
-    app.openPanel(AppPanel.settings);
-    app.settingsDraft.reset();
-    app.settingsDraft.previewAppearance(accent: "rose");
-    await app.settingsDraft.save();
-    app.openPanel(AppPanel.downloads);
-    expect(app.appearance.value, (saved.$1, "rose"));
+    expect(app.services.store.settings.theme, "dark");
     expect(app.services.store.settings.accentColor, "rose");
   });
 
-  test("a new music folder applies immediately, stored absolute", () async {
+  test("a changed setting keeps the volume playback owns", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    app.playback.setVolume(25);
+
+    app.settingsControls.update((next) => next.theme = "dark");
+
+    expect(app.services.store.settings.volume, 25);
+  });
+
+  test("a cookie file is used and removed at once", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final cookies = File(app.services.paths.cookieFile);
+    final settings = app.settingsControls;
+
+    await settings.uploadCookie("mine.txt", utf8.encode(_cookieFile));
+    expect(await cookies.exists(), isTrue);
+    expect(settings.savedCookieAvailable, isTrue);
+
+    await settings.removeCookie();
+    expect(await cookies.exists(), isFalse);
+    expect(settings.savedCookieAvailable, isFalse);
+  });
+
+  test("a new music folder applies once confirmed, stored absolute", () async {
     final app = await _app(root, mobile: false);
     addTearDown(app.close);
     final original = app.settings.downloadDirectory;
     final requested = p.join(root.path, "Elsewhere", "..", "New Music");
     final expected = p.join(root.path, "New Music");
+    final settings = app.settingsControls;
 
-    app.settingsDraft.draft.downloadDirectory = requested;
+    settings.typeMusicFolder(requested);
+    expect(settings.musicFolderChanged, isTrue);
+    expect(app.settings.downloadDirectory, original);
     await expectLater(
-      app.settingsDraft.save(),
+      settings.applyMusicFolder(),
       throwsA(isA<FormatException>()),
     );
     // A library's files stay where they are recorded.
     expect(app.services.manager.musicFolder, original);
     expect(app.services.store.settings.downloadDirectory, original);
 
-    await app.settingsDraft.runDataAction("library");
-    app.settingsDraft.draft.downloadDirectory = requested;
-    await app.settingsDraft.save();
+    await settings.runDataAction("library");
+    settings.typeMusicFolder(requested);
+    await settings.applyMusicFolder();
+    expect(settings.musicFolderChanged, isFalse);
     expect(app.settings.downloadDirectory, expected);
     expect(app.services.store.settings.downloadDirectory, expected);
     expect(app.services.manager.musicFolder, expected);
     expect(Directory(expected).existsSync(), isTrue);
+  });
+
+  test("an empty folder field asks for no change", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    app.settingsControls.typeMusicFolder("   ");
+    expect(app.settingsControls.musicFolderChanged, isFalse);
+    expect(app.settingsControls.tracksToMove, 0);
+  });
+
+  testWidgets("Settings has no Save, and a new folder asks before moving", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pumpAndSettle();
+    expect(find.text("Save settings"), findsNothing);
+    expect(find.text("Move library here"), findsNothing);
+
+    final field = find.widgetWithText(TextFormField, "Music & download folder");
+    await tester.enterText(field, p.join(root.path, "Elsewhere"));
+    await tester.pump();
+    // Typing keeps the field, and its text, in place.
+    expect(field, findsOneWidget);
+    expect(tester.testTextInput.isVisible, isTrue);
+    await tester.tap(find.text("Move library here"));
+    await tester.pumpAndSettle();
+    expect(find.text("Move your library?"), findsOneWidget);
+    expect(
+      app.services.manager.musicFolder,
+      isNot(p.join(root.path, "Elsewhere")),
+    );
+    await tester.tap(find.text("Cancel"));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text("Keep current folder"));
+    await tester.pumpAndSettle();
+    expect(find.text("Move library here"), findsNothing);
+    await tester.pump(const Duration(seconds: 15));
   });
 
   testWidgets("desktop screens render", (tester) async {
@@ -416,6 +680,360 @@ void main() {
       app.openPanel(panel);
       await shoot(tester, "desktop_${panel.name}");
     }
+  });
+
+  testWidgets("Stop is offered only while something is loaded", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    IconButton stop() => tester.widget(
+      find.ancestor(
+        of: find.byIcon(Icons.stop_rounded),
+        matching: find.byType(IconButton),
+      ),
+    );
+    final queue = List.of(app.playback.queue.items);
+    expect(queue, isNotEmpty);
+    expect(stop().onPressed, isNull);
+
+    app.playback.toggle();
+    await tester.pump();
+    expect(stop().onPressed, isNotNull);
+
+    app.playback.stop();
+    await tester.pump();
+    expect(stop().onPressed, isNull);
+    expect(app.playback.queue.items, queue);
+    // The real engine has no decoder here; let its calls time out.
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  test("shuffling the queue offers to put it back", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final messages = <AppMessage>[];
+    final subscription = app.messages.listen(messages.add);
+    addTearDown(subscription.cancel);
+    final before = List.of(app.playback.queue.items);
+    final current = app.playback.currentTrackId;
+
+    app.shuffleQueue();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(app.playback.currentTrackId, current);
+    expect(app.playback.queue.currentIndex, 0);
+    final (label, undo) = messages.single.action!;
+    expect(label, "Undo");
+    undo();
+    expect(app.playback.queue.items, before);
+    expect(app.playback.currentTrackId, current);
+  });
+
+  testWidgets("a track can go to a playlist picked or made from its menu", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final track = app.services.manager.listTracks().first;
+    final existing = app.services.manager.listPlaylists().single;
+    Future<void> pick() async {
+      showPlaylistPicker(
+        tester.element(find.byType(DesktopShell)),
+        app,
+        title: "Add to playlist",
+        onChosen: (id) => app.playlists.addTrack(id, track.id),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await pick();
+    await tester.tap(find.text("New playlist…"));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, "Fresh");
+    await tester.tap(find.text("Create"));
+    await tester.pumpAndSettle();
+    final fresh = app.services.manager.listPlaylists().firstWhere(
+      (playlist) => playlist.name == "Fresh",
+    );
+    expect(fresh.trackIds, [track.id]);
+    expect(app.playlists.selectedPlaylistId, isNull);
+
+    await pick();
+    expect(find.text(existing.name), findsWidgets);
+    await tester.tap(find.text("Fresh").last);
+    await tester.pumpAndSettle();
+    expect(app.services.manager.getPlaylist(fresh.id).trackIds, [track.id]);
+  });
+
+  testWidgets("Select all picks only the tracks a search shows", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final playlist = app.services.manager.getPlaylist(
+      app.playlists.create("Empty", open: false),
+    );
+    showBulkAddTracksDialog(
+      tester.element(find.byType(DesktopShell)),
+      app,
+      playlist,
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, "weightless");
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("Select all 1 shown"));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("Add selected"));
+    await tester.pumpAndSettle();
+    final added = app.services.manager.getPlaylist(playlist.id).trackIds;
+    expect(added, hasLength(1));
+    expect(app.services.manager.getTrack(added.single).title, "Weightless");
+  });
+
+  /// Adds [count] tracks named "Extra <n>" to the library.
+  Future<List<String>> addTracks(
+    WidgetTester tester,
+    MelodyApp app,
+    int count,
+  ) async => (await tester.runAsync(() async {
+    final manager = app.services.manager;
+    final ids = <String>[];
+    for (var index = 0; index < count; index++) {
+      final path = p.join(manager.musicFolder, "Extra $index.mp3");
+      await File(path).writeAsString("Extra $index");
+      ids.add(await manager.addTrack(path, title: "Extra $index"));
+    }
+    app.touchLibrary();
+    return ids;
+  }))!;
+
+  Future<void> settle(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  testWidgets("a long library scrolls instead of paging", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    await addTracks(tester, app, 120);
+    app.navigate(2);
+    await settle(tester);
+    expect(find.text("Next"), findsNothing);
+    expect(find.byType(LibraryTrackRow).evaluate().length, lessThan(40));
+    // The oldest tracks are last, in view after a long scroll.
+    await tester.dragUntilVisible(
+      find.text("Extra 0"),
+      find.byType(ListView).last,
+      const Offset(0, -2000),
+    );
+    expect(find.text("Extra 0"), findsOneWidget);
+  });
+
+  testWidgets("the library can pick several tracks to act on", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.navigate(2);
+    await settle(tester);
+    final library = app.library;
+    await tester.tap(find.byTooltip("Select tracks"));
+    await settle(tester);
+    expect(library.selecting, isTrue);
+    await tester.tap(find.text("Clair de Lune"));
+    await tester.tap(find.text("Midnight City"));
+    await settle(tester);
+    expect(find.text("2 selected"), findsOneWidget);
+    await tester.tap(find.text("Clair de Lune"));
+    await settle(tester);
+    expect(find.text("1 selected"), findsOneWidget);
+
+    await tester.tap(find.text("Select all"));
+    await settle(tester);
+    expect(find.text("3 selected"), findsOneWidget);
+    final queued = app.playback.queue.items.length;
+    await tester.tap(find.byTooltip("Add to queue"));
+    await settle(tester);
+    expect(app.playback.queue.items, hasLength(queued + 3));
+    expect(library.selecting, isFalse);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  test("deleting the selected tracks removes them and their files", () async {
+    final app = await _app(root, mobile: false);
+    addTearDown(app.close);
+    final manager = app.services.manager;
+    final ids = List.of(app.library.visibleIds());
+    final paths = [for (final id in ids.take(2)) manager.trackPath(id)];
+    app.library
+      ..startSelecting(ids[0])
+      ..toggleSelected(ids[1]);
+
+    await app.library.deleteSelected();
+
+    expect(manager.counts().$1, ids.length - 2);
+    expect(manager.hasTrack(ids[2]), isTrue);
+    for (final path in paths) {
+      expect(File(path).existsSync(), isFalse);
+    }
+    expect(app.library.selecting, isFalse);
+    expect(app.library.selected, isEmpty);
+  });
+
+  testWidgets("a mobile row starts selecting on a long press", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(420, 900),
+    );
+    app.navigate(2);
+    await settle(tester);
+    await tester.longPress(find.text("Clair de Lune"));
+    await settle(tester);
+    expect(app.library.selecting, isTrue);
+    expect(find.text("1 selected"), findsOneWidget);
+    await tester.tap(find.text("Midnight City"));
+    await settle(tester);
+    expect(find.text("2 selected"), findsOneWidget);
+  });
+
+  testWidgets("a track's title and artist can be edited", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final track = app.services.manager.listTracks().first;
+    showEditTrackDialog(tester.element(find.byType(DesktopShell)), app, track);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, "Title"), "");
+    await tester.tap(find.text("Save"));
+    await tester.pumpAndSettle();
+    // An empty title is refused, and the dialog stays open to say so.
+    expect(find.text("Song title cannot be empty"), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, "Title"), "New name");
+    await tester.enterText(find.widgetWithText(TextField, "Artist"), "Someone");
+    await tester.tap(find.text("Save"));
+    await tester.pumpAndSettle();
+    expect(app.services.manager.getTrack(track.id).title, "New name");
+    expect(app.services.library.details(track.id).uploader, "Someone");
+  });
+
+  testWidgets("the queue opens at the current track and finds rows", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    final ids = await addTracks(tester, app, 200);
+    final queue = app.playback.queue
+      ..items = ids
+      ..currentIndex = 150;
+    app.openPanel(AppPanel.queue);
+    await settle(tester);
+    await tester.pump();
+    expect(find.widgetWithText(TrackListRow, "Extra 150"), findsOneWidget);
+    expect(find.widgetWithText(TrackListRow, "Extra 0"), findsNothing);
+
+    await tester.enterText(
+      find.widgetWithText(TextField, "Find in the queue"),
+      "Extra 7",
+    );
+    await settle(tester);
+    expect(find.widgetWithText(TrackListRow, "Extra 7"), findsOneWidget);
+    expect(find.widgetWithText(TrackListRow, "Extra 150"), findsNothing);
+    // A found row still plays from its real place in the queue.
+    final row = tester.widget<TrackListRow>(
+      find.widgetWithText(TrackListRow, "Extra 7"),
+    );
+    row.onPlay!();
+    expect(queue.currentIndex, 7);
+    await tester.pump(_loadsGiveUp);
+  });
+
+  testWidgets("a playlist finds rows and keeps their real places", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(420, 900),
+    );
+    final ids = await addTracks(tester, app, 60);
+    final playlist = app.services.manager.createPlaylist("Long");
+    app.services.manager.addTracksToPlaylist(playlist, ids);
+    app.playlists.openPlaylist(playlist);
+    await settle(tester);
+    await tester.enterText(
+      find.widgetWithText(TextFormField, "Find in this playlist"),
+      "Extra 42",
+    );
+    await settle(tester);
+    expect(find.widgetWithText(TrackRow, "Extra 42"), findsOneWidget);
+    expect(find.widgetWithText(TrackRow, "Extra 0"), findsNothing);
+    await tester.tap(find.widgetWithText(TrackRow, "Extra 42"));
+    await settle(tester);
+    expect(app.playback.queue.items, ids);
+    expect(app.playback.queue.currentIndex, 42);
+    await tester.pump(_loadsGiveUp);
+  });
+
+  testWidgets("a library row plays the list from there", (tester) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.navigate(2);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final ids = app.library.visibleIds();
+    app.playback.queue.replace([ids.first]);
+
+    app.library.playFrom(1);
+
+    expect(app.playback.queue.items, ids);
+    expect(app.playback.currentTrackId, ids[1]);
+    await tester.pump(_loadsGiveUp);
+  });
+
+  testWidgets("Reset everything says it deletes the library's audio", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(
+      find.textContaining(
+        "delete every downloaded and imported audio file",
+        skipOffstage: false,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining("Audio files", skipOffstage: false),
+      findsNothing,
+    );
   });
 
   testWidgets("scrolling lyrics by hand stops following playback", (
@@ -546,8 +1164,15 @@ void main() {
       expect(app.positionAdvancing, isTrue);
       // A per-frame ticker would already have asked for the next frame.
       expect(tester.binding.hasScheduledFrame, isFalse);
+      // The position's update repaints its own layer, not the window.
+      var painted = 0;
+      debugProfilePaintsEnabled = true;
+      debugOnProfilePaint = (_) => painted++;
       app.playback.onPosition(65000);
       await tester.pump();
+      debugProfilePaintsEnabled = false;
+      debugOnProfilePaint = null;
+      expect(painted, lessThan(60));
       expect(find.text("1:05"), findsWidgets);
       expect(tester.binding.hasScheduledFrame, isFalse);
     });
@@ -628,9 +1253,107 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(NowPlaying), findsNothing);
     // The skipped-to track never loads here; let its load watchdog lapse.
-    await tester.pump(const Duration(seconds: 15));
+    await tester.pump(_loadsGiveUp);
     await tester.pumpAndSettle();
   });
+
+  testWidgets("what went wrong off screen waits for the user's return", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: true,
+      size: const Size(390, 844),
+    );
+    final shown = <String>[];
+    final messages = app.messages.listen((message) => shown.add(message.text));
+    addTearDown(messages.cancel);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+
+    app
+      ..showMessage("Added to the queue.")
+      ..showMessage("3 songs downloaded.", keep: true)
+      ..showError("It failed.");
+    await tester.pump();
+    expect(shown, isEmpty);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    app.resumed();
+    await tester.pump();
+
+    expect(shown, ["3 songs downloaded.", "It failed."]);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
+  for (final mobile in [false, true]) {
+    testWidgets("the playing track has its actions (mobile: $mobile)", (
+      tester,
+    ) async {
+      await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1440, 900),
+      );
+      await tester.pump();
+      if (mobile) {
+        await tester.tap(find.byTooltip("Open Now Playing"));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.descendant(
+            of: find.byType(NowPlaying),
+            matching: find.byIcon(Icons.more_vert_rounded),
+          ),
+        );
+      } else {
+        await tester.tap(
+          find.descendant(
+            of: find.byType(DesktopPlayerBar),
+            matching: find.byTooltip("More actions"),
+          ),
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(find.text("Edit details"), findsOneWidget);
+      await tester.pump(const Duration(seconds: 15));
+    });
+
+    testWidgets("a download only a newer engine can fix points to Settings "
+        "(mobile: $mobile)", (tester) async {
+      final app = await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1440, 900),
+        extraDownloads: [
+          DownloadRecord(
+            id: "stale",
+            url: "https://youtu.be/yyyyyyyyyyy",
+            title: "Stale engine",
+            status: DownloadStatus.failed,
+            error: "The download engine needs an update.",
+            recovery: "update_downloader",
+          ),
+        ],
+      );
+      await tester.pump();
+      if (mobile) {
+        await tester.tap(find.byTooltip("Downloads"));
+      } else {
+        app.openPanel(AppPanel.downloads);
+      }
+      await tester.pumpAndSettle();
+      expect(find.text("Open Settings"), findsOneWidget);
+
+      await tester.tap(find.text("Open Settings"));
+      await tester.pumpAndSettle();
+      expect(app.activePanel.value, AppPanel.settings);
+      await tester.pump(const Duration(seconds: 15));
+    });
+  }
 
   testWidgets("desktop shortcuts control playback but leave typing alone", (
     tester,
@@ -829,7 +1552,7 @@ void main() {
         app,
         app.playlists.playlist(favoritesPlaylistId),
       ).map((action) => action.label),
-      ["Export playlist"],
+      ["Copy links", "Export playlist"],
     );
     expect(() => app.playlists.delete(favoritesPlaylistId), throwsStateError);
     expect(

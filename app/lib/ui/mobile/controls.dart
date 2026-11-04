@@ -3,7 +3,6 @@ import "dart:async";
 import "package:flutter/material.dart";
 
 import "../../application/models.dart";
-import "../../core/library/models.dart";
 import "../app_state.dart";
 import "../shared/actions.dart";
 import "../shared/format.dart";
@@ -172,6 +171,7 @@ class TrackRow extends StatelessWidget {
     required this.artwork,
     required this.onTap,
     required this.trailing,
+    this.onLongPress,
     this.leading,
     this.selected = false,
     this.playlist = false,
@@ -183,6 +183,7 @@ class TrackRow extends StatelessWidget {
   final String credit;
   final String artwork;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final Widget trailing;
   final Widget? leading;
   final bool selected;
@@ -208,6 +209,7 @@ class TrackRow extends StatelessWidget {
               child: InkWell(
                 borderRadius: BorderRadius.circular(Radii.medium),
                 onTap: onTap,
+                onLongPress: onLongPress,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
                   child: Row(
@@ -312,21 +314,26 @@ ListView scrollPage(List<Widget> children) => ListView.separated(
   itemBuilder: (context, index) => children[index],
 );
 
-/// A [scrollPage] whose keyed [items] can be dragged into a new order with a
-/// long press or a [reorderHandle]. [onReorder] gets the old
-/// index and the index after removal.
+/// A [scrollPage] whose keyed rows, built as they come into view, can be
+/// dragged into a new order with a long press or a [reorderHandle], unless
+/// [reorderable] is off. [onReorder] gets the old index and the index after
+/// removal.
 Widget reorderablePage({
   required List<Widget> header,
-  required List<Widget> items,
+  required int itemCount,
+  required IndexedWidgetBuilder itemBuilder,
   List<Widget> footer = const [],
   required void Function(int oldIndex, int newIndex) onReorder,
+  bool reorderable = true,
+  ScrollController? controller,
 }) {
   Widget section(List<Widget> children) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     spacing: 10,
     children: children,
   );
-  return ReorderableListView(
+  return ReorderableListView.builder(
+    scrollController: controller,
     buildDefaultDragHandles: false,
     padding: const EdgeInsets.only(bottom: 16),
     header: section(header),
@@ -337,14 +344,16 @@ Widget reorderablePage({
             child: section(footer),
           ),
     onReorderItem: onReorder,
-    children: [
-      for (final (index, item) in items.indexed)
-        ReorderableDelayedDragStartListener(
-          key: item.key,
-          index: index,
-          child: Padding(padding: const EdgeInsets.only(top: 10), child: item),
-        ),
-    ],
+    itemCount: itemCount,
+    itemBuilder: (context, index) {
+      final item = itemBuilder(context, index);
+      return ReorderableDelayedDragStartListener(
+        key: item.key,
+        index: index,
+        enabled: reorderable,
+        child: Padding(padding: const EdgeInsets.only(top: 10), child: item),
+      );
+    },
   );
 }
 
@@ -370,22 +379,39 @@ Widget reorderHandle(BuildContext context, int index) =>
 Widget libraryTrackRow(
   BuildContext context,
   MelodyApp app,
-  Track track,
-  List<Playlist> playlists, {
-  TrackDetails? details,
-}) {
-  final info = details ?? app.services.library.details(track.id);
-  return TrackRow(
-    app: app,
-    title: track.displayTitle,
-    credit: info.credit,
-    artwork: info.thumbnail,
-    selected: app.playback.currentTrackId == track.id,
-    favorite: info.favorite,
-    onTap: () => app.playback.playTrack(track.id),
-    trailing: MoreButton(
-      track.displayTitle,
-      () => libraryTrackActions(context, app, track, info, playlists),
+  String trackId,
+  int index,
+) {
+  // A row may outlive its track for a frame while a deletion finishes.
+  if (!app.services.manager.hasTrack(trackId)) return const SizedBox.shrink();
+  final library = app.library;
+  final track = app.services.manager.getTrack(trackId);
+  final info = app.services.library.details(trackId);
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: TrackRow(
+      app: app,
+      title: track.displayTitle,
+      credit: info.credit,
+      artwork: app.services.library.artwork(trackId),
+      selected: app.playback.currentTrackId == trackId,
+      favorite: info.favorite,
+      leading: library.selecting
+          ? Checkbox(
+              value: library.selected.contains(trackId),
+              onChanged: (_) => library.toggleSelected(trackId),
+            )
+          : null,
+      onTap: library.selecting
+          ? () => library.toggleSelected(trackId)
+          : () => library.playFrom(index),
+      onLongPress: library.selecting
+          ? null
+          : () => library.startSelecting(trackId),
+      trailing: MoreButton(
+        track.displayTitle,
+        () => libraryTrackActions(context, app, track, info),
+      ),
     ),
   );
 }
@@ -394,31 +420,19 @@ Widget searchResultRow(
   BuildContext context,
   MelodyApp app,
   SearchResult result,
-  List<Playlist> playlists,
-) {
-  final detail = result.isPlaylist
-      ? "${result.entryCount > 0 ? result.entryCount : "Multiple"} tracks"
-      : formatDuration(result.duration);
-  return TrackRow(
-    app: app,
-    title: result.title,
-    credit: "${result.uploader} · $detail",
-    artwork: result.thumbnail,
-    playlist: result.isPlaylist,
-    favorite: !result.isPlaylist && app.search.isFavorite(result),
-    onTap: () => app.search.playResult(result),
-    trailing: MoreButton(
-      result.title,
-      () => searchResultActions(
-        context,
-        app,
-        result,
-        playlists,
-        includePrimaryActions: true,
-      ),
-    ),
-  );
-}
+) => TrackRow(
+  app: app,
+  title: result.title,
+  credit: "${result.uploader} · ${formatDuration(result.duration)}",
+  artwork: result.thumbnail,
+  favorite: app.search.isFavorite(result),
+  onTap: () => app.search.playResult(result),
+  trailing: MoreButton(
+    result.title,
+    () =>
+        searchResultActions(context, app, result, includePrimaryActions: true),
+  ),
+);
 
 /// A cover-first card for horizontal shelves.
 class MobileCoverCard extends StatelessWidget {

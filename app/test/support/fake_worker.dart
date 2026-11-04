@@ -10,7 +10,6 @@ import "package:path/path.dart" as p;
 class FakeWorkerTransport implements WorkerTransport {
   FakeWorkerTransport({
     this.audioFixture = "test/fixtures/artwork/cover.mp3",
-    this.extractResult,
     Map<String, Object?>? ytMusicResults,
   }) : ytMusicResults = ytMusicResults ?? defaultYtMusicResults() {
     scheduleMicrotask(
@@ -95,12 +94,22 @@ class FakeWorkerTransport implements WorkerTransport {
   final StreamController<Map<String, Object?>> _frames =
       StreamController.broadcast();
   String audioFixture;
-  Map<String, Object?>? extractResult;
-  Map<String, Object?>? extractError;
   final List<Map<String, Object?>> sent = [];
 
   /// Downloads wait on this gate when set.
   Completer<void>? downloadGate;
+
+  /// The yt-dlp options of each download request, in order.
+  final List<Map> downloadOptions = [];
+
+  /// The staging folder of each download request, in order.
+  final List<String> downloadDirectories = [];
+
+  /// Report byte progress, as yt-dlp does once it has started.
+  bool progressEvents = true;
+
+  /// What the next download fails with, as a message from yt-dlp.
+  String? downloadFailure;
   final Set<String> _cancelled = {};
   String downloadedName = "Song.mp3";
 
@@ -109,6 +118,10 @@ class FakeWorkerTransport implements WorkerTransport {
   bool writeThumbnail = true;
 
   final Completer<String?> _stopped = Completer();
+  int _handling = 0;
+
+  /// Whether every request has been answered, downloads included.
+  bool get idle => _handling == 0;
 
   @override
   Stream<Map<String, Object?>> get frames => _frames.stream;
@@ -124,35 +137,34 @@ class FakeWorkerTransport implements WorkerTransport {
   @override
   void send(Map<String, Object?> frame) {
     sent.add(frame);
+    _handling++;
     unawaited(
-      _handle(frame).catchError((Object error) {
-        _frames.add({
-          "id": frame["id"],
-          "ok": false,
-          "error": {
-            "message": "$error",
-            "types": [error.runtimeType.toString()],
-          },
-        });
-      }),
+      _handle(frame)
+          .catchError((Object error) {
+            _frames.add({
+              "id": frame["id"],
+              "ok": false,
+              "error": {
+                "message": "$error",
+                "types": [error.runtimeType.toString()],
+              },
+            });
+          })
+          .whenComplete(() => _handling--),
     );
   }
 
   Future<void> _handle(Map<String, Object?> frame) async {
     final id = frame["id"];
     switch (frame["op"]) {
-      case "extract":
-        if (extractError != null) {
-          _frames.add({"id": id, "ok": false, "error": extractError});
-        } else {
-          _frames.add({"id": id, "ok": true, "result": extractResult});
-        }
       case "cancel":
         _cancelled.add("${frame["task"]}");
         _frames.add({"id": id, "ok": true, "result": true});
       case "download":
+        downloadOptions.add(frame["options"] as Map);
         final task = "${frame["task"]}";
         final directory = "${frame["directory"]}";
+        downloadDirectories.add(directory);
         // yt-dlp streams into a .part file before converting.
         if (p.basename(directory).startsWith("job-") &&
             await Directory(directory).exists()) {
@@ -160,21 +172,35 @@ class FakeWorkerTransport implements WorkerTransport {
             p.join(directory, "$downloadedName.webm.part"),
           ).writeAsBytes(List.filled(1024, 7));
         }
-        _frames.add({
-          "event": "progress",
-          "task": task,
-          "status": "downloading",
-          "downloaded_bytes": 5,
-          "total_bytes": 10,
-          "title": "Resolved title",
-          "uploader": "Resolved artist",
-        });
+        if (progressEvents) {
+          _frames.add({
+            "event": "progress",
+            "task": task,
+            "status": "downloading",
+            "downloaded_bytes": 5,
+            "total_bytes": 10,
+            "title": "Resolved title",
+            "uploader": "Resolved artist",
+          });
+        }
         await downloadGate?.future;
         if (_cancelled.contains(task)) {
           _frames.add({
             "id": id,
             "ok": true,
             "result": {"cancelled": true},
+          });
+          return;
+        }
+        if (downloadFailure case final failure?) {
+          downloadFailure = null;
+          _frames.add({
+            "id": id,
+            "ok": false,
+            "error": {
+              "message": failure,
+              "types": ["DownloadError"],
+            },
           });
           return;
         }

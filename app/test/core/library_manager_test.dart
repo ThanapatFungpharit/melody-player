@@ -3,6 +3,7 @@ import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 void main() {
@@ -131,14 +132,25 @@ void main() {
       expect((await reopen()).getPlaylist(playlist).trackIds, [b, c]);
     });
 
-    test("moving and copying between playlists", () async {
+    test("a playlist keeps the link it was imported from", () async {
+      final id = manager.createPlaylist("Road", source: "https://link");
+      final plain = manager.createPlaylist("Plain");
+      final reopened = await reopen();
+      expect(reopened.getPlaylist(id).source, "https://link");
+      expect(reopened.getPlaylist(plain).source, isEmpty);
+      expect(reopened.findPlaylistBySource("https://link")?.id, id);
+      expect(reopened.findPlaylistBySource("https://other"), isNull);
+    });
+
+    test("adding to and moving between playlists", () async {
       final a = await add("a.mp3");
       final b = await add("b.mp3");
       final first = manager.createPlaylist("First");
       final second = manager.createPlaylist("Second");
       manager.addTracksToPlaylist(first, [a, b]);
 
-      manager.copyPlaylistTrack(first, second, a);
+      expect(manager.addToPlaylist(second, a), isTrue);
+      expect(manager.addToPlaylist(second, a), isFalse);
       manager.moveTrackBetweenPlaylists(first, second, b);
 
       final reopened = await reopen();
@@ -182,18 +194,19 @@ void main() {
   });
 
   group("tracks", () {
-    test("search matches titles, filenames, and sources", () async {
-      await add("one.mp3", title: "Blue Song");
-      await add("two.mp3", title: "Red", source: "https://example.com/blue");
-      await add("blue-three.mp3", title: "Green");
-      await add("four.mp3", title: "Yellow");
+    test("a title test looks at titles, never links or file names", () async {
+      final blue = await add("one.mp3", title: "Blue Song");
+      final red = await add("three.mp3", title: "Red", source: "https://blue");
+      final green = await add("blue-four.mp3", title: "Green");
+      final untitled = await add("untitled-demo.mp3");
 
-      final found = manager.searchTracks("  BLUE ");
-
-      expect(found.map((track) => track.title), ["Green", "Red", "Blue Song"]);
-      final page = manager.searchTracks("blue", offset: 1, limit: 1);
-      expect(page.single.title, "Red");
-      expect(manager.searchTracks("blue", limit: 0), isEmpty);
+      expect(manager.titleContains(blue, "blue"), isTrue);
+      expect(manager.titleContains(red, "blue"), isFalse);
+      expect(manager.titleContains(green, "blue"), isFalse);
+      // A track without a title goes by its file's name.
+      expect(manager.titleContains(untitled, "demo"), isTrue);
+      expect(manager.titleContains(untitled, "mp3"), isFalse);
+      expect(manager.titleContains("not a track", "blue"), isFalse);
     });
 
     test("sorting by title or age", () async {
@@ -202,11 +215,15 @@ void main() {
       await add("untitled.mp3");
 
       expect(
-        manager.searchTracks("", sort: "title").map((t) => t.displayTitle),
+        manager
+            .orderedTrackIds("title")
+            .map((id) => manager.getTrack(id).displayTitle),
         ["Alpha", "beta", "untitled"],
       );
       expect(
-        manager.searchTracks("", sort: "oldest").map((t) => t.displayTitle),
+        manager
+            .orderedTrackIds("oldest")
+            .map((id) => manager.getTrack(id).displayTitle),
         ["beta", "Alpha", "untitled"],
       );
       expect(manager.listTracks().map((t) => t.displayTitle), [
@@ -253,7 +270,10 @@ void main() {
         expect(manager.isPathReferenced("new.mp3"), isTrue);
         expect(manager.isPathReferenced("new.mp3", excluding: id), isFalse);
         expect(manager.isPathReferenced("old.mp3"), isFalse);
-        expect(await manager.checkTrackIntegrity(id), isNull);
+        expect(
+          manager.getTrack(id).contentHash,
+          await sha256File(manager.trackPath(id)),
+        );
         expect((await reopen()).getPlaylist(playlist).trackIds, [id]);
       },
     );
@@ -266,14 +286,89 @@ void main() {
       expect(() => manager.addTrack("../outside.mp3"), throwsArgumentError);
     });
 
-    test("integrity checks report missing and modified files", () async {
-      final missing = await add("missing.mp3");
-      final modified = await add("modified.mp3");
-      File(p.join(music, "missing.mp3")).deleteSync();
-      File(p.join(music, "modified.mp3")).writeAsStringSync("other bytes");
+    test(
+      "file checks report missing and empty files, not edited ones",
+      () async {
+        final missing = await add("missing.mp3");
+        final empty = await add("empty.mp3");
+        final edited = await add("edited.mp3");
+        File(p.join(music, "missing.mp3")).deleteSync();
+        File(p.join(music, "empty.mp3")).writeAsBytesSync(const []);
+        File(
+          p.join(music, "edited.mp3"),
+        ).writeAsStringSync("new tags, same song");
 
-      expect((await manager.checkTrackIntegrity(missing))?.kind, "missing");
-      expect((await manager.checkTrackIntegrity(modified))?.kind, "modified");
+        expect((await manager.checkTrackFile(missing))?.kind, "missing");
+        expect((await manager.checkTrackFile(empty))?.kind, "empty");
+        expect(await manager.checkTrackFile(edited), isNull);
+      },
+    );
+  });
+
+  group("IDs", () {
+    test("canonical IDs pass through and others are normalized", () {
+      const id = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+      expect(normalizeUuid(id), id);
+      expect(normalizeUuid(id.toUpperCase()), id);
+      expect(normalizeUuid(" $id "), id);
+      for (final bad in ["", "not-a-uuid", "${id}0", id.replaceAll("-", "_")]) {
+        expect(normalizeUuid(bad), isNull, reason: bad);
+      }
+    });
+
+    test("formatting an ID's bytes round-trips", () {
+      const id = "00ff10ab-2fa1-11d2-883f-0016d3cca427";
+      expect(uuidString(uuidBytes(id)), id);
+    });
+
+    test("tracks can be found by an uppercase ID", () async {
+      final id = await add("a.mp3");
+      expect(manager.hasTrack(id.toUpperCase()), isTrue);
+      expect(manager.getTrack(id.toUpperCase()).id, id);
+    });
+
+    test("IDs and content hashes survive a reopen", () async {
+      final id = await add("a.mp3");
+      final hash = manager.getTrack(id).contentHash;
+      expect(hash, matches(RegExp(r"^[0-9a-f]{64}$")));
+      await reopen();
+      expect(manager.getTrack(id).contentHash, hash);
+    });
+  });
+
+  group("sorted orders", () {
+    List<String> titles(String sort) => [
+      for (final id in manager.orderedTrackIds(sort))
+        manager.getTrack(id).title,
+    ];
+
+    test("follow every change to the tracks", () async {
+      final b = await add("b.mp3", title: "Bravo");
+      final a = await add("a.mp3", title: "alpha");
+      expect(titles("title"), ["alpha", "Bravo"]);
+      expect(titles("oldest"), ["Bravo", "alpha"]);
+      expect(titles("recent"), ["alpha", "Bravo"]);
+
+      manager.updateTrack(a, title: "Zulu");
+      expect(titles("title"), ["Bravo", "Zulu"]);
+
+      final c = await add("c.mp3", title: "Charlie");
+      expect(titles("title"), ["Bravo", "Charlie", "Zulu"]);
+      expect(titles("oldest"), ["Bravo", "Zulu", "Charlie"]);
+
+      manager.deleteTrack(b);
+      expect(titles("title"), ["Charlie", "Zulu"]);
+      expect(titles("oldest"), ["Zulu", "Charlie"]);
+      expect(manager.trackIds, unorderedEquals([a, c]));
+    });
+
+    test("keep ties newest first", () async {
+      await add("a.mp3", title: "Same");
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      final newer = await add("b.mp3", title: "same");
+      await add("c.mp3", title: "Other");
+      expect(manager.orderedTrackIds("title")[1], newer);
+      expect(titles("title"), ["Other", "same", "Same"]);
     });
   });
 }

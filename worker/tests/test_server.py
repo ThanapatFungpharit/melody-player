@@ -15,7 +15,14 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from melody_worker import transport
-from melody_worker.server import Worker, describe, json_safe, sanitize_info
+from melody_worker.server import (
+    Worker,
+    describe,
+    json_safe,
+    optional_cover,
+    resume_guard,
+    sanitize_info,
+)
 
 
 class FakeYoutubeDL:
@@ -27,14 +34,20 @@ class FakeYoutubeDL:
     calls: ClassVar[list[tuple[str, dict[str, Any]]]] = []
     # The info dict each download's pre_process postprocessors produced.
     processed: ClassVar[list[dict[str, Any]]] = []
+    # The options of each client, and the postprocessors added to them.
+    built: ClassVar[list[dict[str, Any]]] = []
+    added: ClassVar[list[tuple[str, str]]] = []
 
     def __init__(self, options: dict[str, Any]) -> None:
         self.options = options
+        self.params = options
         self.preprocessors: list[Any] = []
+        self.built.append(options)
 
     def add_post_processor(self, pp: Any, when: str = "post_process") -> None:
-        assert when == "pre_process"
-        self.preprocessors.append(pp)
+        self.added.append((type(pp).__name__, when))
+        if when == "pre_process":
+            self.preprocessors.append(pp)
 
     def __enter__(self) -> Self:
         return self
@@ -124,6 +137,8 @@ def worker() -> tuple[Worker, queue.Queue[dict[str, Any]]]:
     FakeYoutubeDL.gate = None
     FakeYoutubeDL.calls = []
     FakeYoutubeDL.processed = []
+    FakeYoutubeDL.built = []
+    FakeYoutubeDL.added = []
     frames: queue.Queue[dict[str, Any]] = queue.Queue()
     FakeYTMusic.calls = []
     FakeYTMusic.error = None
@@ -431,6 +446,122 @@ def test_download_metadata_becomes_tagged_fields(worker, tmp_path) -> None:
     assert FakeYoutubeDL.processed == [
         {"title": "Song", "meta_lyrics": "[00:01.00]Hello"}
     ]
+
+
+def test_download_takes_the_cover_out_of_yt_dlps_own_list(worker, tmp_path) -> None:
+    instance, frames = worker
+    request(
+        instance,
+        {
+            "id": 12,
+            "op": "download",
+            "task": "t4",
+            "url": "u",
+            "directory": str(tmp_path),
+            "options": {
+                "postprocessors": [
+                    {"key": "FFmpegExtractAudio", "preferredcodec": "mp3"},
+                    {"key": "EmbedThumbnail", "already_have_thumbnail": True},
+                ]
+            },
+        },
+    )
+    reply = response(frames, 12)
+    assert reply["ok"] is True, reply
+    assert FakeYoutubeDL.built[-1]["postprocessors"] == [
+        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}
+    ]
+    assert FakeYoutubeDL.added == [
+        ("ResumeGuard", "before_dl"),
+        ("OptionalEmbedThumbnailPP", "post_process"),
+    ]
+
+
+class TestResumeGuard:
+    @staticmethod
+    def run(directory: Path, format_id: str) -> None:
+        resume_guard(directory).run({"format_id": format_id})
+
+    @staticmethod
+    def files(directory: Path) -> set[str]:
+        return {item.name for item in directory.iterdir()}
+
+    def test_partial_streams_of_the_same_format_stay(self, tmp_path) -> None:
+        self.run(tmp_path, "251")
+        (tmp_path / "Song.webm.part").write_bytes(b"partial")
+        (tmp_path / "Song.webm.ytdl").write_bytes(b"state")
+        (tmp_path / "Song.webm.part-Frag3").write_bytes(b"fragment")
+
+        self.run(tmp_path, "251")
+
+        assert (tmp_path / "Song.webm.part").read_bytes() == b"partial"
+        assert {"Song.webm.ytdl", "Song.webm.part-Frag3"} <= self.files(tmp_path)
+
+    def test_partial_streams_of_another_format_go(self, tmp_path) -> None:
+        self.run(tmp_path, "251")
+        for name in ("Song.webm.part", "Song.webm.ytdl", "Song.webm.part-Frag3"):
+            (tmp_path / name).write_bytes(b"partial")
+        (tmp_path / "Song.jpg").write_bytes(b"cover")
+        (tmp_path / "Song.webm").write_bytes(b"whole")
+
+        self.run(tmp_path, "250")
+
+        assert self.files(tmp_path) == {
+            ".melody-stream-format",
+            "Song.jpg",
+            "Song.webm",
+        }
+
+    def test_half_written_ffmpeg_output_always_goes(self, tmp_path) -> None:
+        (tmp_path / "Song.temp.mp3").write_bytes(b"half")
+        (tmp_path / "Song.mp3").write_bytes(b"whole")
+
+        self.run(tmp_path, "251")
+
+        assert self.files(tmp_path) == {".melody-stream-format", "Song.mp3"}
+
+
+class TestOptionalCover:
+    @staticmethod
+    def processor() -> Any:
+        from yt_dlp import YoutubeDL
+
+        return optional_cover(
+            YoutubeDL({"quiet": True}),
+            {"key": "EmbedThumbnail", "already_have_thumbnail": True},
+        )
+
+    def test_a_failed_embed_keeps_the_audio(self, tmp_path, monkeypatch) -> None:
+        from yt_dlp.postprocessor.embedthumbnail import (
+            EmbedThumbnailPP,
+            EmbedThumbnailPPError,
+        )
+
+        audio = tmp_path / "Song.mp3"
+        audio.write_bytes(b"audio")
+
+        def fail(self, info):
+            (tmp_path / "Song.temp.mp3").write_bytes(b"half")
+            raise EmbedThumbnailPPError("Conversion failed!")
+
+        monkeypatch.setattr(EmbedThumbnailPP, "run", fail)
+        information = {"filepath": str(audio)}
+
+        assert self.processor().run(information) == ([], information)
+
+        assert audio.read_bytes() == b"audio"
+        assert not (tmp_path / "Song.temp.mp3").exists()
+
+    def test_an_embed_that_works_is_left_alone(self, monkeypatch) -> None:
+        from yt_dlp.postprocessor.embedthumbnail import EmbedThumbnailPP
+
+        monkeypatch.setattr(EmbedThumbnailPP, "run", lambda self, info: (["x"], info))
+        information = {"filepath": "Song.mp3"}
+
+        assert self.processor().run(information) == (["x"], information)
+
+    def test_the_options_reach_yt_dlp(self) -> None:
+        assert self.processor()._already_have_thumbnail is True
 
 
 def test_tag_copies_every_stream_and_sets_tags(worker, tmp_path) -> None:

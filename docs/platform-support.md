@@ -13,7 +13,6 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Feature | Windows | macOS | Linux | Android |
 | --- | --- | --- | --- | --- |
 | System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | No | Yes |
-| Center notification artwork on its subject | Yes | Yes | Disabled | Yes (model) |
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
 | Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |
@@ -31,8 +30,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - **No system media controls.** The media-session plugin has no Linux (MPRIS)
   implementation, so Melody does not appear in the desktop's media applet
   and hardware media keys do nothing. Playback, background playback, and
-  Melody's own keyboard shortcuts work normally. The notification-artwork
-  setting is disabled because nothing shows that artwork.
+  Melody's own keyboard shortcuts work normally.
 - **File dialogs need a helper.** Importing music, uploading a cookie file,
   and exporting playlists use the desktop's file dialog through `zenity`,
   `kdialog`, or `qarma`. Install one if the dialogs do not open.
@@ -42,8 +40,6 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - System controls offer only their built-in buttons. Shuffle and repeat map
   to those buttons; favorite has no counterpart, and the Android shortcut
   setting is disabled.
-- Artwork focal points use the built-in edge detector instead of the
-  Android saliency model.
 
 ### Android
 
@@ -53,12 +49,18 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
   open it in the Files app; folders outside `Music` are refused. Changing it
   moves the library like on desktop.
 - Each download stages in private app data, as on desktop (Android would
-  refuse partial streams, thumbnails, and receipts in `Music`), and removes
-  its staging when it ends.
+  refuse partial streams and thumbnails in `Music`), and removes
+  its staging when it ends, unless it can pick up from there.
+- Downloads keep running off screen with a foreground service and its
+  notification. Android can refuse to start that service for an app already in
+  the background, and allows it six hours a day from Android 15. A download
+  Android stops anyway picks up where it left off at the next launch.
+- Music is added one file at a time, because Android lets Melody read only its
+  own folders; **Add a folder** is desktop only.
 - Only formats the Android audio decoders play can be imported: AIFF, WMA,
   APE, and WavPack need the desktop FFmpeg decoders.
 - Lyrics are written into new downloads, but tracks already in the library
-  are not rewritten in the background. Their lyrics still show in Melody and
-  work offline.
+  are not rewritten: **Write lyrics into files** is desktop only. Their lyrics
+  still show in Melody and work offline.
 - Notification shortcut buttons appear beside the playback controls; choose
   which two in **Settings → Appearance → Notifications**.

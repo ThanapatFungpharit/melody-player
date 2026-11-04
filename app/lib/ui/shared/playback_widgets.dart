@@ -26,22 +26,18 @@ class NowPlayingInfo {
 
   static NowPlayingInfo of(MelodyApp app) {
     final playback = app.playback;
-    var title = playback.externalTitle.isNotEmpty
-        ? playback.externalTitle
-        : "Nothing playing";
-    var credit = playback.externalUploader.isNotEmpty
-        ? playback.externalUploader
-        : "Choose music to start listening";
-    var thumbnail = playback.externalThumbnail;
+    var title = "Nothing playing";
+    var credit = "Choose music to start listening";
+    var thumbnail = "";
     var favorite = false;
     var canFavorite = false;
-    final id = playback.currentLibraryTrackId;
+    final id = playback.currentTrackId;
     if (id != null && app.services.manager.hasTrack(id)) {
       final track = app.services.manager.getTrack(id);
       final details = app.services.library.details(id);
       title = track.displayTitle;
       credit = details.credit;
-      thumbnail = details.thumbnail;
+      thumbnail = app.services.library.artwork(id);
       favorite = details.favorite;
       canFavorite = true;
     }
@@ -55,7 +51,7 @@ class NowPlayingInfo {
 int knownDurationMs(MelodyApp app) {
   final playback = app.playback;
   if (playback.durationMs > 0) return playback.durationMs;
-  final id = playback.currentLibraryTrackId;
+  final id = playback.currentTrackId;
   if (id == null || !app.services.manager.hasTrack(id)) return 0;
   return (app.services.library.details(id).duration * 1000).round();
 }
@@ -110,7 +106,8 @@ class PositionTicker {
 }
 
 /// Rebuilds with the playback position whenever the clock's second or the
-/// bar's device pixel changes, rather than every frame.
+/// bar's device pixel changes, rather than every frame. It paints on its own
+/// layer, so those updates leave the rest of the window alone.
 class LivePosition extends StatefulWidget {
   const LivePosition(this.app, {super.key, required this.builder});
 
@@ -160,7 +157,7 @@ class _LivePositionState extends State<LivePosition> {
   @override
   Widget build(BuildContext context) {
     _pixelRatio = MediaQuery.devicePixelRatioOf(context);
-    return widget.builder(context, _position);
+    return RepaintBoundary(child: widget.builder(context, _position));
   }
 }
 
@@ -192,11 +189,16 @@ class _SeekBarState extends State<SeekBar> {
             ? (_dragging ?? positionMs.toDouble()).clamp(0.0, max)
             : 0.0;
         final scheme = Theme.of(context).colorScheme;
+        const fontSize = 11.5;
         final style = TextStyle(
-          fontSize: 11.5,
+          fontSize: fontSize,
           color: scheme.onSurfaceVariant,
           fontFeatures: const [FontFeature.tabularFigures()],
         );
+        // A fixed box ends layout at each time. The clock changes every
+        // second, and layout reaching further up would repaint the window.
+        final timeHeight =
+            MediaQuery.textScalerOf(context).scale(fontSize) * 1.5;
         final position = Text(
           formatMilliseconds(_dragging?.toInt() ?? positionMs),
           textAlign: widget.stacked ? TextAlign.left : TextAlign.right,
@@ -243,17 +245,31 @@ class _SeekBarState extends State<SeekBar> {
               SizedBox(height: 28, child: slider),
               const SizedBox(height: 6),
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [position, total],
+                children: [
+                  Expanded(
+                    child: SizedBox(height: timeHeight, child: position),
+                  ),
+                  Expanded(
+                    child: SizedBox(height: timeHeight, child: total),
+                  ),
+                ],
               ),
             ],
           );
         }
         return Row(
           children: [
-            SizedBox(width: 44, child: position),
+            SizedBox(
+              width: 44,
+              height: timeHeight,
+              child: Align(alignment: Alignment.centerRight, child: position),
+            ),
             Expanded(child: SizedBox(height: 22, child: slider)),
-            SizedBox(width: 52, child: total),
+            SizedBox(
+              width: 52,
+              height: timeHeight,
+              child: Align(alignment: Alignment.centerLeft, child: total),
+            ),
           ],
         );
       },

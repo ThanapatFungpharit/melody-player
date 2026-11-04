@@ -28,24 +28,18 @@ class DatabaseFailure implements Exception {
 /// survives application crashes and may lose only the latest commits on power
 /// loss, never consistency. Owners keep their own in-memory model and restore
 /// it when [transaction] throws.
-///
-/// A FULL commit waits for the disk to flush the log, which on phone storage
-/// can hold the UI isolate for tens of milliseconds. With `syncInBackground`,
-/// commits run at `NORMAL` and a background isolate flushes the log right
-/// after each one ([flushed] completes once it has): a commit becomes durable
-/// a moment after it returns instead of before. If that isolate cannot start
-/// or fails, commits go back to waiting for the disk.
 class SqliteStore {
   SqliteStore._(this.path, this._db);
 
   final String path;
   Database? _db;
-  _WalSyncer? _syncer;
 
+  /// Opens the database at [path]. Without [check], its integrity is taken as
+  /// known, as when another connection has just checked the same file.
   static SqliteStore open(
     String path, {
     bool fullSync = true,
-    bool syncInBackground = false,
+    bool check = true,
   }) {
     Directory(p.dirname(path)).createSync(recursive: true);
     final Database db;
@@ -54,26 +48,23 @@ class SqliteStore {
     } on SqliteException catch (error) {
       throw FormatException("Could not open $path: $error");
     }
-    final bool wal;
     try {
       // WAL is persistent in the file; a filesystem that cannot map the
       // shared-memory index keeps the rollback journal, which is still atomic.
-      final mode = db.select("PRAGMA journal_mode=WAL").first.values.first;
-      wal = "$mode".toLowerCase() == "wal";
+      db.select("PRAGMA journal_mode=WAL");
       db.execute("PRAGMA synchronous=${fullSync ? "FULL" : "NORMAL"}");
       db.execute("PRAGMA foreign_keys=ON");
       db.execute("PRAGMA busy_timeout=5000");
-      final check = db.select("PRAGMA quick_check").first.values.first;
-      if (check != "ok") throw FormatException("$check");
-      _reclaimFreePages(db);
+      if (check) {
+        final result = db.select("PRAGMA quick_check").first.values.first;
+        if (result != "ok") throw FormatException("$result");
+        _reclaimFreePages(db);
+      }
     } catch (error) {
       db.close();
       throw FormatException("$path is not a valid database: $error");
     }
-    final store = SqliteStore._(path, db);
-    // Only a WAL commit's durability is a separate log flush.
-    if (fullSync && syncInBackground && wal) store._startBackgroundSync();
-    return store;
+    return SqliteStore._(path, db);
   }
 
   /// Deleted rows leave free pages that SQLite reuses but never returns to
@@ -94,47 +85,6 @@ class SqliteStore {
       debugPrint("Could not compact the database: $error");
     }
   }
-
-  void _startBackgroundSync() {
-    final syncer = _WalSyncer("$path-wal", onFailure: _syncInForeground);
-    _syncer = syncer;
-    unawaited(
-      syncer.start().then((started) {
-        final db = _db;
-        if (db == null || !identical(_syncer, syncer)) return;
-        if (!started) {
-          _syncer = null;
-          return;
-        }
-        // Commits were FULL until now. Asynchronous callbacks never run
-        // inside [transaction], so no transaction is open here.
-        try {
-          db.execute("PRAGMA synchronous=NORMAL");
-        } on SqliteException catch (error) {
-          debugPrint("Commits to $path keep waiting for the disk: $error");
-          _syncer = null;
-          unawaited(syncer.stop());
-        }
-      }),
-    );
-  }
-
-  void _syncInForeground(Object error) {
-    debugPrint("Background flushing of $path stopped: $error");
-    _syncer = null;
-    final db = _db;
-    if (db == null) return;
-    try {
-      db.execute("PRAGMA synchronous=FULL");
-      // Commits the background isolate never confirmed.
-      flushFileSync("$path-wal");
-    } on Object catch (error) {
-      debugPrint("Could not flush $path: $error");
-    }
-  }
-
-  /// Completes once every commit made so far is on durable storage.
-  Future<void> flushed() => _syncer?.flushed() ?? Future<void>.value();
 
   Database _requireOpen() {
     final db = _db;
@@ -165,7 +115,6 @@ class SqliteStore {
       }
       rethrow;
     }
-    _syncer?.request();
     return result;
   }
 
@@ -182,184 +131,14 @@ class SqliteStore {
     [name],
   ).isNotEmpty;
 
-  /// New transactions fail at once. Without background flushing the
-  /// connection closes before this returns; with it, once the pending
-  /// commits are flushed and the isolate has exited.
+  /// New transactions fail at once, and the connection closes before this
+  /// returns.
   Future<void> close() async {
     final db = _db;
     _db = null;
-    final syncer = _syncer;
-    _syncer = null;
-    if (syncer != null) await syncer.stop();
     // The last connection to close checkpoints the log into the database.
     db?.close();
   }
-}
-
-/// Flushes a file's written bytes to durable storage, whichever handle
-/// wrote them.
-void flushFileSync(String path) {
-  final file = File(path);
-  if (!file.existsSync()) return;
-  // Append mode never truncates; Windows needs write access to flush.
-  final handle = file.openSync(mode: FileMode.append);
-  try {
-    handle.flushSync();
-  } finally {
-    handle.closeSync();
-  }
-}
-
-/// Flushes a write-ahead log from a background isolate after commits.
-///
-/// Requests are numbered and one flush is in flight at a time. A flush
-/// covers every commit made before it began, so a burst of commits costs at
-/// most two flushes.
-class _WalSyncer {
-  _WalSyncer(this.walPath, {required this.onFailure});
-
-  final String walPath;
-  final void Function(Object error) onFailure;
-  final ReceivePort _replies = ReceivePort();
-  SendPort? _commands;
-  Isolate? _isolate;
-  int _requested = 0;
-  int _sent = 0;
-  int _flushed = 0;
-  bool _failed = false;
-  bool _stopping = false;
-  final List<Completer<void>> _waiters = [];
-  final Completer<void> _exited = Completer();
-
-  bool get _idle => _failed || _flushed >= _requested;
-
-  /// Whether the isolate is ready to flush.
-  Future<bool> start() async {
-    final ready = Completer<bool>();
-    _replies.listen((message) {
-      switch (message) {
-        case SendPort commands:
-          _commands = commands;
-          if (_stopping) {
-            // Closed while the isolate was starting: let it exit.
-            commands.send(null);
-            if (!ready.isCompleted) ready.complete(false);
-            return;
-          }
-          if (!ready.isCompleted) ready.complete(true);
-          // Commits made while the isolate started.
-          _send();
-        case int flushed:
-          _flushed = flushed;
-          _send();
-          _wake();
-        case String error:
-          _fail(error);
-        case [final error, _]:
-          // An uncaught error in the isolate.
-          _fail("$error");
-        case null:
-          if (!_exited.isCompleted) _exited.complete();
-          _replies.close();
-          _fail("The background isolate exited");
-      }
-      if (_failed && !ready.isCompleted) ready.complete(false);
-    });
-    try {
-      _isolate = await Isolate.spawn(
-        _walSyncMain,
-        (walPath, _replies.sendPort),
-        onExit: _replies.sendPort,
-        onError: _replies.sendPort,
-        debugName: "database flush",
-      );
-    } on Object catch (error) {
-      debugPrint("Could not start background database flushing: $error");
-      _failed = true;
-      _replies.close();
-      return false;
-    }
-    return ready.future;
-  }
-
-  void request() {
-    if (_failed || _stopping) return;
-    _requested++;
-    _send();
-  }
-
-  void _send() {
-    final commands = _commands;
-    // One flush at a time; its reply sends the next.
-    if (commands == null || _failed || _sent > _flushed) return;
-    if (_requested > _flushed) {
-      _sent = _requested;
-      commands.send(_requested);
-    }
-  }
-
-  void _wake() {
-    if (!_idle) return;
-    for (final waiter in _waiters) {
-      waiter.complete();
-    }
-    _waiters.clear();
-  }
-
-  Future<void> flushed() {
-    if (_idle) return Future<void>.value();
-    final waiter = Completer<void>();
-    _waiters.add(waiter);
-    return waiter.future;
-  }
-
-  void _fail(String error) {
-    if (_failed) return;
-    _failed = true;
-    _commands?.send(null);
-    _wake();
-    if (!_stopping) onFailure(error);
-  }
-
-  /// Flushes what is pending, then ends the isolate.
-  Future<void> stop() async {
-    if (_stopping) return _exited.future;
-    final isolate = _isolate;
-    if (isolate == null) {
-      _stopping = true;
-      if (!_exited.isCompleted) _exited.complete();
-      return;
-    }
-    await flushed();
-    _stopping = true;
-    _commands?.send(null);
-    try {
-      await _exited.future.timeout(const Duration(seconds: 5));
-    } on TimeoutException {
-      isolate.kill(priority: Isolate.immediate);
-      _replies.close();
-    }
-  }
-}
-
-void _walSyncMain((String, SendPort) setup) {
-  final (walPath, replies) = setup;
-  final commands = ReceivePort();
-  replies.send(commands.sendPort);
-  commands.listen((message) {
-    if (message is! int) {
-      // Closing the only port lets the isolate exit.
-      commands.close();
-      return;
-    }
-    try {
-      flushFileSync(walPath);
-      replies.send(message);
-    } on Object catch (error) {
-      replies.send("Could not flush $walPath: $error");
-      commands.close();
-    }
-  });
 }
 
 final _random = Random.secure();
@@ -672,17 +451,6 @@ String availablePath(
     candidate = p.join(directory, "$stem ($counter)$extension");
   }
   return candidate;
-}
-
-/// Keeps an imported legacy file as a backup that is never imported again.
-void retireLegacyFile(String path) {
-  final file = File(path);
-  if (!file.existsSync()) return;
-  try {
-    file.renameSync("$path.migrated");
-  } on FileSystemException catch (error) {
-    debugPrint("Imported legacy state, but could not rename $path: $error");
-  }
 }
 
 /// Serializes asynchronous critical sections, like a non-reentrant lock.

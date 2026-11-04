@@ -29,7 +29,3 @@ flutter:
       android:
         package: com.melodyplayer.melody_audio
         pluginClass: MelodyAudioPlugin
-  assets:
-    # U²-Netp salient object model (Apache-2.0, see u2netp_LICENSE.txt).
-    - assets/u2netp_256_int8.tflite
-    - assets/u2netp_LICENSE.txt

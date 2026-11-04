@@ -7,6 +7,7 @@ import "../../shared/format.dart";
 import "../../shared/theme.dart";
 import "../../shared/widgets.dart";
 import "../controls.dart";
+import "settings_page.dart";
 
 class MobileDownloads extends StatelessWidget {
   const MobileDownloads(this.app, {super.key});
@@ -122,7 +123,7 @@ class _DownloadCard extends StatelessWidget {
           )
         : playable.isNotEmpty
         ? TextButton.icon(
-            onPressed: () => app.playback.playTracks(playable),
+            onPressed: () => app.playback.playNow(playable),
             icon: const Icon(Icons.play_arrow_rounded),
             label: const Text("Play"),
           )
@@ -144,10 +145,9 @@ class _DownloadCard extends StatelessWidget {
             children: [
               Artwork(
                 app,
-                record.thumbnail,
+                downloadArtwork(app, record),
                 size: 48,
                 seed: record.title,
-                playlist: record.kind == "playlist",
               ),
               Expanded(
                 child: Column(
@@ -176,6 +176,16 @@ class _DownloadCard extends StatelessWidget {
                         color: record.error.isNotEmpty ? scheme.error : null,
                       ),
                     ),
+                    if (record.needsEngineUpdate)
+                      TextButton(
+                        onPressed: () => pushPanel(
+                          context,
+                          app,
+                          AppPanel.settings,
+                          MobileSettings(app),
+                        ),
+                        child: const Text("Open Settings"),
+                      ),
                   ],
                 ),
               ),

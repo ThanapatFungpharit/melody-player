@@ -10,18 +10,16 @@ import "../../application/catalog.dart";
 import "../../application/downloads.dart";
 import "../../application/library_service.dart"
     show PlaylistFileEntry, favoritesPlaylistId;
-import "../../core/downloader/downloader.dart";
 import "../../core/errors.dart" show publicErrorMessage;
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 import "../shared/format.dart" show plural;
-import "../shared/widgets.dart" show pageBounds;
-import "library_controller.dart";
 
 class _ImportSession {
   _ImportSession(
     this.playlistId,
     this.name,
+    this.source,
     this.order,
     this.tracks, {
     Map<String, String> resolved = const {},
@@ -36,6 +34,9 @@ class _ImportSession {
 
   final String playlistId;
   final String name;
+
+  /// The link the playlist can be updated from; empty for others.
+  final String source;
 
   /// Every key, in playlist order.
   final List<String> order;
@@ -73,7 +74,9 @@ class PlaylistsController extends ChangeNotifier {
 
   final MelodyApp app;
   String? selectedPlaylistId;
-  int pageOffset = 0;
+
+  /// What the open playlist's rows are filtered by.
+  String trackQuery = "";
   _ImportSession? _session;
   bool importLoading = false;
   int _generation = 0;
@@ -81,32 +84,31 @@ class PlaylistsController extends ChangeNotifier {
 
   bool get importing => importLoading || _session != null;
 
+  /// How far the running import into [playlistId] has come, if there is one.
+  ({int done, int total})? importProgress(String playlistId) {
+    final session = _session;
+    if (session == null || session.playlistId != playlistId) return null;
+    return (
+      done: session.reused + session.downloaded + session.failed,
+      total: session.total,
+    );
+  }
+
   void openPlaylist(String playlistId) {
     selectedPlaylistId = playlistId;
-    pageOffset = 0;
+    trackQuery = "";
     app.navigate(3);
     notifyListeners();
   }
 
   void closePlaylist() {
     selectedPlaylistId = null;
-    pageOffset = 0;
+    trackQuery = "";
     notifyListeners();
   }
 
-  /// The visible page of [total] tracks, clamping a stale offset.
-  (int, int) visibleRange(int total) {
-    final (start, end) = pageBounds(
-      total,
-      pageOffset,
-      pageSize: libraryPageSize,
-    );
-    pageOffset = start;
-    return (start, end);
-  }
-
-  void changePage(int direction) {
-    pageOffset = (pageOffset + direction * libraryPageSize).clamp(0, 1 << 30);
+  void setTrackQuery(String value) {
+    trackQuery = value;
     notifyListeners();
   }
 
@@ -146,9 +148,10 @@ class PlaylistsController extends ChangeNotifier {
   void shuffle(Playlist playlist) =>
       app.playback.playTracksShuffled(playlist.trackIds);
 
-  String create(String name) {
+  /// Creates a playlist; with [open], the Playlists page then shows it.
+  String create(String name, {bool open = true}) {
     final id = app.services.manager.createPlaylist(name);
-    selectedPlaylistId = id;
+    if (open) selectedPlaylistId = id;
     app.touchLibrary();
     notifyListeners();
     return id;
@@ -171,9 +174,9 @@ class PlaylistsController extends ChangeNotifier {
 
   void addTrack(String playlistId, String trackId) {
     _requireEditable(playlistId);
-    app.services.manager.addToPlaylist(playlistId, trackId);
+    final added = app.services.manager.addToPlaylist(playlistId, trackId);
     app.touchLibrary();
-    app.showMessage("Added to playlist.");
+    app.showMessage(added ? "Added to playlist." : "Already in this playlist.");
   }
 
   int addTracks(String playlistId, List<String> trackIds) {
@@ -211,19 +214,10 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  void transferTrack(
-    String source,
-    String target,
-    String trackId, {
-    required bool move,
-  }) {
+  void moveTrack(String source, String target, String trackId) {
     _requireEditable(source);
     _requireEditable(target);
-    if (move) {
-      app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
-    } else {
-      app.services.manager.copyPlaylistTrack(source, target, trackId);
-    }
+    app.services.manager.moveTrackBetweenPlaylists(source, target, trackId);
     app.touchLibrary();
   }
 
@@ -231,8 +225,8 @@ class PlaylistsController extends ChangeNotifier {
 
   /// Creates a playlist from the tracks an M3U or M3U8 file lists, named
   /// after the file unless it names itself. Linked tracks missing from the
-  /// library are downloaded. When some entries match nothing, the summary
-  /// offers [onLocate] to find them.
+  /// library are downloaded, and files missing from it imported. When some
+  /// entries match nothing, the summary offers [onLocate] to find them.
   Future<void> importFromFile(
     List<int> bytes,
     String fileName, {
@@ -240,10 +234,12 @@ class PlaylistsController extends ChangeNotifier {
     void Function(MissingPlaylistTracks missing)? onLocate,
   }) async {
     final library = app.services.library;
-    final match = await library.matchPlaylistM3u(
-      bytes,
-      fallbackName: p.basenameWithoutExtension(fileName),
-      baseDirectory: directory,
+    final match = await library.importListedFiles(
+      await library.matchPlaylistM3u(
+        bytes,
+        fallbackName: p.basenameWithoutExtension(fileName),
+        baseDirectory: directory,
+      ),
     );
     (String, VoidCallback)? locate(
       String playlistId,
@@ -269,18 +265,7 @@ class PlaylistsController extends ChangeNotifier {
           resolved[key] = trackId;
         } else if (entry.url case final url?) {
           key = sourceKey(url);
-          tracks.putIfAbsent(
-            key,
-            () => SearchResult(
-              id: "",
-              title: entry.title,
-              uploader: "",
-              duration: 0,
-              thumbnail: "",
-              url: url,
-              source: youtubeMusicName,
-            ),
-          );
+          tracks.putIfAbsent(key, () => _linkedSong(url, entry.title));
         } else {
           continue;
         }
@@ -307,7 +292,7 @@ class PlaylistsController extends ChangeNotifier {
     }
     final result = library.createPlaylistFromMatch(match);
     selectedPlaylistId = result.playlistId;
-    pageOffset = 0;
+    trackQuery = "";
     app.touchLibrary();
     app.navigate(3);
     notifyListeners();
@@ -345,7 +330,59 @@ class PlaylistsController extends ChangeNotifier {
     app.touchLibrary();
   }
 
+  /// A song known only by its link, until yt-dlp reports its details.
+  static SearchResult _linkedSong(String url, String title) => SearchResult(
+    id: "",
+    title: title,
+    uploader: "",
+    duration: 0,
+    thumbnail: "",
+    url: url,
+    source: youtubeMusicName,
+  );
+
   // -- remote import ---------------------------------------------------------
+
+  /// Creates a playlist from links to songs pasted as [text], reusing library
+  /// tracks and downloading the rest. It starts in the background once the
+  /// links are checked, which is what [FormatException]s are about.
+  void importFromLinks(String name, String text) {
+    final title = name.trim();
+    if (title.isEmpty) {
+      throw const FormatException("Playlist name cannot be empty");
+    }
+    if (importing) {
+      throw const FormatException("A playlist import is already in progress.");
+    }
+    final links = extractDownloadUrls(text);
+    final songs = [
+      for (final url in links)
+        if (MediaIdentity.fromUrl(url) != null) url,
+    ];
+    if (songs.isEmpty) {
+      throw const FormatException("Paste at least one link to a song.");
+    }
+    final tracks = <String, SearchResult>{};
+    for (final (index, url) in songs.indexed) {
+      tracks.putIfAbsent(
+        sourceKey(url),
+        () => _linkedSong(url, "Song ${index + 1} of ${songs.length}"),
+      );
+    }
+    app.navigate(3);
+    unawaited(
+      app.run(
+        () => _run(
+          title,
+          tracks.keys.toList(),
+          tracks,
+          _generation,
+          resolveMetadata: true,
+          skipped: links.length - songs.length,
+        ),
+      ),
+    );
+  }
 
   /// Loads a remote playlist and imports it, reusing library tracks and
   /// downloading only missing ones.
@@ -359,7 +396,9 @@ class PlaylistsController extends ChangeNotifier {
     notifyListeners();
     try {
       final remote = await app.services.catalog.loadPlaylist(url);
-      if (generation == _generation) await _import(remote, generation);
+      if (generation == _generation) {
+        await _import(remote, youtubePlaylistUrl(url) ?? "", generation);
+      }
     } catch (error) {
       app.reportFailure(error);
     } finally {
@@ -368,24 +407,45 @@ class PlaylistsController extends ChangeNotifier {
     }
   }
 
-  Future<void> _import(RemotePlaylist remote, int generation) {
-    final name = remote.title.trim().isNotEmpty
-        ? remote.title.trim()
-        : "Imported $youtubeMusicName playlist";
+  /// Fills the playlist imported from [source], or a new one the first time.
+  Future<void> _import(RemotePlaylist remote, String source, int generation) {
+    final existing = source.isEmpty
+        ? null
+        : app.services.manager.findPlaylistBySource(source);
+    final name =
+        existing?.name ??
+        (remote.title.trim().isNotEmpty
+            ? remote.title.trim()
+            : "Imported $youtubeMusicName playlist");
     final unique = <String, SearchResult>{
       for (final item in remote.tracks)
         if (item.url.isNotEmpty) sourceKey(item.url): item,
     };
-    return _run(name, unique.keys.toList(), unique, generation);
+    return _run(
+      name,
+      unique.keys.toList(),
+      unique,
+      generation,
+      into: existing?.id,
+      source: source,
+    );
   }
 
-  /// Creates a playlist of [order]: the [resolved] library tracks, and the
-  /// [tracks] reused from the library or downloaded.
+  /// Fetches a playlist's link again: songs added there join it, and what
+  /// failed or was interrupted last time gets another try. Tracks added here
+  /// stay, after those of the link.
+  Future<void> updateFromSource(Playlist playlist) =>
+      importFromUrl(playlist.source);
+
+  /// Fills the playlist [into], or a new one, with [order]: the [resolved]
+  /// library tracks, and the [tracks] reused from the library or downloaded.
   Future<void> _run(
     String name,
     List<String> order,
     Map<String, SearchResult> tracks,
     int generation, {
+    String? into,
+    String source = "",
     Map<String, String> resolved = const {},
     bool resolveMetadata = false,
     int skipped = 0,
@@ -395,7 +455,8 @@ class PlaylistsController extends ChangeNotifier {
       app.showError("A playlist import is already in progress.");
       return;
     }
-    final playlistId = app.services.manager.createPlaylist(name);
+    final playlistId =
+        into ?? app.services.manager.createPlaylist(name, source: source);
     if (resolved.isNotEmpty) {
       app.services.manager.mergeTracksIntoPlaylist(playlistId, [
         for (final key in order) ?resolved[key],
@@ -406,6 +467,7 @@ class PlaylistsController extends ChangeNotifier {
     final session = _ImportSession(
       playlistId,
       name,
+      source,
       order,
       tracks,
       resolved: resolved,
@@ -416,16 +478,23 @@ class PlaylistsController extends ChangeNotifier {
     _session = session;
     selectedPlaylistId = playlistId;
     notifyListeners();
-    app.showMessage("Importing ${session.total} tracks into “$name”…");
+    app.showMessage(
+      into == null
+          ? "Importing ${session.total} tracks into “$name”…"
+          : "Updating “$name”…",
+    );
     try {
       while ((session.pending.isNotEmpty ||
               session.activeDownloads.isNotEmpty) &&
           identical(_session, session)) {
         var changed = false;
-        var queueFull = false;
-        // Requests are non-blocking; submit until the downloader reports
-        // backpressure, then refill after terminal notifications wake us.
-        while (session.pending.isNotEmpty && identical(_session, session)) {
+        // Requests are non-blocking. Only a window of a long playlist's songs
+        // waits in the downloader (and its history) at a time; terminal
+        // notifications wake this loop to refill it.
+        final window = app.settings.concurrentDownloads * 2;
+        while (session.pending.isNotEmpty &&
+            session.activeDownloads.length < window &&
+            identical(_session, session)) {
           final key = session.pending.first;
           final DownloadRequest request;
           try {
@@ -433,9 +502,6 @@ class PlaylistsController extends ChangeNotifier {
               session.tracks[key]!,
               resolveMetadata: session.resolveMetadata,
             );
-          } on WorkerQueueFull {
-            queueFull = true;
-            break;
           } catch (_) {
             session.failed++;
             session.pending.removeFirst();
@@ -493,23 +559,28 @@ class PlaylistsController extends ChangeNotifier {
           ]);
           app.touchLibrary();
         }
+        if (changed || terminalSeen) notifyListeners();
         if (session.pending.isEmpty && session.activeDownloads.isEmpty) break;
         if (terminalSeen) continue;
-        if (session.activeDownloads.isNotEmpty) {
-          await _wakeup.future;
-        } else if (queueFull) {
-          // The downloader may be busy with unrelated work.
-          await _wakeup.future.timeout(
-            const Duration(milliseconds: 200),
-            onTimeout: () {},
-          );
-        }
+        if (session.activeDownloads.isNotEmpty) await _wakeup.future;
       }
       _finish(session);
     } finally {
       if (identical(_session, session)) _session = null;
       notifyListeners();
     }
+  }
+
+  /// Stops the running import of [playlistId], keeping what it has so far.
+  void cancelImport(String playlistId) {
+    final session = _session;
+    if (!abandonImport(playlistId)) return;
+    notifyListeners();
+    app.showMessage(
+      session != null && session.source.isNotEmpty
+          ? "Import stopped. Update the playlist to carry on."
+          : "Import stopped.",
+    );
   }
 
   /// Whether the running import is waiting for [task]; its summary reports
@@ -556,7 +627,8 @@ class PlaylistsController extends ChangeNotifier {
     if (session.failed > 0) {
       app.showMessage(
         publicErrorMessage(
-          "$summary ${session.failed} could not be downloaded.",
+          "$summary ${session.failed} could not be downloaded."
+          "${session.source.isNotEmpty ? " Update the playlist to try again." : ""}",
         ),
         error: true,
         action: action,

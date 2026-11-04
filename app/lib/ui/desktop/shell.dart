@@ -149,8 +149,8 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
     key(
       LogicalKeyboardKey.keyS,
       "Ctrl+S",
-      "Shuffle upcoming tracks",
-      () => playback.shuffleUpcoming(),
+      "Shuffle the queue",
+      app.shuffleQueue,
       control: true,
     ),
     key(
@@ -165,7 +165,7 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
       "Ctrl+Shift+F",
       "Favorite the playing track",
       () {
-        final id = playback.currentLibraryTrackId;
+        final id = playback.currentTrackId;
         if (id != null) app.toggleFavorite(id);
       },
       control: true,

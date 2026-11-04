@@ -11,6 +11,7 @@ import "package:melody/application/owned_files.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
 const _thumbnail = "https://i.ytimg.com/vi/abcdefghijk/hq.jpg";
@@ -67,7 +68,7 @@ void main() {
     await File(path).writeAsString(name);
     final id = await manager.addTrack(path, source: source, title: name);
     store.saveTrackDetails(id, TrackDetails(thumbnail: _thumbnail));
-    await thumbnails.storeBytes(_thumbnail, _png);
+    await thumbnails.store(id, _png);
     await lyrics.load(source);
     return id;
   }
@@ -77,14 +78,14 @@ void main() {
   test("deleting a track removes its file, artwork, and lyrics", () async {
     final id = await downloaded("song.mp3");
     final path = manager.trackPath(id);
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(id), isNotNull);
     expect(await lyricsSaved(), isTrue);
 
     await library.deleteTrack(id);
 
     expect(manager.hasTrack(id), isFalse);
     expect(await File(path).exists(), isFalse);
-    expect(thumbnails.cachedPath(_thumbnail), isNull);
+    expect(thumbnails.cachedPath(id), isNull);
     expect(await lyricsSaved(), isFalse);
   });
 
@@ -148,30 +149,114 @@ void main() {
     expect(store.get("pending_file_deletions"), isEmpty);
   });
 
-  test("caches another track still uses are kept", () async {
+  test("what another track still uses is kept", () async {
     final first = await downloaded("first.mp3");
-    await downloaded("second.mp3", source: "https://youtu.be/abcdefghijk");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://youtu.be/abcdefghijk",
+    );
 
     await library.deleteTrack(first);
 
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(first), isNull);
+    expect(thumbnails.cachedPath(second), isNotNull);
     expect(await lyricsSaved(), isTrue);
   });
 
-  test("deleting an imported track keeps its file", () async {
+  test("deleting an imported track deletes only Melody's copy", () async {
+    final original = p.join(root.path, "original.mp3");
+    await File(original).writeAsString("original");
+    final id = await library.importLocalFile(original);
+    final copy = manager.trackPath(id);
+    expect(copy, isNot(original));
+
+    await library.deleteTrack(id);
+
+    expect(manager.hasTrack(id), isFalse);
+    expect(await File(copy).exists(), isFalse);
+    expect(await File(original).exists(), isTrue);
+  });
+
+  test("deleting a file added where it was keeps the file", () async {
     final path = p.join(music, "mine.mp3");
     await File(path).writeAsString("mine");
-    await File(LyricsLibrary.sidecarPath(path)).writeAsString("[00:01]Mine");
-    final id = await manager.addTrack(
-      path,
-      source: Uri.file(p.join(root.path, "original.mp3")).toString(),
-    );
+    final id = await manager.addTrack(path);
 
     await library.deleteTrack(id);
 
     expect(manager.hasTrack(id), isFalse);
     expect(await File(path).exists(), isTrue);
-    expect(await File(LyricsLibrary.sidecarPath(path)).exists(), isTrue);
+  });
+
+  test("clearing the library keeps copies of imported files", () async {
+    final original = p.join(root.path, "original.mp3");
+    await File(original).writeAsString("original");
+    final copy = manager.trackPath(await library.importLocalFile(original));
+
+    await library.clearLibrary();
+
+    expect(await File(copy).exists(), isTrue);
+    expect(await File(original).exists(), isTrue);
+  });
+
+  test("stray files are found and added from inside folders", () async {
+    final stray = p.join(music, "Album", "Disc 1", "stray.mp3");
+    await File(stray).create(recursive: true);
+    await File(stray).writeAsString("stray");
+    final hidden = p.join(music, ".cache", "hidden.mp3");
+    await File(hidden).create(recursive: true);
+    await File(hidden).writeAsString("hidden");
+
+    final report = await library.reconcile();
+    expect(report.unregisteredFiles, [stray]);
+
+    await library.addStrayFiles(report.unregisteredFiles);
+    expect((await library.reconcile()).unregisteredFiles, isEmpty);
+    expect(manager.trackPath(manager.listTracks().single.id), stray);
+  });
+
+  test("a folder lists its audio files, not hidden or other ones", () async {
+    final folder = p.join(root.path, "picked");
+    for (final name in ["b.mp3", "sub/a.flac", "notes.txt", ".git/c.mp3"]) {
+      await File(p.join(folder, name)).create(recursive: true);
+    }
+
+    expect(await LibraryService.audioFilesIn(folder), [
+      p.join(folder, "b.mp3"),
+      p.join(folder, "sub", "a.flac"),
+    ]);
+  });
+
+  test("only tracks with a link have one to share", () async {
+    final linked = await downloaded("linked.mp3");
+    final path = p.join(music, "local.mp3");
+    await File(path).writeAsString("local");
+    final local = await manager.addTrack(path);
+
+    expect(
+      LibraryService.linksOf([
+        manager.getTrack(linked),
+        manager.getTrack(local),
+      ]),
+      [_source],
+    );
+  });
+
+  test("a playlist file imports the audio files it names", () async {
+    final listed = p.join(root.path, "listed.mp3");
+    await File(listed).writeAsString("listed");
+
+    final result = await library.importPlaylistM3u(
+      utf8.encode("#EXTM3U\nlisted.mp3\nmissing.mp3\n"),
+      fallbackName: "Files",
+      baseDirectory: root.path,
+    );
+
+    expect(result.added, 1);
+    expect(result.skipped, 1);
+    final id = manager.getPlaylist(result.playlistId).trackIds.single;
+    expect(manager.trackPath(id), isNot(listed));
+    expect(await File(listed).exists(), isTrue);
   });
 
   test("clearing the library deletes only downloaded files", () async {
@@ -186,7 +271,7 @@ void main() {
     expect(manager.listTracks(), isEmpty);
     expect(await File(songPath).exists(), isFalse);
     expect(await File(mine).exists(), isTrue);
-    expect(thumbnails.cachedPath(_thumbnail), isNull);
+    expect(thumbnails.cachedPath(song), isNull);
     expect(await lyricsSaved(), isFalse);
   });
 
@@ -282,7 +367,7 @@ void main() {
     await library.restoreLocalFile(id);
 
     expect(await File(path).readAsString(), "original");
-    expect(await manager.checkTrackIntegrity(id), isNull);
+    expect(manager.getTrack(id).contentHash, await sha256File(path));
     expect((await library.reconcile()).missingTrackIds, isEmpty);
 
     await File(path).delete();
@@ -291,21 +376,21 @@ void main() {
   });
 
   test("unused artwork and lyrics are removed at startup", () async {
-    await downloaded("song.mp3");
-    const orphan = "https://i.ytimg.com/vi/zzzzzzzzzzz/hq.jpg";
-    await thumbnails.storeBytes(orphan, _png);
+    final id = await downloaded("song.mp3");
+    const orphan = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+    await thumbnails.store(orphan, _png);
     final unrelated = File(p.join(thumbnails.directory, "notes.txt"))
       ..writeAsStringSync("kept");
-    // Lyrics saved for a preview, or for a download that failed.
-    const preview = "https://music.youtube.com/watch?v=zzzzzzzzzzz";
-    await lyrics.load(preview);
+    // Lyrics saved for a download that failed.
+    const failed = "https://music.youtube.com/watch?v=zzzzzzzzzzz";
+    await lyrics.load(failed);
 
     expect(await library.removeUnusedCaches(), 2);
-    expect(thumbnails.cachedPath(_thumbnail), isNotNull);
+    expect(thumbnails.cachedPath(id), isNotNull);
     expect(thumbnails.cachedPath(orphan), isNull);
     expect(unrelated.existsSync(), isTrue);
     expect(await lyricsSaved(), isTrue);
-    expect(await lyrics.saved(preview), isNull);
+    expect(await lyrics.saved(failed), isNull);
     // Idempotent.
     expect(await library.removeUnusedCaches(), 0);
   });
@@ -378,6 +463,19 @@ void main() {
       ..toggleFavorite(first)
       ..toggleFavorite(first);
     expect(library.favoritesPlaylist().trackIds, [second, third, first]);
+  });
+
+  test("a deleted track leaves the saved favorites order", () async {
+    final first = await downloaded("first.mp3");
+    final second = await downloaded(
+      "second.mp3",
+      source: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    );
+    library.reorderFavorites([first, second]);
+
+    await library.deleteTrack(first);
+
+    expect(store.favoritesOrder(), [second]);
   });
 
   test("an exported playlist imports back in order", () async {
@@ -538,14 +636,14 @@ void main() {
     final playlist = manager.createPlaylist("Kept");
     manager.addTracksToPlaylist(playlist, [id]);
     await File(path).delete();
-    expect(await manager.checkTrackIntegrity(id), isNotNull);
+    expect(await manager.checkTrackFile(id), isNotNull);
 
     final located = p.join(root.path, "new place", "moved.mp3");
     await Directory(p.dirname(located)).create();
     await File(located).writeAsString("moved, re-encoded");
     await library.relinkTrack(id, located);
 
-    expect(await manager.checkTrackIntegrity(id), isNull);
+    expect(await manager.checkTrackFile(id), isNull);
     // The file goes back where the track's file was.
     expect(manager.trackPath(id), path);
     expect(
@@ -559,6 +657,95 @@ void main() {
       library.relinkTrack(id, p.join(root.path, "notes.txt")),
       throwsFormatException,
     );
+  });
+
+  test("an imported track remembers the file it is relinked to", () async {
+    final first = p.join(root.path, "first place", "song.mp3");
+    await Directory(p.dirname(first)).create();
+    await File(first).writeAsString("song");
+    final id = await library.importLocalFile(first);
+    final copy = manager.trackPath(id);
+    await File(copy).delete();
+    await File(first).delete();
+
+    final located = p.join(root.path, "new place", "song.mp3");
+    await Directory(p.dirname(located)).create();
+    await File(located).writeAsString("song, found");
+    await library.relinkTrack(id, located);
+
+    expect(manager.getTrack(id).source, Uri.file(located).toString());
+    expect(await library.canRestoreLocalFile(id), isTrue);
+    // The located file is the original now: deleting the track leaves it.
+    await library.deleteTrack(id);
+    expect(await File(copy).exists(), isFalse);
+    expect(await File(located).exists(), isTrue);
+  });
+
+  test("a relinked download keeps its link", () async {
+    final id = await downloaded("song.mp3");
+    await File(manager.trackPath(id)).delete();
+    final located = p.join(root.path, "song.mp3");
+    await File(located).writeAsString("found");
+
+    await library.relinkTrack(id, located);
+
+    expect(manager.getTrack(id).source, _source);
+  });
+
+  test("files a playlist file names join it, each once", () async {
+    final folder = p.join(root.path, "listed");
+    await Directory(folder).create();
+    await File(p.join(folder, "one.mp3")).writeAsString("same audio");
+    await File(p.join(folder, "copy.mp3")).writeAsString("same audio");
+    await File(p.join(folder, "notes.txt")).writeAsString("not audio");
+
+    final match = await library.importListedFiles(
+      await library.matchPlaylistM3u(
+        utf8.encode(
+          "#EXTM3U\none.mp3\ncopy.mp3\nnotes.txt\n"
+          "#EXTINF:-1,Gone\ngone.mp3\n",
+        ),
+        fallbackName: "Listed",
+        baseDirectory: folder,
+      ),
+    );
+
+    // The same contents are one track, not a failed second import.
+    expect(match.trackIds.toSet(), hasLength(1));
+    expect(match.trackIds, hasLength(2));
+    expect(manager.listTracks(), hasLength(1));
+    expect(
+      [
+        for (final entry in match.entries)
+          if (entry.isMissing) entry.title,
+      ],
+      ["notes", "Gone"],
+    );
+    expect(match.skipped, 2);
+  });
+
+  test("a listed file that cannot be imported can still be located", () async {
+    final match = await library.importListedFiles(
+      const PlaylistFileMatch("Listed", [
+        PlaylistFileEntry.file("/nowhere/song.mp3", "Song"),
+      ]),
+    );
+
+    final entry = match.entries.single;
+    expect(entry.isMissing, isTrue);
+    expect(entry.title, "Song");
+    expect(entry.location, "/nowhere/song.mp3");
+    expect(match.skipped, 1);
+  });
+
+  test("a song link needing a download is not a missing entry", () async {
+    final match = await library.matchPlaylistM3u(
+      utf8.encode("#EXTM3U\n#EXTINF:-1,New\nhttps://youtu.be/zzzzzzzzzzz\n"),
+      fallbackName: "Linked",
+    );
+    expect(match.entries.single.url, "https://youtu.be/zzzzzzzzzzz");
+    expect(match.entries.single.isMissing, isFalse);
+    expect(match.skipped, 0);
   });
 
   test("playlist entries keep their duration and content hash", () {
@@ -581,6 +768,250 @@ void main() {
       (location: "song.mp3", title: "Song", duration: 215, hash: hash),
       (location: "other.mp3", title: null, duration: null, hash: null),
     ]);
+  });
+
+  test(
+    "an export leaves out what a stored link picked up when pasted",
+    () async {
+      final id = await downloaded(
+        "pasted.mp3",
+        source: "https://youtu.be/abcdefghijk?si=tracking&list=PLabc",
+      );
+      final playlist = manager.createPlaylist("Pasted");
+      manager.addToPlaylist(playlist, id);
+
+      final m3u8 = utf8.decode(library.exportPlaylistM3u8(playlist));
+
+      expect(m3u8, contains(_source));
+      expect(m3u8, isNot(contains("tracking")));
+      expect(m3u8, isNot(contains("list=")));
+    },
+  );
+
+  test(
+    "a playlist link in a playlist file is skipped, not downloaded",
+    () async {
+      final first = await downloaded("first.mp3");
+      final match = await library.matchPlaylistM3u(
+        utf8.encode(
+          "#EXTM3U\n$_source\nhttps://music.youtube.com/playlist?list=PLabc\n",
+        ),
+        fallbackName: "Mixed",
+      );
+
+      expect(match.trackIds, [first]);
+      expect(match.entries.last.url, isNull);
+      expect(match.skipped, 1);
+    },
+  );
+
+  test("searching finds artists, and nothing in a track's link", () async {
+    final id = await downloaded("hello.mp3");
+    await downloaded(
+      "other.mp3",
+      source: "https://music.youtube.com/watch?v=lmnopqrstuv",
+    );
+    store.saveTrackDetails(id, TrackDetails(uploader: "Adele"));
+
+    expect(library.trackIds(query: "ADELE"), [id]);
+    expect(library.trackIds(query: "  hello "), [id]);
+    expect(library.trackIds(query: "music"), isEmpty);
+    expect(library.trackIds(query: "watch"), isEmpty);
+    expect(library.trackIds(query: "abcdefghijk"), isEmpty);
+    expect(library.matches(id, "adele"), isTrue);
+    expect(library.matches(id, ""), isTrue);
+    expect(library.matches(id, "someone"), isFalse);
+  });
+
+  group("sorting the library", () {
+    late String ana, bob, ben, nobody;
+
+    Future<String> tagged(
+      String title, {
+      String artist = "",
+      double duration = 0,
+      int plays = 0,
+      double lastPlayed = 0,
+    }) async {
+      final path = p.join(music, "$title.mp3");
+      await File(path).writeAsString(title);
+      final id = await manager.addTrack(path, title: title);
+      store.saveTrackDetails(
+        id,
+        TrackDetails(
+          uploader: artist,
+          duration: duration,
+          playCount: plays,
+          lastPlayed: lastPlayed,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      return id;
+    }
+
+    setUp(() async {
+      ana = await tagged("Zebra", artist: "ana", duration: 100, plays: 1);
+      bob = await tagged("Bee", artist: "Bob", duration: 300, plays: 5);
+      ben = await tagged(
+        "Ant",
+        artist: "Bob",
+        duration: 200,
+        plays: 5,
+        lastPlayed: 9,
+      );
+      nobody = await tagged("Moth");
+    });
+
+    test("by artist, with a track's title within one", () {
+      expect(library.trackIds(sort: "artist"), [ana, ben, bob, nobody]);
+    });
+
+    test("longest first", () {
+      expect(library.trackIds(sort: "longest"), [bob, ben, ana, nobody]);
+    });
+
+    test("most played first, the latest played among equals", () {
+      expect(library.trackIds(sort: "played"), [ben, bob, ana, nobody]);
+    });
+
+    test("keeps its order when filtered", () {
+      expect(library.trackIds(query: "bob", sort: "longest"), [bob, ben]);
+    });
+
+    test("does not change the order it starts from", () {
+      library.trackIds(sort: "longest");
+      expect(library.trackIds(), [nobody, ben, bob, ana]);
+    });
+  });
+
+  test("an artist can be set, and cleared", () async {
+    final id = await downloaded("song.mp3");
+    library.setArtist(id, "  Someone ");
+    expect(library.details(id).uploader, "Someone");
+    library.setArtist(id, "");
+    expect(library.details(id).uploader, isEmpty);
+    expect(library.details(id).thumbnail, _thumbnail);
+  });
+
+  group("what a file says about itself", () {
+    const tagged = "test/fixtures/tags/tagged.mp3";
+    const covered = "test/fixtures/artwork/cover.mp3";
+    const uncovered = "test/fixtures/artwork/no_cover.mp3";
+
+    test("names an imported track and shows its cover", () async {
+      final id = await library.importLocalFile(tagged);
+      expect(manager.getTrack(id).title, "Tagged Títle ปั้น");
+      expect(library.details(id).uploader, "Tagged Ártist");
+      expect(library.details(id).sourceName, "Local file");
+
+      final withCover = await library.importLocalFile(covered);
+      expect(manager.getTrack(withCover).title, "cover");
+      expect(library.artwork(withCover), thumbnails.cachedPath(withCover));
+      expect(library.artwork(withCover), isNotEmpty);
+    });
+
+    test("names a stray file added in place", () async {
+      final stray = p.join(music, "stray.mp3");
+      await File(tagged).copy(stray);
+      expect((await library.addStrayFiles([stray])).done, 1);
+      final track = manager.listTracks().single;
+      expect(track.title, "Tagged Títle ปั้น");
+      expect(library.details(track.id).uploader, "Tagged Ártist");
+    });
+
+    test("fills in what earlier imports left out, once", () async {
+      // As earlier releases imported them: file names and nothing else.
+      Future<String> imported(String fixture, String name) async {
+        final path = p.join(music, name);
+        await File(fixture).copy(path);
+        final id = await manager.addTrack(
+          path,
+          source: Uri.file(p.join(root.path, name)).toString(),
+          title: p.basenameWithoutExtension(name),
+        );
+        store.saveTrackDetails(id, TrackDetails(sourceName: "Local file"));
+        return id;
+      }
+
+      final named = await imported(tagged, "named.mp3");
+      final renamed = await imported(tagged, "renamed.mp3");
+      manager.updateTrack(renamed, title: "My own title");
+      final cover = await imported(covered, "covered.mp3");
+      final plain = await imported(uncovered, "plain.mp3");
+      var changes = 0;
+
+      await library.readMissingMetadata(onChanged: () => changes++);
+
+      expect(changes, greaterThan(0));
+      expect(manager.getTrack(named).title, "Tagged Títle ปั้น");
+      expect(library.details(named).uploader, "Tagged Ártist");
+      // A title the user chose stays.
+      expect(manager.getTrack(renamed).title, "My own title");
+      expect(library.details(renamed).uploader, "Tagged Ártist");
+      expect(thumbnails.cachedPath(cover), isNotNull);
+      expect(thumbnails.cachedPath(plain), isNull);
+
+      // Everything is known now, covers or not: nothing is read again.
+      await File(manager.trackPath(plain)).delete();
+      changes = 0;
+      await library.readMissingMetadata(onChanged: () => changes++);
+      expect(changes, 0);
+    });
+
+    test("a download's tags never replace what was listed for it", () async {
+      final path = p.join(music, "song.mp3");
+      await File(tagged).copy(path);
+      final id = await manager.addTrack(path, source: _source, title: "Listed");
+      store.saveTrackDetails(id, TrackDetails(uploader: "Listed artist"));
+
+      await library.readMissingMetadata();
+
+      expect(manager.getTrack(id).title, "Listed");
+      expect(library.details(id).uploader, "Listed artist");
+    });
+
+    test("a missing file is read once it is back", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, title: "Song");
+      final moved = "$path.moved";
+      await File(path).rename(moved);
+
+      await library.readMissingMetadata();
+      expect(thumbnails.known(id), isFalse);
+
+      await File(moved).rename(path);
+      await library.readMissingMetadata();
+      expect(thumbnails.cachedPath(id), isNotNull);
+    });
+
+    test("cancelling stops before the next batch", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, title: "Song");
+      await library.readMissingMetadata(cancelled: () => true);
+      expect(thumbnails.known(id), isFalse);
+    });
+
+    test("a remote cover shows until the track's own is cached", () async {
+      final path = p.join(music, "song.mp3");
+      await File(covered).copy(path);
+      final id = await manager.addTrack(path, source: _source, title: "Song");
+      store.saveTrackDetails(id, TrackDetails(thumbnail: _thumbnail));
+      expect(library.artwork(id), _thumbnail);
+      expect(library.artworkUri(id), _thumbnail);
+
+      await library.readMissingMetadata();
+
+      expect(library.artwork(id), thumbnails.cachedPath(id));
+      expect(library.artworkUri(id), startsWith("file:"));
+    });
+
+    test("a length is not remembered for a track the library lacks", () {
+      const id = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+      library.rememberDuration(id, 10);
+      expect(store.hasTrackDetails(id), isFalse);
+    });
   });
 
   test("linked tracks missing from the library are left to download", () async {

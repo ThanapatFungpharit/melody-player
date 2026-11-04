@@ -257,24 +257,6 @@ class WorkerClient {
     return completer.future;
   }
 
-  /// yt-dlp `extract_info(download=False)`, trimmed to the fields Melody reads.
-  Future<Map<String, Object?>?> extract(
-    String target,
-    Map<String, Object?> options,
-  ) async {
-    final result = await _call("extract", {
-      "target": target,
-      "options": options,
-    });
-    return switch (result) {
-      null => null,
-      final Map info => info.cast<String, Object?>(),
-      _ => throw WorkerFailure("The worker sent an unexpected reply."),
-    };
-  }
-
-  /// Downloads [url] into [directory]. Returns false when it was cancelled.
-  /// [metadata] adds tags (such as `lyrics`) that FFmpeg writes into the file.
   Future<bool> download({
     required String task,
     required String url,

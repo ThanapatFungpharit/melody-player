@@ -76,7 +76,6 @@ class MediaSessionState {
     this.artist = "",
     this.album = "",
     this.artworkUri = "",
-    this.automaticFocalPoint = false,
     this.duration = Duration.zero,
     this.position = Duration.zero,
     this.playing = false,
@@ -101,10 +100,6 @@ class MediaSessionState {
   final String artist;
   final String album;
   final String artworkUri;
-
-  /// Crop notification artwork around its salient subject instead of the
-  /// center.
-  final bool automaticFocalPoint;
   final Duration duration;
   final Duration position;
   final bool playing;
@@ -128,7 +123,6 @@ class MediaSessionState {
     artist,
     album,
     artworkUri,
-    automaticFocalPoint,
     duration,
     position,
     playing,
@@ -174,7 +168,6 @@ class SystemMediaSession {
   bool _nativePlaying = false;
   MediaRepeatMode _nativeRepeatMode = MediaRepeatMode.none;
   int _nativeMetadataToken = 0;
-  bool _automaticFocalPoint = false;
   String _sourceArtworkUri = "";
   int _syncRevision = 0;
   int _nativeStateRevision = 0;
@@ -240,8 +233,7 @@ class SystemMediaSession {
     } catch (error) {
       debugPrint("SystemMediaSession: native action failed: $error");
     }
-    // A queue-less preview may still need application policy (for
-    // example Skip Next returning to the durable library queue).
+    // What the decoder cannot do by itself needs application policy.
     _sendAction(command, seekPosition: seekPosition);
   }
 
@@ -328,16 +320,11 @@ class SystemMediaSession {
     final artist = state.artist.trim();
     final album = state.album.trim();
     final artworkUri = state.artworkUri.trim();
-    final automaticFocalPoint = state.automaticFocalPoint;
-    _automaticFocalPoint = automaticFocalPoint;
     final nativeStateRevision = _nativeStateRevision;
     Future<String>? preparingArtwork;
     var artworkPending = false;
     if (artworkUri.isNotEmpty) {
-      preparingArtwork = _notificationArtwork.prepare(
-        artworkUri,
-        automatic: automaticFocalPoint,
-      );
+      preparingArtwork = _notificationArtwork.prepare(artworkUri);
     }
     final preparedArtworkUri = preparingArtwork == null
         ? artworkUri
@@ -612,10 +599,7 @@ class SystemMediaSession {
     final artworkUri = _sourceArtworkUri;
     final preparedArtwork = artworkUri.isEmpty
         ? null
-        : await _notificationArtwork.prepare(
-            artworkUri,
-            automatic: _automaticFocalPoint,
-          );
+        : await _notificationArtwork.prepare(artworkUri);
     if (!_active || token != _nativeMetadataToken) return;
     await FlutterMediaSessionPlatform.instance.updateMetadata(
       _metadata(

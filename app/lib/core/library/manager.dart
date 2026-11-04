@@ -1,6 +1,7 @@
 import "dart:async";
 import "dart:convert";
 import "dart:io";
+import "dart:typed_data";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
@@ -11,7 +12,7 @@ import "../media.dart";
 import "../storage.dart";
 import "models.dart";
 
-const _schemaVersion = 1;
+const _schemaVersion = 2;
 // Row order (rowid) preserves insertion order for tracks and playlists.
 const _schema = """
 CREATE TABLE library_meta (key TEXT PRIMARY KEY, value ANY) STRICT;
@@ -23,7 +24,11 @@ CREATE TABLE tracks (
     added_at REAL NOT NULL,
     content_hash BLOB NOT NULL
 ) STRICT;
-CREATE TABLE playlists (id BLOB PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE playlists (
+    id BLOB PRIMARY KEY,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT ''
+) STRICT;
 CREATE TABLE playlist_tracks (
     playlist_id BLOB NOT NULL REFERENCES playlists (id) ON DELETE CASCADE,
     position INTEGER NOT NULL,
@@ -33,19 +38,82 @@ CREATE TABLE playlist_tracks (
 CREATE INDEX playlist_tracks_by_track ON playlist_tracks (track_id);
 """;
 
-const _uuid = Uuid();
-const _zeroHash =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+/// A track's other details, as JSON. The application's state is kept in the
+/// same file, and this table is what ties it to the tracks: whichever of its two
+/// owners opens the file first, deleting a track has somewhere to delete from.
+const trackDetailsSchema = """
+CREATE TABLE IF NOT EXISTS track_details (
+    track_id TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
+""";
 
+/// SQL for a stored track ID in [column] in the text form [Track.id] has.
+String trackIdAsText(String column) =>
+    "lower(substr(hex($column), 1, 8) || '-' || substr(hex($column), 9, 4) || "
+    "'-' || substr(hex($column), 13, 4) || '-' || substr(hex($column), 17, 4) || "
+    "'-' || substr(hex($column), 21))";
+
+/// A track's details go in the transaction that deletes it, so none can outlive
+/// their track.
+final _detailsGoWithTheirTrack =
+    """
+CREATE TRIGGER IF NOT EXISTS track_details_go_with_track
+AFTER DELETE ON tracks BEGIN
+    DELETE FROM track_details WHERE track_id = ${trackIdAsText("OLD.id")};
+END;
+""";
+
+const _uuid = Uuid();
 // Earlier releases stored any 128-bit value as an ID, so stored IDs need not
 // be RFC 4122 compliant.
 Uint8List uuidBytes(String id) => Uint8List.fromList(
   Uuid.parse(id, validationMode: ValidationMode.nonStrict),
 );
-String uuidString(List<int> bytes) => Uuid.unparse(bytes);
+
+/// Lowercase hex digits of every byte, as ASCII code units. Loading the
+/// library formats two values per track.
+final Uint16List _hexPairs = Uint16List.fromList([
+  for (var byte = 0; byte < 256; byte++)
+    _hexDigit(byte >> 4) << 8 | _hexDigit(byte & 15),
+]);
+
+int _hexDigit(int value) => value < 10 ? 0x30 + value : 0x61 + value - 10;
+
+const _dash = 0x2d;
+
+String uuidString(List<int> bytes) {
+  if (bytes.length != 16) return Uuid.unparse(bytes);
+  final text = Uint8List(36);
+  var at = 0;
+  for (var i = 0; i < 16; i++) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) text[at++] = _dash;
+    final pair = _hexPairs[bytes[i]];
+    text[at++] = pair >> 8;
+    text[at++] = pair & 255;
+  }
+  return String.fromCharCodes(text);
+}
+
+/// Whether [value] is already canonical UUID text, which nearly every ID
+/// is. Library reads check an ID for each row, so this avoids parsing it.
+bool _isCanonicalUuid(String value) {
+  if (value.length != 36) return false;
+  for (var i = 0; i < 36; i++) {
+    final unit = value.codeUnitAt(i);
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (unit != _dash) return false;
+    } else if (!(unit >= 0x30 && unit <= 0x39) &&
+        !(unit >= 0x61 && unit <= 0x66)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /// Canonical lowercase UUID text, or null when [value] is not a UUID.
 String? normalizeUuid(String value) {
+  if (_isCanonicalUuid(value)) return value;
   try {
     return Uuid.unparse(
       Uuid.parse(value.trim(), validationMode: ValidationMode.nonStrict),
@@ -74,8 +142,15 @@ Uint8List _hashBytes(Track track) {
   ]);
 }
 
-String _hex(List<int> bytes) =>
-    bytes.map((byte) => byte.toRadixString(16).padLeft(2, "0")).join();
+String _hex(List<int> bytes) {
+  final text = Uint8List(bytes.length * 2);
+  for (var i = 0; i < bytes.length; i++) {
+    final pair = _hexPairs[bytes[i]];
+    text[i * 2] = pair >> 8;
+    text[i * 2 + 1] = pair & 255;
+  }
+  return String.fromCharCodes(text);
+}
 
 List<Object?> _trackRow(Track track) => [
   uuidBytes(track.id),
@@ -114,23 +189,22 @@ class MusicManager {
   Map<String, Set<String>> _contentIndex = {};
   List<String>? _newest;
   Map<String, int>? _newestRank;
+  List<String>? _byTitle;
+  List<String>? _oldest;
   Map<String, String>? _searchText;
-  Map<String, String>? _titleKeys;
   final Map<String, String> _validatedPaths = {};
 
-  /// Opens the library. [legacyMetadataPath] names a pre-SQLite `MMD1` file
-  /// imported once in the transaction that creates the schema.
-  /// [syncInBackground] keeps commits from waiting for the disk on the
-  /// calling isolate (see [SqliteStore]). [moveJournal] is where
+  /// Opens the library. With [checkIntegrity] off, the file is taken as known
+  /// to be intact, as when the application store has just opened it.
+  /// [moveJournal] is where
   /// [moveMusicFolder] records a move, so one a crash interrupted is settled
   /// here: its files go to whichever folder [musicFolder] is.
   static MusicManager open(
     String metadataPath,
     String musicFolder, {
     List<String> additionalMusicFolders = const [],
-    String? legacyMetadataPath,
-    bool syncInBackground = false,
     String? moveJournal,
+    bool checkIntegrity = true,
   }) {
     Directory(musicFolder).createSync(recursive: true);
     Directory(p.dirname(metadataPath)).createSync(recursive: true);
@@ -138,10 +212,7 @@ class MusicManager {
     final additional = [
       for (final folder in additionalMusicFolders) _resolve(folder),
     ];
-    final db = SqliteStore.open(
-      metadataPath,
-      syncInBackground: syncInBackground,
-    );
+    final db = SqliteStore.open(metadataPath, check: checkIntegrity);
     final manager = MusicManager._(
       metadataPath,
       musicFolder,
@@ -150,7 +221,7 @@ class MusicManager {
       db,
     ).._moveJournal = moveJournal;
     try {
-      manager._open(legacyMetadataPath);
+      manager._open();
     } catch (_) {
       unawaited(db.close());
       rethrow;
@@ -343,45 +414,40 @@ class MusicManager {
 
   static Iterable<String> _noCompanions(String path) => const [];
 
-  /// Completes once every committed change is on durable storage.
-  Future<void> flushed() => _db.flushed();
-
   // -- persistence -------------------------------------------------------
-  void _open(String? legacyPath) {
-    if (!_db.hasTable("library_meta")) {
-      _initialize(legacyPath);
-    } else {
-      // A crash after the import committed but before the rename.
-      if (legacyPath != null) retireLegacyFile(legacyPath);
+  void _open() {
+    if (_db.hasTable("library_meta")) {
+      _addPlaylistSources();
       _load();
+    } else {
+      _db.transaction((db) {
+        db.execute(_schema);
+        db.execute(
+          "INSERT INTO library_meta (key, value) VALUES ('schema', ?)",
+          [_schemaVersion],
+        );
+      });
     }
+    _db.transaction((db) {
+      db.execute(trackDetailsSchema);
+      db.execute(_detailsGoWithTheirTrack);
+    });
     _rebuildIndexes();
   }
 
-  void _initialize(String? legacyPath) {
-    if (legacyPath != null) _loadLegacy(legacyPath);
+  /// Schema 1 had no `source` column. Adding one with a default leaves the
+  /// database readable by releases that name only the columns they know.
+  void _addPlaylistSources() {
+    final columns = _db.query("PRAGMA table_info(playlists)");
+    if (columns.any((column) => column["name"] == "source")) return;
     _db.transaction((db) {
-      db.execute(_schema);
-      db.execute("INSERT INTO library_meta (key, value) VALUES ('schema', ?)", [
+      db.execute(
+        "ALTER TABLE playlists ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+      );
+      db.execute("UPDATE library_meta SET value = ? WHERE key = 'schema'", [
         _schemaVersion,
       ]);
-      final insert = db.prepare("INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?)");
-      try {
-        for (final track in _tracks.values) {
-          insert.execute(_trackRow(track));
-        }
-      } finally {
-        insert.close();
-      }
-      for (final playlist in _playlists.values) {
-        db.execute("INSERT INTO playlists (id, name) VALUES (?, ?)", [
-          uuidBytes(playlist.id),
-          playlist.name,
-        ]);
-        _writePlaylistTracks(db, playlist);
-      }
     });
-    if (legacyPath != null) retireLegacyFile(legacyPath);
   }
 
   void _load() {
@@ -402,10 +468,14 @@ class MusicManager {
     }
     final playlists = <String, Playlist>{};
     for (final row in _db.query(
-      "SELECT id, name FROM playlists ORDER BY rowid",
+      "SELECT id, name, source FROM playlists ORDER BY rowid",
     )) {
       final id = uuidString(row["id"] as List<int>);
-      playlists[id] = Playlist(id: id, name: row["name"] as String);
+      playlists[id] = Playlist(
+        id: id,
+        name: row["name"] as String,
+        source: row["source"] as String,
+      );
     }
     for (final row in _db.query(
       "SELECT playlist_id, track_id FROM playlist_tracks "
@@ -419,68 +489,6 @@ class MusicManager {
     _playlists = playlists;
   }
 
-  void _loadLegacy(String path) {
-    final file = File(path);
-    if (!file.existsSync()) return;
-    final data = file.readAsBytesSync();
-    if (data.isEmpty) return;
-    final reader = _LegacyReader(data, path);
-    final (version, trackCount) = reader.header();
-    final tracks = <String, Track>{};
-    for (var i = 0; i < trackCount; i++) {
-      final id = uuidString(reader.bytes(16));
-      final addedAt = reader.float64();
-      final filename = reader.string();
-      final source = reader.string();
-      final title = version >= 2 ? reader.string() : "";
-      // A durable placeholder lets integrity checks report an unavailable
-      // legacy file without trusting its current contents.
-      final hash = version >= 3 ? _hex(reader.bytes(32)) : _zeroHash;
-      tracks[id] = Track(
-        id: id,
-        filename: filename,
-        source: source,
-        title: title,
-        addedAt: addedAt,
-        contentHash: hash,
-      );
-    }
-    final playlists = <String, Playlist>{};
-    final playlistCount = reader.uint32();
-    for (var i = 0; i < playlistCount; i++) {
-      final id = uuidString(reader.bytes(16));
-      final name = reader.string();
-      final count = reader.uint32();
-      final trackIds = [
-        for (var j = 0; j < count; j++) uuidString(reader.bytes(16)),
-      ];
-      playlists[id] = Playlist(
-        id: id,
-        name: name,
-        // Playlists hold each track once; the legacy format did not enforce it.
-        trackIds: trackIds.where(tracks.containsKey).toSet().toList(),
-      );
-    }
-    if (!reader.atEnd) {
-      throw FormatException("$path contains trailing music metadata");
-    }
-    _tracks = tracks;
-    _playlists = playlists;
-    if (version < 3) _captureLegacyHashes();
-  }
-
-  void _captureLegacyHashes() {
-    for (final track in _tracks.values) {
-      try {
-        final path = _pathForFilename(track.filename);
-        if (File(path).existsSync()) track.contentHash = sha256FileSync(path);
-      } on Object catch (error) {
-        // A later integrity check reports files that cannot be read.
-        debugPrint("Could not hash legacy track ${track.id}: $error");
-      }
-    }
-  }
-
   /// Applies one change durably, then invalidates derived read state.
   void _commit(void Function(Database db) write, {bool tracksChanged = true}) {
     _db.transaction(write);
@@ -490,8 +498,9 @@ class MusicManager {
   void _invalidateTrackViews() {
     _newest = null;
     _newestRank = null;
+    _byTitle = null;
+    _oldest = null;
     _searchText = null;
-    _titleKeys = null;
   }
 
   static void _writePlaylistTracks(Database db, Playlist playlist) {
@@ -715,21 +724,41 @@ class MusicManager {
   Map<String, String> get _search {
     return _searchText ??= {
       for (final track in _tracks.values)
-        track.id: "${track.title}\u0000${track.filename}\u0000${track.source}"
-            .toLowerCase(),
+        track.id: track.displayTitle.toLowerCase(),
     };
   }
 
-  Map<String, String> get _titles {
-    return _titleKeys ??= {
-      for (final track in _tracks.values)
-        track.id:
-            (track.title.isNotEmpty
-                    ? track.title
-                    : p.basenameWithoutExtension(track.filename))
-                .toLowerCase(),
-    };
-  }
+  /// Every track ID in [sort] order. Pages ask on every rebuild, so the
+  /// orders are kept until the tracks change. The sorts are stable: tracks
+  /// that compare equal stay newest first.
+  List<String> _ordered(String sort) => switch (sort) {
+    "title" => _byTitle ??= () {
+      final titles = {
+        for (final track in _tracks.values)
+          track.id:
+              (track.title.isNotEmpty
+                      ? track.title
+                      : p.basenameWithoutExtension(track.filename))
+                  .toLowerCase(),
+      };
+      final ids = List.of(_newestIds);
+      mergeSort(ids, compare: (a, b) => titles[a]!.compareTo(titles[b]!));
+      return ids;
+    }(),
+    "oldest" => _oldest ??= () {
+      final ids = List.of(_newestIds);
+      mergeSort(
+        ids,
+        compare: (a, b) => _tracks[a]!.addedAt.compareTo(_tracks[b]!.addedAt),
+      );
+      return ids;
+    }(),
+    _ => _newestIds,
+  };
+
+  /// Every track's canonical ID, for callers that need no track details.
+  /// A live view: do not change the library while iterating it.
+  Iterable<String> get trackIds => _tracks.keys;
 
   /// Tracks newest first.
   List<Track> listTracks({int? limit}) {
@@ -762,37 +791,13 @@ class MusicManager {
     return id != null && _tracks.containsKey(id);
   }
 
-  List<Track> searchTracks(
-    String query, {
-    int offset = 0,
-    int? limit,
-    String sort = "recent",
-  }) {
-    final needle = query.trim().toLowerCase();
-    if (limit != null && limit <= 0) return const [];
-    final start = offset < 0 ? 0 : offset;
-    final search = needle.isEmpty ? const <String, String>{} : _search;
-    Iterable<String> matching = _newestIds.where(
-      (id) => needle.isEmpty || search[id]!.contains(needle),
-    );
-    if (sort == "title" || sort == "oldest") {
-      final ordered = matching.toList();
-      if (sort == "title") {
-        final titles = _titles;
-        // A stable sort keeps newest-first order between equal titles.
-        mergeSort(ordered, compare: (a, b) => titles[a]!.compareTo(titles[b]!));
-      } else {
-        mergeSort(
-          ordered,
-          compare: (a, b) => _tracks[a]!.addedAt.compareTo(_tracks[b]!.addedAt),
-        );
-      }
-      matching = ordered;
-    }
-    var page = matching.skip(start);
-    if (limit != null) page = page.take(limit);
-    return [for (final id in page) _tracks[id]!.copy()];
-  }
+  /// Every track ID in [sort] order: `recent`, `oldest`, or `title`. Pages ask
+  /// on every change, so the list is shared: do not change it.
+  List<String> orderedTrackIds(String sort) => _ordered(sort);
+
+  /// Whether [trackId]'s title holds [needle], in lower case.
+  bool titleContains(String trackId, String needle) =>
+      _search[trackId]?.contains(needle) ?? false;
 
   Track? findTrackBySource(String source) {
     final ids = _sourceIndex[sourceKey(source)];
@@ -827,14 +832,17 @@ class MusicManager {
     );
   }
 
-  // -- integrity -----------------------------------------------------------
-  Future<IntegrityProblem?> checkTrackIntegrity(String trackId) async {
+  // -- file checks ---------------------------------------------------------
+  /// Why [trackId] has no usable file, or null when its file is there and not
+  /// empty. The recorded hash plays no part: it finds duplicates, and a file
+  /// edited elsewhere (new tags, say) is still this track's.
+  Future<TrackFileProblem?> checkTrackFile(String trackId) async {
     final track = getTrack(trackId);
     final String path;
     try {
       path = _pathForFilename(track.filename);
     } on ArgumentError catch (error) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "invalid_path",
@@ -845,7 +853,7 @@ class MusicManager {
     try {
       status = await File(path).stat();
     } on FileSystemException catch (error) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "unreadable",
@@ -853,7 +861,7 @@ class MusicManager {
       );
     }
     if (status.type == FileSystemEntityType.notFound) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "missing",
@@ -861,7 +869,7 @@ class MusicManager {
       );
     }
     if (status.type != FileSystemEntityType.file) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "missing",
@@ -869,32 +877,11 @@ class MusicManager {
       );
     }
     if (status.size <= 0) {
-      return IntegrityProblem(
+      return TrackFileProblem(
         track.id,
         track.filename,
         "empty",
         "Audio file is empty: $path",
-      );
-    }
-    final String actual;
-    try {
-      actual = await sha256File(path);
-    } on FileSystemException catch (error) {
-      return IntegrityProblem(
-        track.id,
-        track.filename,
-        "unreadable",
-        "Cannot read $path: $error",
-      );
-    }
-    if (actual != track.contentHash) {
-      return IntegrityProblem(
-        track.id,
-        track.filename,
-        "modified",
-        "File content differs from recorded SHA-256: $path",
-        expectedHash: track.contentHash,
-        actualHash: actual,
       );
     }
     return null;
@@ -912,19 +899,27 @@ class MusicManager {
     return id != null && _playlists.containsKey(id);
   }
 
-  String createPlaylist(String name) {
+  /// The playlist imported from [source], if any.
+  Playlist? findPlaylistBySource(String source) {
+    for (final playlist in _playlists.values) {
+      if (playlist.source == source) return playlist.copy();
+    }
+    return null;
+  }
+
+  String createPlaylist(String name, {String source = ""}) {
     final trimmed = name.trim();
     if (trimmed.isEmpty) {
       throw const FormatException("Playlist name cannot be empty");
     }
-    final playlist = Playlist(id: _uuid.v4(), name: trimmed);
+    final playlist = Playlist(id: _uuid.v4(), name: trimmed, source: source);
     _playlists[playlist.id] = playlist;
     try {
       _commit((db) {
-        db.execute("INSERT INTO playlists (id, name) VALUES (?, ?)", [
-          uuidBytes(playlist.id),
-          trimmed,
-        ]);
+        db.execute(
+          "INSERT INTO playlists (id, name, source) VALUES (?, ?, ?)",
+          [uuidBytes(playlist.id), trimmed, source],
+        );
       }, tracksChanged: false);
     } catch (_) {
       _playlists.remove(playlist.id);
@@ -994,10 +989,11 @@ class MusicManager {
       if (_tracks[id] case final track?) track.copy(),
   ];
 
-  void addToPlaylist(String playlistId, String trackId) {
+  /// Returns false when the playlist already holds the track.
+  bool addToPlaylist(String playlistId, String trackId) {
     final playlist = _getPlaylist(playlistId);
     final track = _getTrack(trackId);
-    if (playlist.trackIds.contains(track.id)) return;
+    if (playlist.trackIds.contains(track.id)) return false;
     playlist.trackIds.add(track.id);
     try {
       _commit(
@@ -1008,6 +1004,7 @@ class MusicManager {
       playlist.trackIds.removeLast();
       rethrow;
     }
+    return true;
   }
 
   /// Adds several existing tracks with one atomic metadata write.
@@ -1098,27 +1095,6 @@ class MusicManager {
       _commit((db) => _writePlaylistTracks(db, playlist), tracksChanged: false);
     } catch (_) {
       playlist.trackIds = previous;
-      rethrow;
-    }
-  }
-
-  /// Copies a track between playlists, preserving source membership.
-  void copyPlaylistTrack(String sourceId, String targetId, String trackId) {
-    final source = _getPlaylist(sourceId);
-    final target = _getPlaylist(targetId);
-    final track = _getTrack(trackId);
-    if (!source.trackIds.contains(track.id)) {
-      throw ArgumentError("Track ${track.id} is not in playlist ${source.id}");
-    }
-    if (target.trackIds.contains(track.id)) return;
-    target.trackIds.add(track.id);
-    try {
-      _commit(
-        (db) => _appendPlaylistTrack(db, target.id, track.id),
-        tracksChanged: false,
-      );
-    } catch (_) {
-      target.trackIds.removeLast();
       rethrow;
     }
   }
@@ -1242,57 +1218,4 @@ class MusicManager {
     }
     return playlist;
   }
-}
-
-/// Reads the little-endian pre-SQLite `MMD1` library format.
-class _LegacyReader {
-  _LegacyReader(this._data, this._path) : _view = ByteData.sublistView(_data);
-
-  final Uint8List _data;
-  final ByteData _view;
-  final String _path;
-  int _offset = 0;
-
-  bool get atEnd => _offset == _data.length;
-
-  void _require(int length) {
-    if (_offset + length > _data.length) {
-      throw FormatException("$_path contains invalid music metadata");
-    }
-  }
-
-  (int, int) header() {
-    _require(9);
-    if (utf8.decode(bytes(4), allowMalformed: true) != "MMD1") {
-      throw FormatException("$_path is not a valid MusicManager file");
-    }
-    final version = _view.getUint8(_offset++);
-    if (version < 1 || version > 3) {
-      throw FormatException("Unsupported metadata version: $version");
-    }
-    return (version, uint32());
-  }
-
-  Uint8List bytes(int length) {
-    _require(length);
-    final value = Uint8List.sublistView(_data, _offset, _offset + length);
-    _offset += length;
-    return value;
-  }
-
-  int uint32() {
-    _require(4);
-    final value = _view.getUint32(_offset, Endian.little);
-    _offset += 4;
-    return value;
-  }
-
-  double float64() {
-    _require(8);
-    final value = _view.getFloat64(_offset, Endian.little);
-    _offset += 8;
-    return value;
-  }
-
-  String string() => utf8.decode(bytes(uint32()));
 }

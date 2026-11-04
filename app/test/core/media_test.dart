@@ -4,6 +4,21 @@ import "package:melody/core/media.dart";
 const _watch = "https://music.youtube.com/watch?v=abc";
 
 void main() {
+  test("a playlist has one canonical link, however it was pasted", () {
+    const canonical = "https://music.youtube.com/playlist?list=PL1";
+    expect(
+      youtubePlaylistUrl("https://music.youtube.com/playlist?list=PL1"),
+      canonical,
+    );
+    expect(
+      youtubePlaylistUrl("https://www.youtube.com/watch?v=a&list=PL1&si=x"),
+      canonical,
+    );
+    expect(youtubePlaylistUrl("https://youtu.be/a?list=PL1"), canonical);
+    expect(youtubePlaylistUrl("https://music.youtube.com/watch?v=a"), isNull);
+    expect(youtubePlaylistUrl("https://example.com/?list=PL1"), isNull);
+  });
+
   group("URL predicates", () {
     test("isHttpUrl accepts only HTTP schemes", () {
       expect(isHttpUrl(" HTTPS://example.com "), isTrue);
@@ -141,5 +156,22 @@ void main() {
       expect(sourceKey("   "), "");
       expect(sourceKey("local/song.mp3"), "local/song.mp3");
     });
+  });
+
+  test("stored YouTube Music URLs key like any other form of the URL", () {
+    for (final id in ["abc", "abcdefghijk", "a_b-c"]) {
+      final stored = "https://music.youtube.com/watch?v=$id";
+      expect(sourceKey(stored), MediaIdentity.fromUrl(stored)!.key);
+      expect(sourceKey(stored), sourceKey("https://youtu.be/$id"));
+    }
+    // Not the stored form: these still go through URL parsing.
+    expect(
+      sourceKey("https://music.youtube.com/watch?v=abc&list=PL1"),
+      "youtube:abc",
+    );
+    expect(
+      sourceKey("https://music.youtube.com/watch?v=a%20b"),
+      MediaIdentity.fromUrl("https://music.youtube.com/watch?v=a%20b")!.key,
+    );
   });
 }

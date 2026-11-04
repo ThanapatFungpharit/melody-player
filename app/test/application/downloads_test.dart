@@ -1,15 +1,16 @@
+import "../support/temp.dart";
 import "dart:async";
 import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/downloads.dart";
+import "package:melody/application/library_service.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/artwork.dart";
 import "package:melody/core/downloader/downloader.dart";
-import "package:melody/core/downloader/receipts.dart";
 import "package:melody/core/library/manager.dart";
 import "package:melody/core/storage.dart";
 import "package:melody/worker/worker_client.dart";
@@ -32,11 +33,19 @@ SearchResult _result({
   source: "YouTube Music",
 );
 
+/// Waits for what a running download does next, however slow the disk is.
+Future<void> until(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 10));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) fail("Timed out waiting");
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 void main() {
   late Directory root;
   late String music;
   late String staging;
-  late String receipts;
   late MusicManager manager;
   late ApplicationStore store;
   late FakeWorkerTransport transport;
@@ -50,7 +59,6 @@ void main() {
     root = Directory(await created.resolveSymbolicLinks());
     music = p.join(root.path, "music");
     staging = p.join(root.path, "downloads", "staging");
-    receipts = p.join(root.path, "downloads", "receipts");
     manager = MusicManager.open(p.join(root.path, "library.db"), music);
     store = ApplicationStore.open(
       p.join(root.path, "state.db"),
@@ -62,10 +70,15 @@ void main() {
   });
 
   tearDown(() async {
+    // A download a test left running ends before its files and databases go.
+    if (transport.downloadGate case final gate? when !gate.isCompleted) {
+      gate.complete();
+    }
+    await until(() => transport.idle);
     manager.close();
     store.close();
     await worker.close();
-    await root.delete(recursive: true);
+    await deleteTestDirectory(root);
   });
 
   Future<DownloadCoordinator> open() => DownloadCoordinator.open(
@@ -75,18 +88,13 @@ void main() {
     worker,
     thumbnails: thumbnails,
     stagingDirectory: staging,
-    receiptDirectory: receipts,
   );
 
-  Downloader downloader() => Downloader(
-    worker,
-    music,
-    stagingDirectory: staging,
-    receiptDirectory: receipts,
-  );
+  Downloader downloader() =>
+      Downloader(worker, music, stagingDirectory: staging);
 
   /// Waits for the published terminal record, which follows every
-  /// completion side effect (registration, cache, receipt acknowledgement).
+  /// completion side effect (registration, cache).
   Future<DownloadRecord> terminal(
     DownloadCoordinator coordinator,
     String task,
@@ -133,8 +141,7 @@ void main() {
       expect(details.duration, 200);
       expect(details.sourceName, "YouTube Music");
       // The cache is derived from the verified embedded cover.
-      expect(thumbnails.cachedPath(_result().thumbnail), isNotNull);
-      expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
+      expect(thumbnails.cachedPath(track.id), isNotNull);
       expect(coordinator.activeCount(), 0);
       // No staging directory survives, and only the audio reached the music
       // folder.
@@ -213,7 +220,7 @@ void main() {
     expect(File(p.setExtension(after, ".lrc")).existsSync(), isTrue);
     expect(File(before).existsSync(), isFalse);
     expect(lyrics.existsSync(), isFalse);
-    expect(await manager.checkTrackIntegrity(trackId), isNull);
+    expect(manager.getTrack(trackId).contentHash, await sha256File(after));
     // The moved track is still found instead of downloading again.
     expect((await coordinator.request(_result())).track?.id, trackId);
   });
@@ -260,7 +267,7 @@ void main() {
     );
   });
 
-  test("missing embedded artwork fails before the file is committed", () async {
+  test("a song whose cover did not embed keeps its cover in Melody", () async {
     // yt-dlp retained a thumbnail sidecar, but the audio has no cover.
     transport.audioFixture = "test/fixtures/artwork/no_cover.mp3";
     final coordinator = await open();
@@ -268,14 +275,32 @@ void main() {
       coordinator,
       (await coordinator.request(_result())).task!,
     );
-    expect(record.status, DownloadStatus.failed);
-    expect(record.errorKind, "postprocessing");
-    expect(manager.counts().$1, 0);
+    expect(record.status, DownloadStatus.completed);
+    expect(manager.counts().$1, 1);
+    final cached = thumbnails.cachedPath(record.trackIds.single);
+    expect(await File(cached!).readAsBytes(), [0xff, 0xd8, 0xff, 0xe0, 1]);
+  });
+
+  test("a batch of any size waits its turn instead of failing", () async {
+    final coordinator = await open();
+    transport.downloadGate = Completer();
+    final batch = await coordinator.startUrls([
+      for (var i = 0; i < 10; i++)
+        "https://music.youtube.com/watch?v=songnumber$i",
+    ]);
+    expect(batch.started, 10);
+    expect(batch.failed, 0);
+    await Future<void>.delayed(Duration.zero);
+    transport.downloadGate!.complete();
+    for (final task in batch.tasks) {
+      expect(
+        (await terminal(coordinator, task)).status,
+        DownloadStatus.completed,
+      );
+    }
     expect(
-      Directory(
-        music,
-      ).listSync().whereType<File>().where((f) => f.path.endsWith(".mp3")),
-      isEmpty,
+      transport.sent.where((frame) => frame["op"] == "download"),
+      hasLength(10),
     );
   });
 
@@ -290,6 +315,75 @@ void main() {
     expect(record.status, DownloadStatus.completed);
   });
 
+  group("settings changed while Melody runs", () {
+    AppSettings settings() => store.settings.copy();
+
+    String codec(Map options) =>
+        ((options["postprocessors"] as List).first as Map)["preferredcodec"]
+            as String;
+
+    test("a new format applies to the next download only", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      final running = (await coordinator.request(_result())).task!;
+      await until(() => transport.downloadOptions.isNotEmpty);
+      final before = codec(transport.downloadOptions.single);
+
+      coordinator.applySettings(settings()..audioFormat = "flac");
+      final finished = terminal(coordinator, running);
+      transport.downloadGate!.complete();
+
+      // The running song still finishes as the format it started with.
+      expect((await finished).status, DownloadStatus.completed);
+      expect(before, isNot("flac"));
+      transport.downloadGate = null;
+      await coordinator.request(
+        _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
+      );
+      await until(() => transport.downloadOptions.length == 2);
+      expect(codec(transport.downloadOptions.last), "flac");
+    });
+
+    test("a higher limit starts waiting downloads at once", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      coordinator.applySettings(settings()..concurrentDownloads = 1);
+      await coordinator.request(_result());
+      await coordinator.request(
+        _result(url: "https://music.youtube.com/watch?v=bbbbbbbbbbb"),
+      );
+      await until(() => transport.downloadOptions.isNotEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(transport.downloadOptions, hasLength(1));
+
+      coordinator.applySettings(settings()..concurrentDownloads = 2);
+      await until(() => transport.downloadOptions.length == 2);
+      expect(transport.downloadOptions, hasLength(2));
+      transport.downloadGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+
+    test("new cookies apply to the next download", () async {
+      var options = <String, Object?>{};
+      final coordinator = await DownloadCoordinator.open(
+        manager,
+        store,
+        store.settings,
+        worker,
+        sharedOptions: () => options,
+        stagingDirectory: staging,
+      );
+      options = {"cookiefile": "cookies.txt"};
+      coordinator.applySettings(store.settings);
+
+      await coordinator.request(_result());
+      await until(() => transport.downloadOptions.isNotEmpty);
+
+      expect(transport.downloadOptions.single["cookiefile"], "cookies.txt");
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+  });
+
   test("cancelling a running download keeps nothing", () async {
     transport.downloadGate = Completer();
     final coordinator = await open();
@@ -300,7 +394,6 @@ void main() {
     final record = await terminal(coordinator, task);
     expect(record.status, DownloadStatus.cancelled);
     expect(manager.counts().$1, 0);
-    expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
   });
 
   test("worker failures are classified", () async {
@@ -314,70 +407,140 @@ void main() {
     expect(record.error, isNotEmpty);
   });
 
-  test(
-    "startup replays a verified receipt and fails interrupted jobs",
-    () async {
-      await Directory(music).create(recursive: true);
-      final file = p.join(music, "Recovered.mp3");
-      await File("test/fixtures/artwork/cover.mp3").copy(file);
-      const task = "11111111-1111-4111-8111-111111111111";
-      await writeReceipt(receipts, task, _url, [
-        {"filename": "Recovered.mp3", "sha256": await sha256File(file)},
-      ], filesDirectory: music);
-      store.saveDownloads([
-        DownloadRecord(
-          id: "22222222-2222-4222-8222-222222222222",
-          url: "https://youtu.be/zzzzzzzzzzz",
-          title: "Stuck",
-          status: DownloadStatus.downloading,
-        ),
-      ]);
-      final coordinator = await open();
-      final recovered = coordinator.get(task)!;
-      expect(recovered.status, DownloadStatus.completed);
-      expect(manager.getTrack(recovered.trackIds.single).source, _url);
-      expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
-      final stuck = coordinator.get("22222222-2222-4222-8222-222222222222")!;
-      expect(stuck.status, DownloadStatus.failed);
-      expect(stuck.error, contains("closed before"));
-    },
-  );
+  test("startup fails interrupted jobs until they are resumed", () async {
+    const id = "22222222-2222-4222-8222-222222222222";
+    store.saveDownloads([
+      DownloadRecord(
+        id: id,
+        url: "https://youtu.be/zzzzzzzzzzz",
+        title: "Stuck",
+        status: DownloadStatus.downloading,
+      ),
+    ]);
+    final coordinator = await open();
+    final stuck = coordinator.get(id)!;
+    expect(stuck.status, DownloadStatus.failed);
+    expect(stuck.error, contains("closed before"));
+  });
 
-  test(
-    "a receipt from an earlier music folder brings its file along",
-    () async {
-      final earlier = p.join(root.path, "earlier");
-      await Directory(earlier).create(recursive: true);
-      final file = p.join(earlier, "Recovered.mp3");
-      await File("test/fixtures/artwork/cover.mp3").copy(file);
-      const task = "55555555-5555-4555-8555-555555555555";
-      await writeReceipt(receipts, task, _url, [
-        {"filename": "Recovered.mp3", "sha256": await sha256File(file)},
-      ], filesDirectory: earlier);
-
-      final coordinator = await open();
-
-      final recovered = coordinator.get(task)!;
-      expect(recovered.status, DownloadStatus.completed);
-      final path = manager.trackPath(recovered.trackIds.single);
-      expect(p.dirname(path), p.normalize(p.absolute(music)));
-      expect(File(file).existsSync(), isFalse);
-      expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
-    },
-  );
-
-  test("a receipt whose file changed is retired, keeping the file", () async {
+  test("a download registered just before a crash is not repeated", () async {
     await Directory(music).create(recursive: true);
-    await File(p.join(music, "Other.mp3")).writeAsString("audio");
-    const task = "33333333-3333-4333-8333-333333333333";
-    await writeReceipt(receipts, task, _url, [
-      {"filename": "Other.mp3", "sha256": "0" * 64},
-    ], filesDirectory: music);
+    final file = p.join(music, "Recovered.mp3");
+    await File("test/fixtures/artwork/cover.mp3").copy(file);
+    final track = await manager.addTrack(file, source: _url);
+    const id = "22222222-2222-4222-8222-222222222222";
+    store.saveDownloads([
+      DownloadRecord(
+        id: id,
+        url: _url,
+        title: "Stuck",
+        status: DownloadStatus.processing,
+      ),
+    ]);
+
+    final coordinator = await open();
+    await coordinator.resumeInterrupted();
+
+    final record = coordinator.get(id)!;
+    expect(record.status, DownloadStatus.completed);
+    expect(record.trackIds, [track]);
+    expect(record.error, isEmpty);
+    expect(transport.downloadOptions, isEmpty);
+  });
+
+  test("a download that cannot be registered leaves no file behind", () async {
+    transport.downloadGate = Completer();
+    final coordinator = await open();
+    final task = (await coordinator.request(_result())).task!;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await manager.close();
+
+    final finished = terminal(coordinator, task);
+    transport.downloadGate!.complete();
+    final record = await finished;
+
+    expect(record.status, DownloadStatus.failed);
+    expect(record.error, contains("could not add"));
+    expect(Directory(music).listSync(), isEmpty);
+  });
+
+  test("a file a crash left unregistered waits for Maintenance", () async {
+    await Directory(music).create(recursive: true);
+    final file = p.join(music, "Song.mp3");
+    await File("test/fixtures/artwork/cover.mp3").copy(file);
+
     await open();
-    // Not provably the download's any more: neither adopted nor deleted.
+
     expect(manager.counts().$1, 0);
-    expect(File(p.join(music, "Other.mp3")).readAsStringSync(), "audio");
-    expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
+    expect(File(file).existsSync(), isTrue);
+  });
+
+  test("the next launch starts over what the last run left running", () async {
+    const stuck = "22222222-2222-4222-8222-222222222222";
+    const failed = "44444444-4444-4444-8444-444444444444";
+    store.saveDownloads([
+      DownloadRecord(
+        id: stuck,
+        url: _url,
+        title: "Stuck",
+        status: DownloadStatus.downloading,
+      ),
+      DownloadRecord(
+        id: failed,
+        url: "https://youtu.be/zzzzzzzzzzz",
+        title: "Failed",
+        status: DownloadStatus.failed,
+      ),
+    ]);
+    transport.downloadGate = Completer();
+    final coordinator = await open();
+
+    await coordinator.resumeInterrupted();
+    await coordinator.resumeInterrupted();
+
+    final restarted = coordinator.list().singleWhere((r) => r.url == _url);
+    expect(restarted.id, isNot(stuck));
+    expect(restarted.status.isActive, isTrue);
+    expect(coordinator.get(failed)!.status, DownloadStatus.failed);
+    final finished = terminal(coordinator, restarted.id);
+    transport.downloadGate!.complete();
+    expect((await finished).status, DownloadStatus.completed);
+    expect(manager.counts().$1, 1);
+  });
+
+  test(
+    "closing the app leaves a running download to the next launch",
+    () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      final task = (await coordinator.request(_result())).task!;
+      await until(() => coordinator.get(task)!.downloadedBytes == 5);
+
+      coordinator.shutdown();
+      transport.downloadGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        store.downloads().singleWhere((r) => r.id == task).status.isActive,
+        isTrue,
+      );
+    },
+  );
+
+  test("a download cancelled just before closing stays cancelled", () async {
+    transport.downloadGate = Completer();
+    final coordinator = await open();
+    final task = (await coordinator.request(_result())).task!;
+    await until(() => coordinator.get(task)!.downloadedBytes == 5);
+
+    expect(coordinator.cancel(task), isTrue);
+    coordinator.shutdown();
+    transport.downloadGate!.complete();
+    await until(
+      () =>
+          store.downloads().singleWhere((r) => r.id == task).status ==
+          DownloadStatus.cancelled,
+    );
   });
 
   group("disk cleanup", () {
@@ -465,6 +628,186 @@ void main() {
       },
     );
 
+    group("what a stopped download leaves", () {
+      const stuck = "22222222-2222-4222-8222-222222222222";
+      String songStaging() => p.join(staging, "job-youtube_abcdefghijk");
+
+      void interrupted({double progress = 0}) => store.saveDownloads([
+        DownloadRecord(
+          id: stuck,
+          url: _url,
+          title: "Stuck",
+          status: DownloadStatus.downloading,
+          progress: progress,
+          downloadedBytes: progress > 0 ? 400 : 0,
+          totalBytes: progress > 0 ? 1000 : 0,
+        ),
+      ]);
+
+      Future<File> partial() async {
+        final part = File(p.join(songStaging(), "Song.webm.part"));
+        await part.create(recursive: true);
+        await part.writeAsBytes(List.filled(4096, 1));
+        return part;
+      }
+
+      test("is carried on from at the next launch", () async {
+        interrupted();
+        final part = await partial();
+        transport
+          ..downloadedName = "Other.mp3"
+          ..downloadGate = Completer();
+
+        final coordinator = await open();
+        await coordinator.resumeInterrupted();
+        await until(() => transport.downloadDirectories.isNotEmpty);
+
+        expect(transport.downloadDirectories.single, songStaging());
+        expect(await part.length(), 4096);
+        final restarted = coordinator.list().single;
+        final finished = terminal(coordinator, restarted.id);
+        transport.downloadGate!.complete();
+        expect((await finished).status, DownloadStatus.completed);
+        await until(() => leftovers().isEmpty);
+        // Done with, it goes.
+        expect(leftovers(), isEmpty);
+      });
+
+      test("keeps its row where it was until there is news", () async {
+        interrupted(progress: 0.4);
+        transport.downloadGate = Completer();
+        transport.progressEvents = false;
+
+        final coordinator = await open();
+        await coordinator.resumeInterrupted();
+        await until(() => transport.downloadDirectories.isNotEmpty);
+
+        final row = coordinator.list().single;
+        expect(row.status.isActive, isTrue);
+        expect(row.progress, 0.4);
+        expect(row.downloadedBytes, 400);
+        transport.downloadGate!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+
+      test("stays when the app closes, and goes when cancelled", () async {
+        transport.downloadGate = Completer();
+        final coordinator = await open();
+        await coordinator.request(_result());
+        await until(() => transport.downloadDirectories.isNotEmpty);
+        expect(transport.downloadDirectories.single, songStaging());
+
+        coordinator.shutdown();
+        transport.downloadGate!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(Directory(songStaging()).existsSync(), isTrue);
+        expect(leftovers(), hasLength(1));
+      });
+
+      test("stays through a failure another attempt may get past", () async {
+        transport.downloadFailure = "HTTP Error 503: connection reset";
+        final coordinator = await open();
+        final record = await terminal(
+          coordinator,
+          (await coordinator.request(_result())).task!,
+        );
+        expect(record.status, DownloadStatus.failed);
+        expect(Directory(songStaging()).existsSync(), isTrue);
+
+        final finished = terminal(
+          coordinator,
+          await coordinator.retry(record.id),
+        );
+        expect((await finished).status, DownloadStatus.completed);
+        expect(transport.downloadDirectories, [songStaging(), songStaging()]);
+      });
+
+      test("goes after a failure the bytes may have caused", () async {
+        transport.downloadFailure = "Conversion failed!";
+        final coordinator = await open();
+        final record = await terminal(
+          coordinator,
+          (await coordinator.request(_result())).task!,
+        );
+        expect(record.status, DownloadStatus.failed);
+        await until(() => leftovers().isEmpty);
+        expect(leftovers(), isEmpty);
+      });
+
+      test("survives startup only while a download could use it", () async {
+        interrupted();
+        await partial();
+        final other = await abandonedStaging();
+
+        final jobs = downloader();
+        expect(await jobs.removeAbandonedStaging(resumableUrls: [_url]), 1);
+        expect(Directory(songStaging()).existsSync(), isTrue);
+        expect(other.existsSync(), isFalse);
+
+        final later = DateTime.now().add(const Duration(days: 8));
+        expect(
+          await jobs.removeAbandonedStaging(resumableUrls: [_url], now: later),
+          1,
+        );
+        expect(Directory(songStaging()).existsSync(), isFalse);
+      });
+
+      test("is taken only by one job at a time", () async {
+        transport.downloadGate = Completer();
+        final jobs = downloader();
+        final results = [
+          Completer<DownloadResult>(),
+          Completer<DownloadResult>(),
+        ];
+        jobs
+          ..start(_url, onComplete: results[0].complete)
+          ..start(_url, onComplete: results[1].complete);
+        while (transport.downloadDirectories.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        expect(transport.downloadDirectories.toSet(), hasLength(2));
+        transport.downloadGate!.complete();
+        await Future.wait([for (final result in results) result.future]);
+      });
+    });
+
+    test("byte progress is saved as a download runs", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await DownloadCoordinator.open(
+        manager,
+        store,
+        store.settings,
+        worker,
+        stagingDirectory: staging,
+        progressSaveInterval: Duration.zero,
+      );
+      final task = (await coordinator.request(_result())).task!;
+      DownloadRecord saved() =>
+          store.downloads().singleWhere((r) => r.id == task);
+      await until(() => saved().downloadedBytes == 5);
+
+      expect(saved().status.isActive, isTrue);
+      expect(saved().totalBytes, 10);
+      transport.downloadGate!.complete();
+      await terminal(coordinator, task);
+    });
+
+    test("closing the app saves how far a download got", () async {
+      transport.downloadGate = Completer();
+      final coordinator = await open();
+      final task = (await coordinator.request(_result())).task!;
+      await until(() => coordinator.get(task)!.downloadedBytes == 5);
+
+      coordinator.shutdown();
+      transport.downloadGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final saved = store.downloads().singleWhere((r) => r.id == task);
+      expect(saved.status.isActive, isTrue);
+      expect(saved.downloadedBytes, 5);
+    });
+
     test("startup removes staging an earlier process abandoned", () async {
       await Directory(music).create(recursive: true);
       await abandonedStaging();
@@ -500,8 +843,6 @@ void main() {
       transport.downloadGate!.complete();
       expect((await done.future).status, DownloadStatus.completed);
       expect(leftovers(), isEmpty);
-      // The receipt stays until the file is registered.
-      expect(Directory(receipts).listSync(), hasLength(1));
     });
 
     test(
@@ -526,28 +867,6 @@ void main() {
           ? false
           : "POSIX record locks never exclude their own process",
     );
-
-    test("a receipt whose file never left staging is retired", () async {
-      await Directory(music).create(recursive: true);
-      const task = "66666666-6666-4666-8666-666666666666";
-      await writeReceipt(receipts, task, _url, [
-        {"filename": "Song.mp3", "sha256": "1" * 64},
-      ], filesDirectory: music);
-      await open();
-      expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
-      expect(manager.counts().$1, 0);
-    });
-
-    test("an unreadable receipt is discarded without touching files", () async {
-      await Directory(music).create(recursive: true);
-      await File(p.join(music, "Song.mp3")).writeAsString("user audio");
-      const task = "77777777-7777-4777-8777-777777777777";
-      await Directory(receipts).create(recursive: true);
-      await File(receiptPath(receipts, task)).writeAsString("{not json");
-      await open();
-      expect(File(receiptPath(receipts, task)).existsSync(), isFalse);
-      expect(File(p.join(music, "Song.mp3")).readAsStringSync(), "user audio");
-    });
 
     test("repeated failed, cancelled, and interrupted downloads do not "
         "accumulate files", () async {
@@ -630,6 +949,202 @@ void main() {
       () => coordinator.startUrls(["https://example.com/song"]),
       throwsArgumentError,
     );
+  });
+
+  Iterable<Map<String, Object?>> downloadFrames() =>
+      transport.sent.where((frame) => frame["op"] == "download");
+
+  group("a download is one song:", () {
+    const playlistLink = "https://music.youtube.com/playlist?list=PLabc";
+
+    test("a link inside a playlist fetches and stores only its song", () async {
+      final coordinator = await open();
+      final batch = await coordinator.startUrls([
+        "https://www.youtube.com/watch?v=abcdefghijk&list=PLabc&si=tracking",
+      ]);
+      final record = await terminal(coordinator, batch.tasks.single);
+
+      final frame = downloadFrames().single;
+      expect(frame["url"], _url);
+      expect((frame["options"] as Map)["noplaylist"], isTrue);
+      expect(record.url, _url);
+      expect(manager.getTrack(record.trackIds.single).source, _url);
+    });
+
+    test("a shared link loses its tracking parameters", () async {
+      final coordinator = await open();
+      final batch = await coordinator.startUrls([
+        "https://youtu.be/abcdefghijk?si=tracking",
+      ]);
+      final record = await terminal(coordinator, batch.tasks.single);
+
+      expect(manager.getTrack(record.trackIds.single).source, _url);
+    });
+
+    test("a playlist link cannot join a batch", () async {
+      final coordinator = await open();
+      await expectLater(
+        coordinator.startUrls([_url, playlistLink]),
+        throwsArgumentError,
+      );
+      expect(downloadFrames(), isEmpty);
+      expect(coordinator.list(), isEmpty);
+    });
+
+    test("a playlist link saved in the history cannot be retried", () async {
+      const id = "88888888-8888-4888-8888-888888888880";
+      store.saveDownloads([
+        DownloadRecord(
+          id: id,
+          url: playlistLink,
+          title: "Mix",
+          status: DownloadStatus.failed,
+        ),
+      ]);
+      final coordinator = await open();
+      await expectLater(coordinator.retry(id), throwsArgumentError);
+      expect(downloadFrames(), isEmpty);
+    });
+  });
+
+  group("the history of a finished download", () {
+    const task = "88888888-8888-4888-8888-888888888881";
+
+    /// A library track and the completed download that brought it.
+    Future<String> finished() async {
+      final path = p.join(music, "Song.mp3");
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      final id = await manager.addTrack(path, source: _url, title: "Song");
+      store.saveDownloads([
+        DownloadRecord(
+          id: task,
+          url: _url,
+          title: "Song",
+          status: DownloadStatus.completed,
+          trackIds: [id],
+        ),
+      ]);
+      return id;
+    }
+
+    test("leaves a track the user removed gone", () async {
+      final id = await finished();
+      await LibraryService(manager, store).deleteTrack(id);
+
+      final coordinator = await open();
+
+      expect(coordinator.get(task)!.status, DownloadStatus.completed);
+      expect(await coordinator.retryFailed(), 0);
+      expect(downloadFrames(), isEmpty);
+      expect(manager.counts().$1, 0);
+    });
+
+    test("offers to restore a track whose file was lost", () async {
+      final id = await finished();
+      await File(manager.trackPath(id)).delete();
+
+      final coordinator = await open();
+
+      final flagged = coordinator.get(task)!;
+      expect(flagged.status, DownloadStatus.failed);
+      expect(flagged.error, contains("Retry to restore"));
+      final retry = await coordinator.retry(task);
+      final repaired = await terminal(coordinator, retry);
+      expect(repaired.status, DownloadStatus.completed);
+      expect(repaired.trackIds, [id]);
+      expect(File(manager.trackPath(id)).existsSync(), isTrue);
+    });
+
+    test("offers to restore a track whose file was emptied", () async {
+      final id = await finished();
+      await File(manager.trackPath(id)).writeAsBytes(const []);
+
+      final coordinator = await open();
+
+      expect(coordinator.get(task)!.status, DownloadStatus.failed);
+    });
+
+    test("undoes what an earlier release flagged after a removal", () async {
+      store.saveDownloads([
+        DownloadRecord(
+          id: task,
+          url: _url,
+          title: "Song",
+          status: DownloadStatus.failed,
+          error: "The downloaded library file is missing. Retry to restore it.",
+          errorKind: "disk",
+          recovery: "retry",
+          trackIds: ["99999999-9999-4999-8999-999999999999"],
+        ),
+      ]);
+
+      final coordinator = await open();
+
+      final record = coordinator.get(task)!;
+      expect(record.status, DownloadStatus.completed);
+      expect(record.error, isEmpty);
+      expect(await coordinator.retryFailed(), 0);
+      // The correction is saved, not worked out again at every launch.
+      expect(store.downloads().single.status, DownloadStatus.completed);
+    });
+  });
+
+  group("a track's file", () {
+    Future<String> saved(String name) async {
+      final path = p.join(music, name);
+      await File("test/fixtures/artwork/cover.mp3").copy(path);
+      return manager.addTrack(path, source: _url, title: name);
+    }
+
+    test("edited elsewhere is still the track's", () async {
+      final id = await saved("Song.mp3");
+      final path = manager.trackPath(id);
+      await File(path).writeAsString("new tags", mode: FileMode.append);
+      final edited = await File(path).readAsBytes();
+
+      final coordinator = await open();
+
+      expect((await coordinator.availableTrack(_url))?.id, id);
+      final request = await coordinator.request(_result());
+      expect(request.task, isNull);
+      expect(request.track?.id, id);
+      expect(downloadFrames(), isEmpty);
+      expect(await File(path).readAsBytes(), edited);
+    });
+
+    test("edited elsewhere survives a download of the same song", () async {
+      final coordinator = await open();
+      transport.downloadGate = Completer();
+      final task = (await coordinator.request(_result())).task!;
+      await Future<void>.delayed(Duration.zero);
+      final path = p.join(music, "Edited.mp3");
+      await File(path).writeAsString("audio");
+      final id = await manager.addTrack(path, source: _url, title: "Edited");
+      await File(path).writeAsString(" with new tags", mode: FileMode.append);
+
+      transport.downloadGate!.complete();
+      final record = await terminal(coordinator, task);
+
+      expect(record.trackIds, [id]);
+      expect(manager.trackPath(id), path);
+      expect(await File(path).readAsString(), "audio with new tags");
+      expect(Directory(music).listSync().map((entry) => entry.path), [path]);
+    });
+
+    test("left empty is replaced, keeping the track", () async {
+      final id = await saved("Song.mp3");
+      final path = manager.trackPath(id);
+      await File(path).writeAsBytes(const []);
+
+      final coordinator = await open();
+
+      expect(await coordinator.availableTrack(_url), isNull);
+      final request = await coordinator.request(_result());
+      final record = await terminal(coordinator, request.task!);
+      expect(record.trackIds, [id]);
+      expect(await File(manager.trackPath(id)).length(), greaterThan(0));
+      expect(Directory(music).listSync(), hasLength(1));
+    });
   });
 
   test("retrying a batch song still resolves its placeholder title", () async {
@@ -804,7 +1319,6 @@ void main() {
       thumbnails: thumbnails,
       lyrics: LyricsLibrary(p.join(root.path, "lyrics"), fetch),
       stagingDirectory: staging,
-      receiptDirectory: receipts,
     );
 
     test("are embedded in MP3s before verification and hashing", () async {
@@ -817,7 +1331,7 @@ void main() {
       final path = manager.trackPath(id);
       expect(readEmbeddedLyricsSync(path), "[00:00.00]Hello\n[00:01.50]World");
       expect(readEmbeddedArtworkSync(path), isNotEmpty);
-      expect(await manager.checkTrackIntegrity(id), isNull);
+      expect(manager.getTrack(id).contentHash, await sha256File(path));
       final download = transport.sent.singleWhere(
         (frame) => frame["op"] == "download",
       );

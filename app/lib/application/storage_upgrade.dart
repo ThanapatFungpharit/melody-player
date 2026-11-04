@@ -1,246 +1,133 @@
 /// Brings data written by earlier releases into the current layout
 /// ([AppPaths]). Every name an earlier release used lives here and nowhere
-/// else. Each step is idempotent and best effort: a step that fails leaves
-/// the old data where it was and runs again at the next launch.
+/// else.
+///
+/// Melody upgrades from 1.0.2, the first release with SQLite and this layout.
+/// Each step is idempotent and best effort: a step that fails leaves the old
+/// data where it was and runs again at the next launch.
 library;
 
-import "dart:convert";
 import "dart:io";
 
 import "package:flutter/foundation.dart";
 import "package:path/path.dart" as p;
 
-import "../core/downloader/downloader.dart" show removeAbandonedStagingIn;
-import "../core/downloader/receipts.dart";
-import "../core/library/manager.dart";
+import "../core/library/manager.dart" show trackIdAsText;
 import "../core/storage.dart";
 import "../platform/paths.dart";
-import "../worker/worker_client.dart" show ytDlpPackage, ytMusicPackage;
-import "store.dart";
+import "store.dart" show applicationStateSchema;
 
-/// Names of files and folders in earlier layouts.
-class LegacyLayout {
-  const LegacyLayout(this.paths);
+/// Earlier releases kept the application's state in a database of its own.
+String _stateDatabase(AppPaths paths) =>
+    p.join(paths.dataDirectory, "state.db");
 
-  final AppPaths paths;
+/// What the merge leaves of it, until a later launch.
+String _mergedStateDatabase(AppPaths paths) =>
+    "${_stateDatabase(paths)}.merged";
 
-  String _data(String name) => p.join(paths.dataDirectory, name);
+/// The data folder is from a release too old to upgrade from directly.
+class UnsupportedDataFolder implements Exception {
+  const UnsupportedDataFolder();
 
-  /// Pre-SQLite settings, imported once by [ApplicationStore.open].
-  String get stateJson => _data("state.json");
+  String get message =>
+      "This library was made by Melody 1.0.1 or earlier, which this version "
+      "can't read. Install Melody 1.0.3 and open it once to bring your library "
+      "across, then update again. Nothing has been changed.";
 
-  /// Pre-SQLite library, imported once by [MusicManager.open].
-  String get libraryMmdb => _data("library.mmdb");
-
-  /// Android: the private music folder that releases before the public
-  /// `Music` folder downloaded into.
-  String get privateMusic => _data("Music");
-
-  /// Staging and receipts outside `downloads/`.
-  String get downloadStaging => _data("download-staging");
-
-  /// The prefix of download staging folders and receipts that earlier
-  /// releases kept in the music folder itself.
-  static const downloadPrefix = ".melody-download-";
-
-  /// Folders that moved, by their new location. Each holds only data
-  /// Melody can rebuild or fetch again.
-  Map<String, String> get movedFolders => {
-    _data("thumbnails"): paths.artworkCache,
-    _data("yt-dlp-cache"): paths.ytDlpCache,
-    _data("yt-dlp-runtime"): paths.runtime(ytDlpPackage),
-    _data("ytmusicapi-runtime"): paths.runtime(ytMusicPackage),
-  };
-
-  /// Files no release reads any more.
-  List<String> get obsoleteFiles => [
-    // Files that could not take lyrics; the embedder simply tries them once
-    // more and records them in the state database.
-    p.join(paths.lyrics, "not_embedded.json"),
-  ];
-
-  /// Folders no release uses any more, with everything in them.
-  List<String> get obsoleteFolders => [
-    // Media-session artwork, now in the cache folder.
-    p.join(Directory.systemTemp.path, "melody-notification-artwork"),
-  ];
-
-  /// Copies of [stateJson] and [libraryMmdb] kept after their import.
-  List<String> get importedBackups => [
-    "$stateJson.migrated",
-    "$libraryMmdb.migrated",
-  ];
+  @override
+  String toString() => message;
 }
 
-/// Moves folders of earlier layouts to their current place. Runs before
-/// anything opens them (the worker uses the runtime folders).
-Future<void> relocateLegacyFolders(LegacyLayout legacy) async {
-  for (final MapEntry(key: from, value: to) in legacy.movedFolders.entries) {
-    try {
-      if (!await Directory(from).exists()) continue;
-      if (await Directory(to).exists()) {
-        // A launch already started over in the new place (the move failed
-        // then, typically because another Melody held a file open). What
-        // is left is disposable.
-        await Directory(from).delete(recursive: true);
-      } else {
-        await Directory(p.dirname(to)).create(recursive: true);
-        await Directory(from).rename(to);
-      }
-    } on FileSystemException catch (error) {
-      debugPrint("Could not move $from to $to: $error");
-    }
-  }
-  for (final path in legacy.obsoleteFiles) {
-    await deleteQuietly(path);
-  }
-  for (final path in legacy.obsoleteFolders) {
-    await _deleteFolder(path);
+/// Refuses a data folder from before 1.0.2, instead of starting an empty
+/// library beside it, which 1.0.3 could then no longer import from.
+void requireSupportedDataFolder(AppPaths paths) {
+  bool exists(String path) => File(path).existsSync();
+  if (exists(_stateDatabase(paths)) || exists(paths.database)) return;
+  if (exists(p.join(paths.dataDirectory, "state.json")) ||
+      exists(p.join(paths.dataDirectory, "library.mmdb"))) {
+    throw const UnsupportedDataFolder();
   }
 }
 
-Future<void> _deleteFolder(String path) async {
+/// Removes what earlier releases wrote and no release reads any more. Runs
+/// before anything opens the data folder.
+Future<void> removeRetiredFiles(AppPaths paths) async {
+  await deleteQuietly(_mergedStateDatabase(paths));
+  // What the lyrics pass that ran at each launch remembered.
+  await deleteQuietly(p.join(paths.cache, "lyrics-embedded.json"));
+  await deleteQuietly(p.join(paths.lyrics, "not_embedded.json"));
+  // Checksums of downloads not yet registered. A next launch carries those on,
+  // and their files, if any, are listed as not in the library.
   try {
-    await Directory(path).delete(recursive: true);
+    await Directory(
+      p.join(paths.dataDirectory, "downloads", "receipts"),
+    ).delete(recursive: true);
   } on PathNotFoundException {
     // Already gone.
   } on FileSystemException catch (error) {
-    debugPrint("Could not remove $path: $error");
+    debugPrint("Could not remove the download receipts: $error");
   }
 }
 
-/// Upgrades state that needs the stores: the cookie setting, download
-/// handoffs kept beside the music, and Android's private music folder.
-/// Runs before downloads open. [storesExisted] says whether both databases
-/// were there before this launch opened them, so a pre-SQLite import is at
-/// least one launch old and its backups can go.
-Future<void> upgradeLegacyState(
-  LegacyLayout legacy,
-  ApplicationStore store,
-  MusicManager manager, {
-  required bool storesExisted,
-}) async {
-  await _dropCookieSetting(legacy.paths, store);
-  await _moveOffPrivateStorage(legacy, store, manager);
-  for (final folder in {manager.musicFolder, legacy.downloadStaging}) {
-    await _adoptReceipts(folder, legacy.paths.downloadReceipts);
-    await removeAbandonedStagingIn(folder, prefix: LegacyLayout.downloadPrefix);
-  }
-  // Everything left in the old staging folder is Melody's and unused, unless
-  // a download of an older Melody that is still running holds its staging.
-  if (!await _hasStaging(legacy.downloadStaging)) {
-    await _deleteFolder(legacy.downloadStaging);
-  }
-  if (storesExisted) {
-    for (final path in legacy.importedBackups) {
-      await deleteQuietly(path);
-    }
-  }
-}
-
-Future<bool> _hasStaging(String folder) async {
+/// Moves `state.db` into the library's database, in one transaction: on any
+/// failure both files stay as they were, and it throws. Runs before anything opens
+/// either. The old file then waits one launch, and if it cannot be renamed the
+/// next launch merges again, which keeps what has changed since.
+void mergeStateDatabase(AppPaths paths) {
+  final earlier = _stateDatabase(paths);
+  if (!File(earlier).existsSync()) return;
+  final db = SqliteStore.open(paths.database);
   try {
-    return await Directory(folder)
-        .list(followLinks: false)
-        .any(
-          (entity) =>
-              entity is Directory &&
-              p.basename(entity.path).startsWith(LegacyLayout.downloadPrefix),
+    db.query("ATTACH DATABASE ? AS earlier", [earlier]);
+    final check = db.query("PRAGMA earlier.quick_check").first.values.first;
+    if (check != "ok") {
+      throw FormatException("$earlier is not a valid database: $check");
+    }
+    final hasTracks = db.hasTable("tracks");
+    bool earlierHas(String table) => db.query(
+      "SELECT 1 FROM earlier.sqlite_schema WHERE type = 'table' AND name = ?",
+      [table],
+    ).isNotEmpty;
+    final hasState = earlierHas("state");
+    final hasDetails = earlierHas("track_details");
+    db.transaction((main) {
+      main.execute(applicationStateSchema);
+      if (hasState) {
+        main.execute(
+          "INSERT OR IGNORE INTO main.state (key, value) "
+          "SELECT key, value FROM earlier.state ORDER BY rowid",
         );
-  } on FileSystemException {
-    return false;
+      }
+      if (hasDetails) {
+        main.execute(
+          "INSERT OR IGNORE INTO main.track_details (track_id, value) "
+          "SELECT track_id, value FROM earlier.track_details ORDER BY rowid",
+        );
+      }
+      // Details of tracks removed long ago, which nothing could ever read.
+      if (hasTracks) {
+        main.execute(
+          "DELETE FROM main.track_details WHERE track_id NOT IN "
+          "(SELECT ${trackIdAsText("id")} FROM main.tracks)",
+        );
+      }
+    });
+    db.query("DETACH DATABASE earlier");
+  } finally {
+    // Closing releases the attached file too, if detaching never happened.
+    db.close();
   }
-}
-
-/// Earlier releases saved the cookie file's path in the settings; the file
-/// itself was always `cookies.txt` in the data folder. Its presence now is
-/// the setting. An empty path meant cookies were removed.
-Future<void> _dropCookieSetting(AppPaths paths, ApplicationStore store) async {
-  final settings = store.get("settings");
-  if (settings is! Map || !settings.containsKey("cookie_file")) return;
-  if (settings["cookie_file"] == "") await deleteQuietly(paths.cookieFile);
   try {
-    store.set("settings", settings..remove("cookie_file"));
-  } on Object catch (error) {
-    debugPrint("Could not update the cookie setting: $error");
-  }
-}
-
-/// Moves the receipts in [folder] (named with [LegacyLayout.downloadPrefix])
-/// into [receipts], recording that their files are in [folder].
-Future<void> _adoptReceipts(String folder, String receipts) async {
-  final List<File> found;
-  try {
-    if (!await Directory(folder).exists()) return;
-    found = [
-      await for (final entity in Directory(folder).list(followLinks: false))
-        if (entity is File &&
-            p.basename(entity.path).startsWith(LegacyLayout.downloadPrefix) &&
-            p.extension(entity.path) == ".json")
-          entity,
-    ];
+    File(earlier).renameSync(_mergedStateDatabase(paths));
   } on FileSystemException catch (error) {
-    debugPrint("Could not look for download receipts in $folder: $error");
+    debugPrint("Merged the settings, but could not rename $earlier: $error");
     return;
   }
-  for (final file in found) {
+  for (final sidecar in ["$earlier-wal", "$earlier-shm"]) {
     try {
-      final Map<String, Object?> data;
-      try {
-        data = await readReceiptData(file.path);
-      } on FormatException catch (error) {
-        // It can vouch for no file, so it goes; the files it names stay.
-        debugPrint("Discarding unreadable receipt ${file.path}: $error");
-        await deleteQuietly(file.path);
-        continue;
-      }
-      final taskId = data["task_id"] as String;
-      final target = receiptPath(receipts, taskId);
-      if (!p.equals(p.dirname(target), receipts)) {
-        await deleteQuietly(file.path);
-        continue;
-      }
-      data["directory"] ??= p.absolute(folder);
-      await atomicWrite(target, utf8.encode(jsonEncode(data)));
-      await file.delete();
-    } on FileSystemException catch (error) {
-      debugPrint("Could not move download receipt ${file.path}: $error");
+      File(sidecar).deleteSync();
+    } on FileSystemException {
+      // Usually not there; closing removes them.
     }
-  }
-}
-
-/// Android: earlier releases downloaded into private storage and published
-/// copies to Music. Moves the library's private tracks into the public
-/// music folder once, makes that the music folder, and removes what is
-/// left of the private one. A failure keeps everything where it is, to
-/// retry at the next launch.
-Future<void> _moveOffPrivateStorage(
-  LegacyLayout legacy,
-  ApplicationStore store,
-  MusicManager manager,
-) async {
-  final publicRoot = legacy.paths.publicMusicRoot;
-  final settings = store.settings;
-  if (publicRoot == null ||
-      p.isWithin(publicRoot, settings.downloadDirectory)) {
-    return;
-  }
-  final target = legacy.paths.defaultMusicDirectory;
-  try {
-    final moved = await manager.mutation.run(
-      () => manager.moveMusicFolder(target),
-    );
-    store.saveSettings(settings..downloadDirectory = target);
-    debugPrint("Moved $moved track file(s) from private storage to $target");
-  } on Object catch (error) {
-    debugPrint("Could not move tracks out of private storage: $error");
-    return;
-  }
-  try {
-    await Directory(legacy.privateMusic).delete(recursive: true);
-  } on PathNotFoundException {
-    // Nothing was ever downloaded privately.
-  } on FileSystemException catch (error) {
-    debugPrint("Could not remove the old private music folder: $error");
   }
 }
