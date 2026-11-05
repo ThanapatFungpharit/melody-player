@@ -49,9 +49,42 @@ class MusicSearchController extends ChangeNotifier {
   bool get showsPlaylist =>
       isYoutubePlaylistUrl(queryText) && results.isNotEmpty;
 
+  /// The selected source's name, for what the search says it searches.
+  String get sourceLabel => app.settings.musicSource.label;
+
+  /// What to keep in mind about the results of the selected source.
+  String? get sourceNote => app.settings.musicSource == MusicSource.youtube
+      ? "Searching regular $youtubeName: results can include music videos, "
+            "live versions, covers, remixes, and unrelated videos."
+      : null;
+
+  /// Results of the previous source no longer match what a new search or
+  /// page would show. The typed text stays, ready to search again.
+  void sourceChanged() {
+    final typed = draft;
+    clear();
+    draft = typed;
+  }
+
+  /// Swaps to the other source, the same setting Settings shows, and runs the
+  /// search on screen there. Text not searched yet, or several pasted links
+  /// (a batch of downloads), wait for the user.
+  Future<void> swapSource() async {
+    final next = app.settings.musicSource == MusicSource.youtube
+        ? MusicSource.youtubeMusic
+        : MusicSource.youtube;
+    final again =
+        queryText.isNotEmpty &&
+        draft.trim() == queryText &&
+        extractDownloadUrls(queryText).length <= 1;
+    app.settingsControls.update((settings) => settings.musicSource = next);
+    // A setting that could not be saved has been reported and did not change.
+    if (again && app.settings.musicSource == next) await startSearch();
+  }
+
   /// Imports the playlist whose link was pasted.
   Future<void> importPastedPlaylist() async {
-    app.showMessage("Loading the $youtubeMusicName playlist…");
+    app.showMessage("Loading the $sourceLabel playlist…");
     await app.playlists.importFromUrl(queryText);
   }
 
@@ -86,7 +119,7 @@ class MusicSearchController extends ChangeNotifier {
   Future<void> startSearch() async {
     final query = draft.trim();
     if (query.isEmpty) {
-      app.showError("Enter a search term or $youtubeMusicName URL.");
+      app.showError("Enter a search term or $sourceLabel URL.");
       return;
     }
     final urls = extractDownloadUrls(query);

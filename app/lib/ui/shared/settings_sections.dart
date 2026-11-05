@@ -536,21 +536,52 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
   );
 }
 
+const _regularYoutubeLimits =
+    "With regular $youtubeName, searches can return music videos, live "
+    "performances, covers, remixes, or unrelated videos instead of official "
+    "releases. Titles, artists, and artwork may be incomplete, since a video's "
+    "channel stands in for its artist. The same song in another video counts "
+    "as a different track, so duplicates are harder to spot. Lyrics are often "
+    "missing and mix links still open on $youtubeMusicName. Availability varies "
+    "by video, region, account, and platform.";
+
 SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
   final settings = app.settingsControls;
   final scheme = Theme.of(context).colorScheme;
   return SettingsSection(
     icon: Icons.smart_display_rounded,
-    title: "$youtubeMusicName access",
-    subtitle: "Use your $youtubeMusicName account.",
-    mobileTitle: youtubeMusicName,
-    mobileSubtitle: "Account access and cookies",
+    title: "Music source and access",
+    subtitle: "Where music comes from, and your $youtubeName account.",
+    mobileTitle: "Music source",
+    mobileSubtitle: "${app.settings.musicSource.label}, account access",
     body: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
+        _dropdown(
+          "Search and download from",
+          app.settings.musicSource.id,
+          [for (final source in MusicSource.values) (source.id, source.label)],
+          (value) => settings.update(
+            (next) => next.musicSource = MusicSource.parse(value),
+          ),
+          descriptions: const {
+            "youtube_music": "Official songs, with artists and album artwork.",
+            "youtube":
+                "Every video on $youtubeName, with less reliable details.",
+          },
+          helper:
+              "Your library, playlists, and queue stay as they are. The source "
+              "applies to searches and downloads from now on.",
+        ),
+        _infoBox(
+          context,
+          Icons.info_outline_rounded,
+          _note(context, _regularYoutubeLimits),
+        ),
+        const Divider(height: 18),
         const Text(
-          "$youtubeMusicName cookies",
+          "$youtubeName cookies",
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         _infoBox(

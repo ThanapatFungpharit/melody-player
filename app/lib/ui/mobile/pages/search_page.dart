@@ -1,7 +1,6 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
-import "../../../core/media.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/widgets.dart";
@@ -100,6 +99,7 @@ class _MobileSearchState extends State<MobileSearch> {
           Row(
             spacing: 4,
             children: [
+              MusicSourceButton(app),
               Expanded(
                 child: ValueListenableBuilder(
                   valueListenable: _query,
@@ -110,7 +110,7 @@ class _MobileSearchState extends State<MobileSearch> {
                     style: const TextStyle(fontSize: 14),
                     textInputAction: TextInputAction.search,
                     decoration: InputDecoration(
-                      hintText: "Song, artist or $youtubeMusicName link",
+                      hintText: "Song, artist or ${search.sourceLabel} link",
                       prefixIcon: const Icon(Icons.search_rounded),
                       // Only while there is text, so the hint keeps its room.
                       suffixIcon: value.text.isEmpty
@@ -126,16 +126,18 @@ class _MobileSearchState extends State<MobileSearch> {
               ),
               IconButton.filled(
                 onPressed: search.busy ? null : search.startSearch,
-                tooltip: "Search $youtubeMusicName",
+                tooltip: "Search ${search.sourceLabel}",
                 icon: const Icon(Icons.arrow_forward_rounded),
               ),
             ],
           ),
           Text(
             search.status ??
-                "Search $youtubeMusicName or paste a playlist link.",
+                "Search ${search.sourceLabel} or paste a playlist link.",
             style: TextStyle(fontSize: 12, color: muted),
           ),
+          if (search.sourceNote case final note?)
+            Text(note, style: TextStyle(fontSize: 12, color: muted)),
           if (search.showsPlaylist)
             OutlinedButton.icon(
               onPressed: search.importPastedPlaylist,

@@ -85,6 +85,10 @@ class FakeWorkerTransport implements WorkerTransport {
     },
   };
 
+  /// Answers `extract` calls as yt-dlp would; throwing fails the request.
+  /// Null answers nothing, like an extractor that reports no information.
+  Map<String, Object?>? Function(String target, Map options)? onExtract;
+
   /// Replies to `ytmusic` calls; a missing method answers null.
   final Map<String, Object?> ytMusicResults;
 
@@ -223,6 +227,15 @@ class FakeWorkerTransport implements WorkerTransport {
       case "tag":
         await File("${frame["source"]}").copy("${frame["target"]}");
         _frames.add({"id": id, "ok": true, "result": null});
+      case "extract":
+        _frames.add({
+          "id": id,
+          "ok": true,
+          "result": onExtract?.call(
+            "${frame["target"]}",
+            frame["options"] as Map,
+          ),
+        });
       case "ytmusic":
         if (offline) {
           _frames.add({

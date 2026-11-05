@@ -7,6 +7,7 @@ import "../app_state.dart";
 import "../../application/models.dart";
 import "../../application/queue.dart";
 import "../../core/library/models.dart";
+import "../../core/media.dart";
 import "theme.dart";
 
 /// Track or playlist artwork from a file or the network, with a placeholder
@@ -174,6 +175,82 @@ class _Placeholder extends StatelessWidget {
 }
 
 /// A quiet, centered message for an empty or failed view.
+/// A small round button showing the source searches use. Pressing it swaps to
+/// the other one; it is the same setting as Settings → Music source.
+class MusicSourceButton extends StatelessWidget {
+  const MusicSourceButton(this.app, {super.key});
+
+  final MelodyApp app;
+
+  @override
+  Widget build(BuildContext context) {
+    final source = app.settings.musicSource;
+    final other = source == MusicSource.youtube
+        ? MusicSource.youtubeMusic
+        : MusicSource.youtube;
+    return IconButton(
+      onPressed: app.search.swapSource,
+      tooltip: "Searching ${source.label}. Switch to ${other.label}",
+      style: IconButton.styleFrom(
+        shape: const CircleBorder(),
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+      ),
+      icon: SizedBox.square(
+        dimension: 24,
+        child: CustomPaint(painter: _MusicSourceMark(source)),
+      ),
+    );
+  }
+}
+
+/// A source's logo: YouTube's red rounded rectangle, or YouTube Music's red
+/// disc with its ring, each around a white play triangle. Drawn rather than
+/// taken from an icon font, which has neither.
+class _MusicSourceMark extends CustomPainter {
+  const _MusicSourceMark(this.source);
+
+  final MusicSource source;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final unit = size.width / 24;
+    final red = Paint()..color = const Color(0xFFFF0000);
+    final white = Paint()..color = Colors.white;
+    final center = size.center(Offset.zero);
+    if (source == MusicSource.youtube) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: center, width: 24 * unit, height: 17 * unit),
+          Radius.circular(5 * unit),
+        ),
+        red,
+      );
+    } else {
+      canvas.drawCircle(center, 12 * unit, red);
+      canvas.drawCircle(
+        center,
+        7 * unit,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2 * unit,
+      );
+    }
+    final half = source == MusicSource.youtube ? 4 * unit : 3.2 * unit;
+    canvas.drawPath(
+      Path()
+        ..moveTo(center.dx - half * 0.8, center.dy - half)
+        ..lineTo(center.dx + half, center.dy)
+        ..lineTo(center.dx - half * 0.8, center.dy + half)
+        ..close(),
+      white,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_MusicSourceMark old) => old.source != source;
+}
+
 class EmptyState extends StatelessWidget {
   const EmptyState(this.icon, this.message, {super.key, this.action});
 

@@ -478,24 +478,23 @@ Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
     app.showError("A playlist import is already in progress.");
     return Future.value();
   }
+  final source = app.settings.musicSource;
   return showTextPrompt(
     context,
     title: "Import playlist",
-    label: "$youtubeMusicName playlist URL",
-    hint: "https://music.youtube.com/playlist?list=…",
+    label: "${source.label} playlist URL",
+    hint: "https://${source.host}/playlist?list=…",
     description:
-        "Paste a $youtubeMusicName playlist link. Melody will reuse tracks already in "
+        "Paste a ${source.label} playlist link. Melody will reuse tracks already in "
         "your library and download only the missing ones.",
     confirmLabel: "Import playlist",
     confirmIcon: Icons.download_rounded,
     onConfirm: (value) async {
       final url = value.trim();
       if (!isYoutubePlaylistUrl(url)) {
-        throw const FormatException(
-          "Paste a complete $youtubeMusicName playlist URL.",
-        );
+        throw FormatException("Paste a complete ${source.label} playlist URL.");
       }
-      app.showMessage("Loading the $youtubeMusicName playlist…");
+      app.showMessage("Loading the ${source.label} playlist…");
       app.playlists.importFromUrl(url);
     },
   );
@@ -530,7 +529,7 @@ Future<void> showPlaylistFromLinksDialog(BuildContext context, MelodyApp app) {
                   minLines: 5,
                   maxLines: 10,
                   decoration: InputDecoration(
-                    labelText: "$youtubeMusicName song links",
+                    labelText: "${app.settings.musicSource.label} song links",
                     hintText: "Paste the links someone shared with you",
                     errorText: error,
                     alignLabelWithHint: true,
@@ -718,7 +717,7 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  "Add links to one or more songs on $youtubeMusicName. Melody will "
+                  "Add links to one or more songs on ${app.settings.musicSource.label}. Melody will "
                   "queue them together and show progress for each song. To save a "
                   "playlist, use Import playlist on the Playlists page.",
                   style: TextStyle(
@@ -732,8 +731,9 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
                   minLines: 7,
                   maxLines: 12,
                   decoration: InputDecoration(
-                    labelText: "$youtubeMusicName URLs",
-                    hintText: "Paste one $youtubeMusicName song link per line",
+                    labelText: "${app.settings.musicSource.label} URLs",
+                    hintText:
+                        "Paste one ${app.settings.musicSource.label} song link per line",
                     errorText: error,
                     alignLabelWithHint: true,
                   ),
@@ -753,7 +753,7 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               if (urls.isEmpty) {
                 setState(
                   () => error =
-                      "Paste at least one complete $youtubeMusicName URL.",
+                      "Paste at least one complete ${app.settings.musicSource.label} URL.",
                 );
                 return;
               }
@@ -1045,7 +1045,7 @@ Future<void> pickCookieFile(MelodyApp app) async {
   final FilePickerResult? result;
   try {
     result = await FilePicker.pickFiles(
-      dialogTitle: "Upload $youtubeMusicName cookies",
+      dialogTitle: "Upload $youtubeName cookies",
       type: FileType.custom,
       allowedExtensions: const ["txt"],
       withData: true,

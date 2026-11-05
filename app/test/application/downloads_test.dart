@@ -7,6 +7,7 @@ import "package:melody/application/downloads.dart";
 import "package:melody/application/library_service.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/models.dart";
+import "package:melody/core/media.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/artwork.dart";
@@ -1396,6 +1397,98 @@ void main() {
         "audio_format": "wma",
       }, defaultDownloadDirectory: music);
       expect(settings.audioFormat, "mp3");
+    });
+  });
+
+  group("with regular YouTube as the source", () {
+    const video = "https://www.youtube.com/watch?v=abcdefghijk";
+
+    SearchResult regular() => const SearchResult(
+      id: "abcdefghijk",
+      title: "A video",
+      uploader: "Channel",
+      duration: 200,
+      thumbnail: "",
+      url: video,
+      source: youtubeName,
+    );
+
+    test("a result downloads and is stored under its own source", () async {
+      final coordinator = await open();
+      final request = await coordinator.request(regular());
+      final record = await terminal(coordinator, request.task!);
+
+      expect(record.status, DownloadStatus.completed);
+      expect(record.source, youtubeName);
+      expect(
+        transport.sent.lastWhere((frame) => frame["op"] == "download")["url"],
+        video,
+      );
+      final track = manager.getTrack(record.trackIds.single);
+      expect(track.source, video);
+      expect(store.trackDetails(track.id).sourceName, youtubeName);
+    });
+
+    test("a YouTube Music result still uses its own host", () async {
+      final coordinator = await open();
+      coordinator.applySettings(
+        store.settings..musicSource = MusicSource.youtube,
+      );
+      final request = await coordinator.request(_result());
+      final record = await terminal(coordinator, request.task!);
+      expect(manager.getTrack(record.trackIds.single).source, _url);
+    });
+
+    test("the same video from the other source is not a second copy", () async {
+      final coordinator = await open();
+      final first = await coordinator.request(regular());
+      await terminal(coordinator, first.task!);
+
+      final again = await coordinator.request(_result());
+      expect(again.track?.source, video);
+      expect(manager.listTracks(), hasLength(1));
+    });
+
+    test(
+      "a download running from one source is joined from the other",
+      () async {
+        transport.downloadGate = Completer<void>();
+        final coordinator = await open();
+        final first = await coordinator.request(regular());
+        final joined = await coordinator.request(_result());
+        expect(joined.task, first.task);
+        expect(joined.started, isFalse);
+        transport.downloadGate!.complete();
+        await terminal(coordinator, first.task!);
+      },
+    );
+
+    test("pasted links follow the selected source", () async {
+      final coordinator = await open();
+      coordinator.applySettings(
+        store.settings..musicSource = MusicSource.youtube,
+      );
+      final batch = await coordinator.startUrls([
+        "https://music.youtube.com/watch?v=abcdefghijk&si=x",
+      ]);
+      final record = await terminal(coordinator, batch.tasks.single);
+      expect(record.source, youtubeName);
+      expect(manager.getTrack(record.trackIds.single).source, video);
+    });
+
+    test("a failed video can be retried from the same source", () async {
+      transport.downloadFailure = "ERROR: [youtube] x: Video unavailable";
+      final coordinator = await open();
+      final request = await coordinator.request(regular());
+      final failed = await terminal(coordinator, request.task!);
+      expect(failed.status, DownloadStatus.failed);
+      expect(failed.error, isNotEmpty);
+
+      final retried = await coordinator.retry(failed.id);
+      final record = await terminal(coordinator, retried);
+      expect(record.status, DownloadStatus.completed);
+      expect(record.source, youtubeName);
+      expect(manager.getTrack(record.trackIds.single).source, video);
     });
   });
 }

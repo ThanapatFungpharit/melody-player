@@ -303,6 +303,20 @@ class WorkerClient {
   Future<Object?> ytMusic(String method, Map<String, Object?> arguments) =>
       _call("ytmusic", {"method": method, "arguments": arguments});
 
+  /// What yt-dlp reports for [target] (a URL or `ytsearchN:` term) without
+  /// downloading it, or null when it reports nothing. The worker keeps only
+  /// the fields the app reads.
+  Future<Map<String, Object?>?> extract(
+    String target,
+    Map<String, Object?> options,
+  ) async {
+    final result = await _call("extract", {
+      "target": target,
+      "options": options,
+    });
+    return result is Map ? result.cast<String, Object?>() : null;
+  }
+
   /// The newest compatible release of [package] on PyPI, or null.
   Future<String?> latestReleaseVersion(String package) async {
     final result = await _call("latest_release", {"package": package});

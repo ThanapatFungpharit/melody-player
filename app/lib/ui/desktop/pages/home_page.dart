@@ -327,7 +327,7 @@ class _Recommendations extends StatelessWidget {
     final home = app.home;
     final Widget body;
     if (home.recommendationsLoading) {
-      body = const LoadingRow("Building your YouTube Music mix…");
+      body = LoadingRow("Building your ${app.settings.musicSource.label} mix…");
     } else if (home.recommendationsError.isNotEmpty) {
       body = EmptyState(Icons.cloud_off_rounded, home.recommendationsError);
     } else if (home.recommendations.isNotEmpty) {
@@ -338,7 +338,7 @@ class _Recommendations extends StatelessWidget {
     } else {
       body = const EmptyState(
         Icons.auto_awesome_rounded,
-        "Recommendations come from tracks downloaded from YouTube Music; imported files are not used.",
+        "Recommendations come from tracks downloaded from YouTube or YouTube Music; imported files are not used.",
       );
     }
     final total = home.recommendations.length;
@@ -350,7 +350,8 @@ class _Recommendations extends StatelessWidget {
       children: [
         SectionTitle(
           "Recommended for you",
-          caption: "Based on your recent and favorite YouTube Music tracks",
+          caption:
+              "Based on your recent and favorite ${app.settings.musicSource.label} tracks",
           trailing: [
             IconButton(
               onPressed: home.recommendationsLoading ? null : home.reload,

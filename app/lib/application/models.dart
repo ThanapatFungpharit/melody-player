@@ -152,6 +152,7 @@ class AppSettings {
     this.downloadHistoryDays = 30,
     this.normalizeLoudness = true,
     this.loudnessTarget = -14,
+    this.musicSource = MusicSource.youtubeMusic,
   });
 
   String downloadDirectory;
@@ -175,6 +176,9 @@ class AppSettings {
   /// The loudness tracks are brought down to, in LUFS; one of
   /// [loudnessTargetChoices].
   int loudnessTarget;
+
+  /// Where search, playlists, recommendations, and new downloads come from.
+  MusicSource musicSource;
 
   DownloadFormat get downloadFormat => DownloadFormat.parse(audioFormat);
 
@@ -222,6 +226,7 @@ class AppSettings {
         final int target when loudnessTargetChoices.contains(target) => target,
         _ => defaults.loudnessTarget,
       },
+      musicSource: MusicSource.parse(data["music_source"]),
     );
   }
 
@@ -240,6 +245,7 @@ class AppSettings {
     "download_history_days": downloadHistoryDays,
     "normalize_loudness": normalizeLoudness,
     "loudness_target": loudnessTarget,
+    "music_source": musicSource.id,
   };
 
   AppSettings copy() => AppSettings.fromJson(

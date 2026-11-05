@@ -12,6 +12,7 @@ interfaces for the same shared capabilities.
 ## What is implemented
 
 - Paged YouTube Music song search (YouTube Music's own song results, with artists, album artwork, and durations) with track-list and artwork-grid views; pasted playlist URLs load their tracks with playlist-aware pagination
+- A choice of music source in Settings: YouTube Music (the default) or regular YouTube, for search, playlists, recommendations, and new downloads ([what differs](#music-sources))
 - Lyrics, timed when available: the current line follows playback and tapping a line seeks to it. Lyrics download with each track and are saved inside its audio file (a standard `USLT` frame in MP3, `©lyr` in M4A, `LYRICS` in FLAC/Ogg/Opus), not in a separate file, so other players see them too. Other tracks save their lyrics when first played, and on desktop **Write lyrics into files** in Settings → Maintenance adds them to older tracks' files. Imported files show lyrics from their own tags or a `.lrc` with the same name; lyrics Melody has saved or found in a file work offline
 - Optional manually uploaded cookie-file sessions for downloads that need a signed-in session
 - Individual, multi-URL batch, and YouTube Music playlist downloads with concurrent workers, per-song progress, cancel, retry, isolated failure details, persistent history, and cover artwork embedded in downloaded media files plus a derived offline UI cache. A cover that cannot be embedded does not fail the download: the audio is kept and Melody shows the downloaded image
@@ -117,7 +118,11 @@ installed Melody upgrades in place with its library, playlists, and settings:
 
 Downloaded audio defaults to `~/Music/Melody` on desktop. On Android (11 or newer),
 downloads are saved straight to the public `Music/Melody` folder, or another
-folder inside `Music` chosen in Settings, without any storage permission. The
+folder inside `Music` chosen in Settings; saving needs no storage permission.
+Library cleanup asks for audio access, because Android otherwise hides music
+that Melody did not create itself (files added with a file manager, or left by
+an earlier install), and the scan would misreport it. Deleting such a file asks
+for confirmation in an Android dialog; a file that stays is listed as a failure. The
 music folder only ever receives finished audio: each download stages in the app
 data folder (partial streams and thumbnails), and that staging is removed when
 the download ends, or kept for up to a week if another attempt can pick up from
@@ -129,6 +134,36 @@ once first; Melody tells you so rather than start over beside your old library.
 The first launch after 1.0.3 moves settings, history, and the queue from
 `state.db` into `library.db`. This is one-way: an earlier release opened afterwards
 finds your tracks and playlists but not your settings.
+
+### Music sources
+
+Settings → Music source picks where search, playlist links, recommendations, and
+new downloads come from. YouTube Music is the default. The round button beside
+the search field shows the same setting by its logo and swaps it, running the
+current search again on the other source. The choice is kept across
+restarts. The search page says which source it uses, and a result names its
+source in its row on desktop and in its details on both layouts.
+
+Switching never changes what you already have. Melody identifies a track by its
+video, not by the site it came from, so library tracks, playlists, the queue,
+and downloads in progress stay as they are, and a video you already have is
+recognized from either source.
+
+Regular YouTube finds more, but knows less about it:
+
+- **Results:** searches can return music videos, live performances, covers,
+  remixes, or unrelated videos instead of official audio releases.
+- **Details:** titles, artists, and artwork may be incomplete or inconsistent.
+  A video's channel stands in for its artist, and artwork is usually a widescreen
+  video frame rather than a square cover.
+- **Duplicates:** only the same video is recognized as a duplicate. The official
+  audio and a music video of one song are two tracks.
+- **YouTube Music features:** lyrics come from YouTube Music either way, and are
+  often missing for videos that are not songs there. A mix link (`list=RD…`) still
+  opens through YouTube Music, so its tracks are listed as YouTube Music tracks.
+- **Availability:** whether a video can be played varies by video, region,
+  account, and platform. Melody reports a video it cannot get, and skips removed,
+  private, and live ones in lists.
 
 YouTube Music access is anonymous by default. To use a signed-in session, export
 a UTF-8 Netscape-format `cookies.txt` file and upload it in Settings. Melody

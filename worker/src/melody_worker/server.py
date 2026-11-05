@@ -75,6 +75,7 @@ _INFO_FIELDS = (
     "channel",
     "creator",
     "duration",
+    "live_status",
     "thumbnail",
     "playlist_title",
     "extractor",

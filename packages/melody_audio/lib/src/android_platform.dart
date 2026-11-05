@@ -50,4 +50,31 @@ class AndroidPlatform {
     }
     return path;
   }
+
+  /// Whether Melody may see audio files other apps (or an earlier install)
+  /// put in the Music folder. Without it Android shows only the files this
+  /// install created. Always true off Android.
+  static Future<bool> hasAudioAccess() async {
+    if (!_android) return true;
+    return await _channel.invokeMethod<bool>("hasAudioAccess") ?? false;
+  }
+
+  /// Asks for audio access, showing the system prompt unless Android already
+  /// decided. Returns whether it is granted. Always true off Android.
+  static Future<bool> requestAudioAccess() async {
+    if (!_android) return true;
+    return await _channel.invokeMethod<bool>("requestAudioAccess") ?? false;
+  }
+
+  /// Asks the user to confirm deleting audio files that [paths] name and
+  /// Melody did not create, which Android 11+ does not let an app delete
+  /// itself. Returns whether the user allowed it; files Android's media
+  /// index does not know are skipped, so check which are gone.
+  static Future<bool> deleteMediaFiles(List<String> paths) async {
+    if (!_android) return false;
+    return await _channel.invokeMethod<bool>("deleteMediaFiles", {
+          "paths": paths,
+        }) ??
+        false;
+  }
 }

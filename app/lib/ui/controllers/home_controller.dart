@@ -10,7 +10,7 @@ import "../../core/errors.dart";
 import "../../core/library/models.dart";
 import "../../core/media.dart";
 
-/// Home collections and the YouTube Music recommendation mix.
+/// Home collections and the recommendation mix from the selected source.
 class HomeController extends ChangeNotifier {
   HomeController(this.app);
 
@@ -129,6 +129,19 @@ class HomeController extends ChangeNotifier {
 
   void reload() {
     ensureRecommendations(force: true);
+    notifyListeners();
+  }
+
+  /// The mix on screen came from the previous source: fetch a new one while
+  /// Home shows, or when it next does.
+  void sourceChanged() {
+    _request++;
+    recommendations = [];
+    recommendationsLoading = false;
+    recommendationsError = "";
+    recommendationPage = 0;
+    _sources = [];
+    if (_watchers > 0) ensureRecommendations(force: true);
     notifyListeners();
   }
 

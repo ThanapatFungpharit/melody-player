@@ -102,7 +102,8 @@ class _MobileHomeState extends State<MobileHome> {
           ],
           MobileHeading(
             "Recommended for you",
-            subtitle: "Based on your recent and favorite YouTube Music tracks",
+            subtitle:
+                "Based on your recent and favorite ${app.settings.musicSource.label} tracks",
             actions: [
               TouchIconButton(
                 Icons.refresh_rounded,
@@ -112,7 +113,7 @@ class _MobileHomeState extends State<MobileHome> {
             ],
           ),
           if (home.recommendationsLoading)
-            const LoadingRow("Building your YouTube Music mix…")
+            LoadingRow("Building your ${app.settings.musicSource.label} mix…")
           else if (home.recommendationsError.isNotEmpty)
             EmptyState(Icons.cloud_off_rounded, home.recommendationsError)
           else if (home.recommendations.isNotEmpty) ...[
@@ -131,7 +132,7 @@ class _MobileHomeState extends State<MobileHome> {
           ] else
             const EmptyState(
               Icons.auto_awesome_rounded,
-              "Recommendations come from tracks downloaded from YouTube Music; imported files are not used.",
+              "Recommendations come from tracks downloaded from YouTube or YouTube Music; imported files are not used.",
             ),
         ]);
       },
