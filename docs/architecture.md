@@ -509,8 +509,8 @@ A track's details go with it in one transaction (a trigger on `tracks`), so they
 cannot outlive it. Other changes that touch both owners, such as registering a
 track and then saving its details, are separate transactions. Startup marks completed
 downloads whose library track lost its file as repairable (a track the user
-removed is not lost), starts interrupted downloads over, and filters the
-restored queue by file availability. `LibraryService.reconcile`
+removed is not lost), carries on with interrupted downloads from what their
+staging folders hold, and filters the restored queue by file availability. `LibraryService.reconcile`
 (Settings → Maintenance) removes stale secondary references and lists
 unregistered files without deleting them.
 
