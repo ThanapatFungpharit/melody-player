@@ -101,11 +101,11 @@ Future<void> _loadFonts() async {
   }
   final material = p.join(directory, "material_fonts");
   await family("MaterialIcons", [
-    p.join(material, "materialicons-regular.otf"),
+    p.join(material, "MaterialIcons-Regular.otf"),
   ]);
   await family("Roboto", [
-    for (final weight in ["regular", "medium", "bold"])
-      p.join(material, "roboto-$weight.ttf"),
+    for (final weight in ["Regular", "Medium", "Bold"])
+      p.join(material, "Roboto-$weight.ttf"),
   ]);
   await family("Segoe UI", [
     for (final name in ["segoeui", "seguisb", "segoeuib", "segoeuii"])
@@ -655,6 +655,134 @@ void main() {
     expect(find.text("Move library here"), findsNothing);
     await tester.pump(const Duration(seconds: 15));
   });
+
+  for (final (name, size) in [
+    ("wide", const Size(1540, 2000)),
+    ("narrow", const Size(1100, 3200)),
+  ]) {
+    for (final theme in ["light", "dark"]) {
+      testWidgets("desktop settings fit a $name window in $theme", (
+        tester,
+      ) async {
+        final app = await pumpShell(
+          tester,
+          mobile: false,
+          size: size,
+          theme: theme,
+        );
+        app.openPanel(AppPanel.settings);
+        await tester.pumpAndSettle();
+        await shoot(tester, "desktop_settings_${name}_$theme");
+      });
+    }
+  }
+
+  for (final (name, width) in [("phone", 390.0), ("small_phone", 320.0)]) {
+    for (final theme in ["light", "dark"]) {
+      testWidgets("mobile settings fit a $name with every section open in "
+          "$theme", (tester) async {
+        await pumpShell(
+          tester,
+          mobile: true,
+          size: Size(width, 7000),
+          theme: theme,
+        );
+        await tester.tap(find.byTooltip("Settings"));
+        await tester.pumpAndSettle();
+        await shoot(tester, "mobile_settings_collapsed_${name}_$theme");
+        for (final section in [
+          "Appearance",
+          "Downloads",
+          "Music source",
+          "Maintenance",
+          "Data management",
+        ]) {
+          final title = find.text(section);
+          await tester.ensureVisible(title);
+          await tester.pumpAndSettle();
+          await tester.tap(title);
+          await tester.pumpAndSettle();
+        }
+        await shoot(tester, "mobile_settings_${name}_$theme");
+      });
+    }
+  }
+
+  testWidgets("an accent is chosen from its swatch and marked as chosen", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pumpAndSettle();
+    expect(app.settings.accentColor, isNot("rose"));
+    final semantics = tester.ensureSemantics();
+
+    await tester.tap(find.byTooltip("Rose"));
+    await tester.pumpAndSettle();
+
+    expect(app.services.store.settings.accentColor, "rose");
+    expect(find.text("Rose"), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    expect(
+      tester.getSemantics(find.byTooltip("Rose")),
+      isSemantics(
+        label: "Rose",
+        isButton: true,
+        hasSelectedState: true,
+        isSelected: true,
+      ),
+    );
+    semantics.dispose();
+  });
+
+  for (final mobile in [false, true]) {
+    testWidgets(
+      "${mobile ? "mobile" : "desktop"} data actions each ask first",
+      (tester) async {
+        final app = await pumpShell(
+          tester,
+          mobile: mobile,
+          size: mobile ? const Size(320, 844) : const Size(1540, 960),
+        );
+        if (mobile) {
+          await tester.tap(find.byTooltip("Settings"));
+          await tester.pumpAndSettle();
+          final section = find.text("Data management");
+          await tester.ensureVisible(section);
+          await tester.pumpAndSettle();
+          await tester.tap(section);
+        } else {
+          app.openPanel(AppPanel.settings);
+        }
+        await tester.pumpAndSettle();
+        final tracks = app.services.manager.listTracks().length;
+        for (final action in [
+          "Clear library",
+          "Clear playlists",
+          "Reset settings",
+          "Reset everything",
+        ]) {
+          final button = find.text(action);
+          await tester.scrollUntilVisible(
+            button,
+            200,
+            scrollable: find.byType(Scrollable).last,
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(button);
+          await tester.pumpAndSettle();
+          expect(find.text("$action?"), findsOneWidget);
+          await tester.tap(find.text("Cancel"));
+          await tester.pumpAndSettle();
+        }
+        expect(app.services.manager.listTracks().length, tracks);
+      },
+    );
+  }
 
   testWidgets("desktop screens render", (tester) async {
     final app = await pumpShell(

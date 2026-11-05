@@ -59,21 +59,21 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       spacing: 16,
                       children: [
                         card(appearanceSettings(context, app)),
-                        card(youtubeSettings(context, app)),
                         card(maintenanceSettings(context, app)),
                       ],
                     ),
-                    lg: 5,
+                    lg: 6,
                   ),
                   GridCell(
                     Column(
                       spacing: 16,
                       children: [
                         card(downloadSettings(context, app, mobile: false)),
+                        card(youtubeSettings(context, app)),
                         card(dataManagementSettings(context, app)),
                       ],
                     ),
-                    lg: 7,
+                    lg: 6,
                   ),
                 ],
               ),

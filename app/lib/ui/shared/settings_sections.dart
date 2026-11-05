@@ -39,6 +39,7 @@ class SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final color = section.destructive ? scheme.error : scheme.primary;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
@@ -47,10 +48,10 @@ class SectionHeader extends StatelessWidget {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-            color: scheme.primary.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(Radii.medium),
           ),
-          child: Icon(section.icon, color: scheme.primary, size: 21),
+          child: Icon(section.icon, color: color, size: 21),
         ),
         Expanded(
           child: Column(
@@ -76,6 +77,19 @@ class SectionHeader extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shared building blocks
+// ---------------------------------------------------------------------------
+
+const _sectionDivider = Divider(height: 8);
+
+/// Wraps a field that opens a section. Its floating label sits partly above
+/// the field, where the mobile section's expansion tile would clip it. With
+/// the tile's own top padding of 3, the field sits 12 below the tile's header.
+Widget _topField(Widget field) =>
+    Padding(padding: const EdgeInsets.only(top: 9), child: field);
+
+/// An all-caps group label inside a section.
 Widget _label(BuildContext context, String text) => Text(
   text,
   style: TextStyle(
@@ -86,6 +100,76 @@ Widget _label(BuildContext context, String text) => Text(
   ),
 );
 
+/// A bold title for a group of related controls.
+Widget _heading(String text) =>
+    Text(text, style: const TextStyle(fontWeight: FontWeight.bold));
+
+/// A title for one control, with its current value at the far end.
+Widget _valueHeading(BuildContext context, String title, String value) => Row(
+  children: [
+    Expanded(child: _heading(title)),
+    Text(
+      value,
+      style: TextStyle(
+        fontWeight: FontWeight.bold,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+    ),
+  ],
+);
+
+/// Controls that belong together, closer to each other than a section's
+/// separate settings are.
+Widget _group(List<Widget> children) => Column(
+  crossAxisAlignment: CrossAxisAlignment.stretch,
+  spacing: 10,
+  children: children,
+);
+
+/// Two fields sharing a row, stacked when each would be too narrow to read.
+Widget _fieldPair(Widget first, Widget second) => LayoutBuilder(
+  builder: (context, constraints) => constraints.maxWidth < 400
+      ? Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: 16,
+          children: [first, second],
+        )
+      : Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 12,
+          children: [
+            Expanded(child: first),
+            Expanded(child: second),
+          ],
+        ),
+);
+
+/// A title and description with the button they explain: beside them, or
+/// beneath them when there is no room.
+Widget _actionRow(Widget title, Widget description, Widget action) {
+  final text = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    spacing: 4,
+    children: [title, description],
+  );
+  return LayoutBuilder(
+    builder: (context, constraints) => constraints.maxWidth < 440
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 10,
+            children: [text, action],
+          )
+        : Row(
+            spacing: 16,
+            children: [
+              Expanded(child: text),
+              action,
+            ],
+          ),
+  );
+}
+
+/// Small secondary text explaining a setting.
 Widget _note(BuildContext context, String text) => Text(
   text,
   style: TextStyle(
@@ -93,6 +177,10 @@ Widget _note(BuildContext context, String text) => Text(
     color: Theme.of(context).colorScheme.onSurfaceVariant,
   ),
 );
+
+/// Buttons laid out in a row that wraps on narrow screens.
+Widget _buttonRow(List<Widget> buttons) =>
+    Wrap(spacing: 10, runSpacing: 10, children: buttons);
 
 Widget _infoBox(
   BuildContext context,
@@ -105,7 +193,7 @@ Widget _infoBox(
     padding: const EdgeInsets.all(12),
     decoration: BoxDecoration(
       color: background ?? scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(Radii.medium),
     ),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -144,44 +232,47 @@ Widget _dropdown(
     helperMaxLines: 3,
   ),
   selectedItemBuilder: (context) => [
-    for (final (_, text) in options)
-      Text(text, overflow: TextOverflow.ellipsis),
+    for (final (_, optionLabel) in options)
+      Text(optionLabel, overflow: TextOverflow.ellipsis),
   ],
   items: [
-    for (final (key, text) in options)
+    for (final (optionKey, optionLabel) in options)
       DropdownMenuItem(
-        value: key,
-        child: descriptions[key] == null
-            ? Text(text)
-            : Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(text),
-                    Builder(
-                      builder: (context) => Text(
-                        descriptions[key]!,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+        value: optionKey,
+        child: switch (descriptions[optionKey]) {
+          null => Text(optionLabel),
+          final description => _describedOption(optionLabel, description),
+        },
       ),
   ],
   onChanged: onChanged == null
       ? null
-      : (value) {
-          if (value != null) onChanged(value);
+      : (selected) {
+          if (selected != null) onChanged(selected);
         },
 );
 
-/// A settings text field. It is rebuilt when [value] changes from outside,
-/// and the top padding leaves room for its floating label.
+/// A dropdown menu entry with a secondary description line.
+Widget _describedOption(String optionLabel, String description) => Padding(
+  padding: const EdgeInsets.symmetric(vertical: 8),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(optionLabel),
+      Builder(
+        builder: (context) => Text(
+          description,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    ],
+  ),
+);
+
+/// A settings text field. It is rebuilt when [value] changes from outside.
 Widget _textFormField(
   String label,
   String value,
@@ -190,31 +281,56 @@ Widget _textFormField(
   Widget? prefixIcon,
   Widget? suffixIcon,
   bool readOnly = false,
-}) => Padding(
-  padding: const EdgeInsets.only(top: 8),
-  child: TextFormField(
-    key: ValueKey("$label:$value"),
-    initialValue: value,
-    readOnly: readOnly,
-    decoration: InputDecoration(
-      labelText: label,
-      prefixIcon: prefixIcon,
-      suffixIcon: suffixIcon,
-      helperText: helper,
-      helperMaxLines: 3,
-    ),
-    onChanged: onChanged,
+}) => TextFormField(
+  key: ValueKey("$label:$value"),
+  initialValue: value,
+  readOnly: readOnly,
+  decoration: InputDecoration(
+    labelText: label,
+    prefixIcon: prefixIcon,
+    suffixIcon: suffixIcon,
+    helperText: helper,
+    helperMaxLines: 3,
   ),
+  onChanged: onChanged,
 );
+
+String _capitalize(String word) =>
+    word.isEmpty ? word : "${word[0].toUpperCase()}${word.substring(1)}";
+
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
+const _audioQualityOptions = [
+  ("best", "Best available"),
+  ("320", "320 kbps"),
+  ("256", "256 kbps"),
+  ("192", "192 kbps"),
+  ("128", "128 kbps"),
+];
+
+String _historyLabel(int days) => switch (days) {
+  0 => "Forever",
+  1 => "1 day",
+  7 => "1 week",
+  _ => "$days days",
+};
 
 SettingsSection downloadSettings(
   BuildContext context,
   MelodyApp app, {
   required bool mobile,
 }) {
-  final settings = app.settingsControls;
+  final controls = app.settingsControls;
   final current = app.settings;
   final android = Platform.isAndroid;
+  final folderHelper = android
+      ? "Choose any folder inside Music."
+      : mobile
+      ? "Choose a folder."
+      : "Type a path or choose a folder.";
+
   return SettingsSection(
     icon: Icons.download_for_offline_rounded,
     title: "Download defaults",
@@ -224,159 +340,212 @@ SettingsSection downloadSettings(
     mobileSubtitle: "Folder, format, quality and speed",
     body: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 16,
+      // Room for each field's floating label beneath the helper text above it.
+      spacing: 20,
       children: [
-        _textFormField(
-          "Music & download folder",
-          settings.folderField,
-          settings.typeMusicFolder,
-          readOnly: android || mobile,
-          prefixIcon: const Icon(Icons.folder_rounded),
-          helper: android
-              ? "Choose any folder inside Music."
-              : mobile
-              ? "Choose a folder."
-              : "Type a path or choose a folder.",
-          suffixIcon: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                tooltip: "Choose folder",
-                onPressed: () => pickMusicFolder(app),
-                icon: const Icon(Icons.drive_folder_upload_rounded),
-              ),
-              IconButton(
-                tooltip: android ? "Open in Files" : "Open in file manager",
-                onPressed: () => openFolder(app, current.downloadDirectory),
-                icon: const Icon(Icons.open_in_new_rounded),
-              ),
-              const SizedBox(width: 4),
-            ],
-          ),
-        ),
-        if (settings.musicFolderChanged)
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              FilledButton.icon(
-                onPressed: () => applyMusicFolder(context, app),
-                icon: const Icon(Icons.drive_file_move_rounded),
-                label: Text(
-                  settings.tracksToMove > 0
-                      ? "Move library here"
-                      : "Use this folder",
+        _topField(
+          _textFormField(
+            "Music & download folder",
+            controls.folderField,
+            controls.typeMusicFolder,
+            readOnly: android || mobile,
+            prefixIcon: const Icon(Icons.folder_rounded),
+            helper: folderHelper,
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: "Choose folder",
+                  onPressed: () => pickMusicFolder(app),
+                  icon: const Icon(Icons.drive_folder_upload_rounded),
                 ),
-              ),
-              TextButton(
-                onPressed: () =>
-                    settings.chooseMusicFolder(current.downloadDirectory),
-                child: const Text("Keep current folder"),
-              ),
-            ],
-          ),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: [
-            SizedBox(
-              // Wide enough for the format descriptions in its menu.
-              width: 300,
-              child: _dropdown(
-                "Audio format",
-                current.audioFormat,
-                [
-                  for (final format in DownloadFormat.values)
-                    (format.codec, format.label),
-                ],
-                (value) => settings.update((next) => next.audioFormat = value),
-                helper: current.downloadFormat.reason,
-                descriptions: {
-                  for (final format in DownloadFormat.values)
-                    format.codec: format.reason,
-                },
-              ),
-            ),
-            SizedBox(
-              width: 220,
-              child: _dropdown(
-                "Audio quality",
-                current.audioQuality,
-                const [
-                  ("best", "Best available"),
-                  ("320", "320 kbps"),
-                  ("256", "256 kbps"),
-                  ("192", "192 kbps"),
-                  ("128", "128 kbps"),
-                ],
-                (value) => settings.update((next) => next.audioQuality = value),
-                helper: current.downloadFormat.lossless
-                    ? "Lossless formats keep the source quality"
-                    : null,
-              ),
-            ),
-            SizedBox(
-              width: 220,
-              child: _dropdown(
-                "Keep download history",
-                "${current.downloadHistoryDays}",
-                [
-                  for (final days in downloadHistoryChoices)
-                    (
-                      "$days",
-                      switch (days) {
-                        0 => "Forever",
-                        1 => "1 day",
-                        7 => "1 week",
-                        _ => "$days days",
-                      },
-                    ),
-                ],
-                (value) => settings.update(
-                  (next) => next.downloadHistoryDays = int.parse(value),
+                IconButton(
+                  tooltip: android ? "Open in Files" : "Open in file manager",
+                  onPressed: () => openFolder(app, current.downloadDirectory),
+                  icon: const Icon(Icons.open_in_new_rounded),
                 ),
-                helper: "Finished downloads are then cleared",
-              ),
+                const SizedBox(width: 4),
+              ],
             ),
-          ],
-        ),
-        Row(
-          children: [
-            const Expanded(
-              child: Text(
-                "Concurrent downloads",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-            Text(
-              "${current.concurrentDownloads} at a time",
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-            ),
-          ],
-        ),
-        Slider(
-          value: current.concurrentDownloads.toDouble(),
-          min: 1,
-          max: 8,
-          divisions: 7,
-          label: "${current.concurrentDownloads} simultaneous",
-          onChanged: (value) => settings.update(
-            (next) => next.concurrentDownloads = value.round(),
           ),
         ),
+        if (controls.musicFolderChanged)
+          _buttonRow([
+            FilledButton.icon(
+              onPressed: () => applyMusicFolder(context, app),
+              icon: const Icon(Icons.drive_file_move_rounded),
+              label: Text(
+                controls.tracksToMove > 0
+                    ? "Move library here"
+                    : "Use this folder",
+              ),
+            ),
+            TextButton(
+              onPressed: () =>
+                  controls.chooseMusicFolder(current.downloadDirectory),
+              child: const Text("Keep current folder"),
+            ),
+          ]),
+        // Full width, since its menu describes each format.
+        _dropdown(
+          "Audio format",
+          current.audioFormat,
+          [
+            for (final format in DownloadFormat.values)
+              (format.codec, format.label),
+          ],
+          (value) => controls.update((next) => next.audioFormat = value),
+          helper: current.downloadFormat.reason,
+          descriptions: {
+            for (final format in DownloadFormat.values)
+              format.codec: format.reason,
+          },
+        ),
+        _fieldPair(
+          _dropdown(
+            "Audio quality",
+            current.audioQuality,
+            _audioQualityOptions,
+            (value) => controls.update((next) => next.audioQuality = value),
+            helper: current.downloadFormat.lossless
+                ? "Lossless formats keep the source quality"
+                : null,
+          ),
+          _dropdown(
+            "Keep download history",
+            "${current.downloadHistoryDays}",
+            [
+              for (final days in downloadHistoryChoices)
+                ("$days", _historyLabel(days)),
+            ],
+            (value) => controls.update(
+              (next) => next.downloadHistoryDays = int.parse(value),
+            ),
+            helper: "Finished downloads are then cleared",
+          ),
+        ),
+        _group([
+          _valueHeading(
+            context,
+            "Concurrent downloads",
+            "${current.concurrentDownloads} at a time",
+          ),
+          Slider(
+            value: current.concurrentDownloads.toDouble(),
+            min: 1,
+            max: 8,
+            divisions: 7,
+            label: "${current.concurrentDownloads} simultaneous",
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            onChanged: (value) => controls.update(
+              (next) => next.concurrentDownloads = value.round(),
+            ),
+          ),
+        ]),
         _note(context, "These apply to downloads that start from now on."),
       ],
     ),
   );
 }
 
+// ---------------------------------------------------------------------------
+// Appearance
+// ---------------------------------------------------------------------------
+
+const _themeOptions = [
+  ("system", "Use system setting"),
+  ("dark", "Dark"),
+  ("light", "Light"),
+];
+
+const _notificationShortcutOptions = [
+  ("shuffle_favorite", "Shuffle + Favorite"),
+  ("shuffle_repeat", "Shuffle + Repeat"),
+  ("repeat_favorite", "Repeat + Favorite"),
+];
+
+String _loudnessTargetLabel(int target) => switch (target) {
+  -11 => "Loud ($target LUFS)",
+  -14 => "Normal ($target LUFS)",
+  -23 => "Quiet ($target LUFS, broadcast)",
+  _ => "$target LUFS",
+};
+
+/// One selectable accent color. The selected one carries a check, so the
+/// choice doesn't rest on color alone, and each names itself in a tooltip.
+class _AccentSwatch extends StatelessWidget {
+  const _AccentSwatch({
+    required this.name,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = _capitalize(name);
+    final onColor =
+        ThemeData.estimateBrightnessForColor(color) == Brightness.dark
+        ? Colors.white
+        : Colors.black;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox.square(
+            dimension: touchTarget,
+            child: Center(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    width: selected ? 2 : 1,
+                    color: selected ? scheme.onSurface : scheme.outlineVariant,
+                  ),
+                ),
+                child: selected
+                    ? Icon(Icons.check_rounded, size: 20, color: onColor)
+                    : null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsControls;
+  final controls = app.settingsControls;
   final current = app.settings;
-  final scheme = Theme.of(context).colorScheme;
+
+  final loudness = app.services.loudness;
+  final maxBoostDb = loudness.maxBoostDb.round();
+  final loudnessHelper = loudness.limiterHeadroomDb > 0
+      ? "Quiet tracks are raised by up to $maxBoostDb dB, with a limiter "
+            "keeping their peaks from clipping."
+      : loudness.maxBoostDb > 0
+      ? "Quiet tracks are raised by up to $maxBoostDb dB, as far as their "
+            "peaks allow."
+      : "Tracks quieter than the target play as they are on this device. "
+            "A lower target evens out more tracks.";
+
   return SettingsSection(
     icon: Icons.tune_rounded,
     title: "Appearance",
@@ -388,153 +557,92 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
       spacing: 16,
       children: [
         _label(context, "DISPLAY"),
-        _dropdown("Theme", current.theme, const [
-          ("system", "Use system setting"),
-          ("dark", "Dark"),
-          ("light", "Light"),
-        ], (value) => settings.update((next) => next.theme = value)),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainer,
-            borderRadius: BorderRadius.circular(16),
+        _dropdown(
+          "Theme",
+          current.theme,
+          _themeOptions,
+          (value) => controls.update((next) => next.theme = value),
+        ),
+        _group([
+          _valueHeading(
+            context,
+            "Accent color",
+            _capitalize(current.accentColor),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            spacing: 8,
+          Wrap(
             children: [
-              const Text(
-                "Accent color",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final MapEntry(key: name, value: color)
-                      in themePalettes.entries)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () =>
-                          settings.update((next) => next.accentColor = name),
-                      child: SizedBox(
-                        width: 72,
-                        child: Padding(
-                          padding: const EdgeInsets.all(4),
-                          child: Column(
-                            spacing: 4,
-                            children: [
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 150),
-                                width: 40,
-                                height: 40,
-                                decoration: BoxDecoration(
-                                  color: color,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    width: name == current.accentColor ? 3 : 1,
-                                    color: name == current.accentColor
-                                        ? scheme.onSurface
-                                        : scheme.outlineVariant,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                "${name[0].toUpperCase()}${name.substring(1)}",
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: name == current.accentColor
-                                      ? FontWeight.bold
-                                      : FontWeight.normal,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+              for (final MapEntry(key: name, value: color)
+                  in themePalettes.entries)
+                _AccentSwatch(
+                  name: name,
+                  color: color,
+                  selected: name == current.accentColor,
+                  onTap: () =>
+                      controls.update((next) => next.accentColor = name),
+                ),
             ],
           ),
-        ),
-        const Divider(height: 18),
+        ]),
+        _sectionDivider,
         _label(context, "STARTUP & PLAYBACK"),
-        SwitchListTile(
-          value: current.resumeSession,
-          onChanged: (value) =>
-              settings.update((next) => next.resumeSession = value),
-          title: const Text("Resume queue and playback state"),
-          contentPadding: EdgeInsets.zero,
-        ),
-        SwitchListTile(
-          value: current.normalizeLoudness,
-          onChanged: (value) =>
-              settings.update((next) => next.normalizeLoudness = value),
-          title: const Text("Normalize loudness"),
-          subtitle: const Text(
-            "Play songs at a similar volume. Your files and volume setting "
-            "are not changed.",
-          ),
-          contentPadding: EdgeInsets.zero,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SwitchListTile(
+              value: current.resumeSession,
+              onChanged: (value) =>
+                  controls.update((next) => next.resumeSession = value),
+              title: const Text("Resume queue and playback state"),
+              contentPadding: EdgeInsets.zero,
+            ),
+            SwitchListTile(
+              value: current.normalizeLoudness,
+              onChanged: (value) =>
+                  controls.update((next) => next.normalizeLoudness = value),
+              title: const Text("Normalize loudness"),
+              subtitle: const Text(
+                "Play songs at a similar volume. Your files and volume "
+                "setting are not changed.",
+              ),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ],
         ),
         _dropdown(
           "Target loudness",
           "${current.loudnessTarget}",
           [
             for (final target in loudnessTargetChoices)
-              (
-                "$target",
-                switch (target) {
-                  -11 => "Loud ($target LUFS)",
-                  -14 => "Normal ($target LUFS)",
-                  -23 => "Quiet ($target LUFS, broadcast)",
-                  _ => "$target LUFS",
-                },
-              ),
+              ("$target", _loudnessTargetLabel(target)),
           ],
           current.normalizeLoudness
-              ? (value) => settings.update(
+              ? (value) => controls.update(
                   (next) => next.loudnessTarget = int.parse(value),
                 )
               : null,
-          helper: app.services.loudness.limiterHeadroomDb > 0
-              ? "Quiet tracks are raised by up to "
-                    "${app.services.loudness.maxBoostDb.round()} dB, with a "
-                    "limiter keeping their peaks from clipping."
-              : app.services.loudness.maxBoostDb > 0
-              ? "Quiet tracks are raised by up to "
-                    "${app.services.loudness.maxBoostDb.round()} dB, as far "
-                    "as their peaks allow."
-              : "Tracks quieter than the target play as they are on this "
-                    "device. A lower target evens out more tracks.",
+          helper: loudnessHelper,
         ),
-        if (current.normalizeLoudness) _note(context, settings.loudnessStatus),
-        const Divider(height: 18),
-        _label(context, "NOTIFICATIONS"),
-        _dropdown(
-          "Android notification shortcuts",
-          current.notificationActionPair,
-          const [
-            ("shuffle_favorite", "Shuffle + Favorite"),
-            ("shuffle_repeat", "Shuffle + Repeat"),
-            ("repeat_favorite", "Repeat + Favorite"),
-          ],
-          PlatformFeatures.notificationShortcuts
-              ? (value) => settings.update(
-                  (next) => next.notificationActionPair = value,
-                )
-              : null,
-          helper: PlatformFeatures.notificationShortcuts
-              ? "Choose two controls beside playback and track skipping."
-              : "Available on Android only. Other system media controls have "
-                    "no custom buttons.",
-        ),
+        if (current.normalizeLoudness) _note(context, controls.loudnessStatus),
+        if (PlatformFeatures.notificationShortcuts) ...[
+          _sectionDivider,
+          _label(context, "NOTIFICATIONS"),
+          _dropdown(
+            "Android notification shortcuts",
+            current.notificationActionPair,
+            _notificationShortcutOptions,
+            (value) =>
+                controls.update((next) => next.notificationActionPair = value),
+            helper: "Choose two controls beside playback and track skipping.",
+          ),
+        ],
       ],
     ),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Music source
+// ---------------------------------------------------------------------------
 
 const _regularYoutubeLimits =
     "With regular $youtubeName, searches can return music videos, live "
@@ -545,120 +653,134 @@ const _regularYoutubeLimits =
     "missing and mix links still open on $youtubeMusicName. Availability varies "
     "by video, region, account, and platform.";
 
+const _musicSourceDescriptions = {
+  "youtube_music": "Official songs, with artists and album artwork.",
+  "youtube": "Every video on $youtubeName, with less reliable details.",
+};
+
 SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsControls;
-  final scheme = Theme.of(context).colorScheme;
+  final controls = app.settingsControls;
+  final current = app.settings;
   return SettingsSection(
     icon: Icons.smart_display_rounded,
     title: "Music source and access",
     subtitle: "Where music comes from, and your $youtubeName account.",
     mobileTitle: "Music source",
-    mobileSubtitle: "${app.settings.musicSource.label}, account access",
+    mobileSubtitle: "${current.musicSource.label}, account access",
     body: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
-        _dropdown(
-          "Search and download from",
-          app.settings.musicSource.id,
-          [for (final source in MusicSource.values) (source.id, source.label)],
-          (value) => settings.update(
-            (next) => next.musicSource = MusicSource.parse(value),
+        _topField(
+          _dropdown(
+            "Search and download from",
+            current.musicSource.id,
+            [
+              for (final source in MusicSource.values)
+                (source.id, source.label),
+            ],
+            (value) => controls.update(
+              (next) => next.musicSource = MusicSource.parse(value),
+            ),
+            descriptions: _musicSourceDescriptions,
+            helper:
+                "Your library, playlists, and queue stay as they are. The "
+                "source applies to searches and downloads from now on.",
           ),
-          descriptions: const {
-            "youtube_music": "Official songs, with artists and album artwork.",
-            "youtube":
-                "Every video on $youtubeName, with less reliable details.",
-          },
-          helper:
-              "Your library, playlists, and queue stay as they are. The source "
-              "applies to searches and downloads from now on.",
         ),
         _infoBox(
           context,
           Icons.info_outline_rounded,
           _note(context, _regularYoutubeLimits),
         ),
-        const Divider(height: 18),
-        const Text(
-          "$youtubeName cookies",
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        _infoBox(
-          context,
-          Icons.cookie_outlined,
-          Text(
-            settings.cookieStatus,
-            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        _sectionDivider,
+        _group([
+          _heading("$youtubeName cookies"),
+          _infoBox(
+            context,
+            Icons.cookie_outlined,
+            _note(context, controls.cookieStatus),
           ),
-        ),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
+          _note(
+            context,
+            "Upload a cookies.txt file exported from your browser.",
+          ),
+          _buttonRow([
             FilledButton.icon(
               onPressed: () => pickCookieFile(app),
               icon: const Icon(Icons.upload_file_rounded),
               label: Text(
-                settings.savedCookieAvailable
+                controls.savedCookieAvailable
                     ? "Replace file"
                     : "Upload cookie file",
               ),
             ),
             TextButton.icon(
-              onPressed: settings.savedCookieAvailable
-                  ? () => app.run(settings.removeCookie)
+              onPressed: controls.savedCookieAvailable
+                  ? () => app.run(controls.removeCookie)
                   : null,
               icon: const Icon(Icons.delete_outline_rounded),
               label: const Text("Remove"),
             ),
-          ],
-        ),
-        _note(context, "Upload a cookies.txt file exported from your browser."),
+          ]),
+        ]),
       ],
     ),
   );
 }
 
+// ---------------------------------------------------------------------------
+// Maintenance
+// ---------------------------------------------------------------------------
+
+/// Status and update buttons for one bundled engine.
+Widget _engineControls(
+  BuildContext context,
+  MelodyApp app,
+  PackageRuntime runtime,
+  String title,
+) {
+  final controls = app.settingsControls;
+  final checking = controls.isChecking(runtime);
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    spacing: 10,
+    children: [
+      _heading(title),
+      _infoBox(
+        context,
+        Icons.memory_rounded,
+        _note(context, controls.packageStatusText(runtime)),
+      ),
+      _buttonRow([
+        OutlinedButton.icon(
+          onPressed: checking ? null : () => controls.checkForUpdate(runtime),
+          icon: const Icon(Icons.update_rounded),
+          label: Text(
+            checking
+                ? "Checking for ${runtime.info.label} updates…"
+                : "Check for updates",
+          ),
+        ),
+        if (controls.canInstallUpdate(runtime))
+          FilledButton.icon(
+            onPressed: () => controls.installUpdate(runtime),
+            icon: const Icon(Icons.system_update_alt_rounded),
+            label: const Text("Install update"),
+          ),
+      ]),
+    ],
+  );
+}
+
 SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
-  final settings = app.settingsControls;
-  Widget runtimeControls(PackageRuntime runtime, String title) {
-    final checking = settings.isChecking(runtime);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 16,
-      children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        _infoBox(
-          context,
-          Icons.memory_rounded,
-          _note(context, settings.packageStatusText(runtime)),
-        ),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            OutlinedButton.icon(
-              onPressed: checking
-                  ? null
-                  : () => settings.checkForUpdate(runtime),
-              icon: const Icon(Icons.update_rounded),
-              label: Text(
-                checking
-                    ? "Checking for ${runtime.info.label} updates…"
-                    : "Check for updates",
-              ),
-            ),
-            if (settings.canInstallUpdate(runtime))
-              FilledButton.icon(
-                onPressed: () => settings.installUpdate(runtime),
-                icon: const Icon(Icons.system_update_alt_rounded),
-                label: const Text("Install update"),
-              ),
-          ],
-        ),
-      ],
-    );
+  final controls = app.settingsControls;
+
+  Future<void> cleanUpLibrary() async {
+    final report = await controls.cleanUpLibrary();
+    if (report != null && context.mounted) {
+      await showCleanupReport(context, app, report);
+    }
   }
 
   return SettingsSection(
@@ -671,103 +793,109 @@ SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
-        runtimeControls(
-          app.services.ytMusic,
-          "YouTube Music engine (ytmusicapi)",
-        ),
-        const Divider(height: 18),
-        runtimeControls(app.services.ytDlp, "Download engine (yt-dlp)"),
-        const Divider(height: 18),
-        const Text(
-          "Library cleanup",
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        _note(
+        _engineControls(
           context,
-          "Remove links to deleted tracks, then review tracks whose audio is missing and "
-          "music files that are not in your library. Nothing is deleted until you choose.",
+          app,
+          app.services.ytMusic,
+          "$youtubeMusicName engine (ytmusicapi)",
         ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: OutlinedButton.icon(
-            onPressed: settings.cleaningUp
-                ? null
-                : () async {
-                    final report = await settings.cleanUpLibrary();
-                    if (report != null && context.mounted) {
-                      await showCleanupReport(context, app, report);
-                    }
-                  },
-            icon: const Icon(Icons.cleaning_services_rounded),
-            label: const Text("Clean up library"),
-          ),
+        _sectionDivider,
+        _engineControls(
+          context,
+          app,
+          app.services.ytDlp,
+          "Download engine (yt-dlp)",
         ),
-        if (app.services.lyricsEmbedder != null) ...[
-          const Divider(height: 18),
-          const Text(
-            "Lyrics in files",
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
+        _sectionDivider,
+        _group([
+          _heading("Library cleanup"),
           _note(
             context,
-            "New downloads already carry their lyrics. This adds them to older "
-            "tracks whose files have none, so they travel with the file.",
+            "Remove links to deleted tracks, then review tracks whose audio is "
+            "missing and music files that are not in your library. Nothing is "
+            "deleted until you choose.",
           ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: settings.writingLyrics
-                  ? null
-                  : () => app.run(settings.writeLyricsIntoFiles),
-              icon: const Icon(Icons.lyrics_rounded),
-              label: Text(
-                settings.writingLyrics
-                    ? "Writing lyrics…"
-                    : "Write lyrics into files",
-              ),
+          _buttonRow([
+            OutlinedButton.icon(
+              onPressed: controls.cleaningUp ? null : cleanUpLibrary,
+              icon: const Icon(Icons.cleaning_services_rounded),
+              label: const Text("Clean up library"),
             ),
-          ),
+          ]),
+        ]),
+        if (app.services.lyricsEmbedder != null) ...[
+          _sectionDivider,
+          _group([
+            _heading("Lyrics in files"),
+            _note(
+              context,
+              "New downloads already carry their lyrics. This adds them to "
+              "older tracks whose files have none, so they travel with the "
+              "file.",
+            ),
+            _buttonRow([
+              OutlinedButton.icon(
+                onPressed: controls.writingLyrics
+                    ? null
+                    : () => app.run(controls.writeLyricsIntoFiles),
+                icon: const Icon(Icons.lyrics_rounded),
+                label: Text(
+                  controls.writingLyrics
+                      ? "Writing lyrics…"
+                      : "Write lyrics into files",
+                ),
+              ),
+            ]),
+          ]),
         ],
       ],
     ),
   );
 }
 
+// ---------------------------------------------------------------------------
+// Data management
+// ---------------------------------------------------------------------------
+
+/// The individual reset actions. [actionKey] is what
+/// [showDataActionDialog] receives.
+const _dataActions = [
+  (
+    actionKey: "library",
+    title: "Library",
+    description:
+        "Remove every library track and all playlists. Downloaded audio is "
+        "deleted; imported files stay on disk.",
+    buttonLabel: "Clear library",
+    icon: Icons.library_music_rounded,
+  ),
+  (
+    actionKey: "playlists",
+    title: "Playlists",
+    description:
+        "Delete user-created playlists while keeping every library track.",
+    buttonLabel: "Clear playlists",
+    icon: Icons.queue_music_rounded,
+  ),
+  (
+    actionKey: "settings",
+    title: "Settings",
+    description:
+        "Restore appearance, playback, download, and session settings to "
+        "defaults.",
+    buttonLabel: "Reset settings",
+    icon: Icons.restart_alt_rounded,
+  ),
+];
+
 SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
   final scheme = Theme.of(context).colorScheme;
-  Widget action(
-    String title,
-    String description,
-    String label,
-    IconData icon,
-    String key,
-  ) => Container(
-    width: 260,
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      spacing: 10,
-      children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        _note(context, description),
-        OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(foregroundColor: scheme.error),
-          onPressed: () => showDataActionDialog(context, app, key),
-          icon: Icon(icon),
-          label: Text(label),
-        ),
-      ],
-    ),
-  );
   return SettingsSection(
     icon: Icons.delete_sweep_rounded,
-    title: "Reset / Data Management",
+    title: "Data management",
     subtitle:
-        "Remove only the local data you choose. Every action asks for confirmation.",
+        "Remove only the local data you choose. Every action asks for "
+        "confirmation.",
     mobileTitle: "Data management",
     mobileSubtitle: "Clear or reset local data",
     destructive: true,
@@ -776,94 +904,74 @@ SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
       spacing: 16,
       children: [
         if (PlatformFeatures.appDataFolder) _dataFolder(context, app),
-        Wrap(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           spacing: 12,
-          runSpacing: 12,
           children: [
-            action(
-              "Clear Library",
-              "Remove every library track and all playlists. Downloaded audio is deleted; "
-                  "imported files stay on disk.",
-              "Clear library",
-              Icons.library_music_rounded,
-              "library",
-            ),
-            action(
-              "Clear Playlists",
-              "Delete user-created playlists while keeping every library track.",
-              "Clear playlists",
-              Icons.queue_music_rounded,
-              "playlists",
-            ),
-            action(
-              "Reset Settings",
-              "Restore appearance, playback, download, and session settings to defaults.",
-              "Reset settings",
-              Icons.restart_alt_rounded,
-              "settings",
-            ),
-          ],
-        ),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: scheme.errorContainer,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: scheme.error),
-          ),
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            alignment: WrapAlignment.spaceBetween,
-            children: [
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  spacing: 5,
-                  children: [
-                    Row(
-                      spacing: 8,
-                      children: [
-                        Icon(Icons.warning_amber_rounded, color: scheme.error),
-                        Text(
-                          "Reset Everything",
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: scheme.error,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      "Clear the library and playlists, delete every downloaded and imported audio "
-                      "file in the library, empty the playback queue, and restore all settings. "
-                      "Download history and search history are kept.",
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: scheme.onErrorContainer,
-                      ),
-                    ),
-                  ],
+            for (final (index, dataAction) in _dataActions.indexed) ...[
+              if (index > 0) const Divider(),
+              _actionRow(
+                _heading(dataAction.title),
+                _note(context, dataAction.description),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: scheme.error,
+                  ),
+                  onPressed: () =>
+                      showDataActionDialog(context, app, dataAction.actionKey),
+                  icon: Icon(dataAction.icon),
+                  label: Text(dataAction.buttonLabel),
                 ),
-              ),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: scheme.error,
-                  foregroundColor: scheme.onError,
-                  minimumSize: const Size(0, 52),
-                ),
-                onPressed: () =>
-                    showDataActionDialog(context, app, "everything"),
-                icon: const Icon(Icons.delete_forever_rounded),
-                label: const Text("Reset everything"),
               ),
             ],
-          ),
+          ],
         ),
+        _resetEverythingCard(context, app),
       ],
+    ),
+  );
+}
+
+Widget _resetEverythingCard(BuildContext context, MelodyApp app) {
+  final scheme = Theme.of(context).colorScheme;
+  return Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: scheme.errorContainer,
+      borderRadius: BorderRadius.circular(Radii.large),
+      border: Border.all(color: scheme.error),
+    ),
+    child: _actionRow(
+      Row(
+        spacing: 8,
+        children: [
+          Icon(Icons.warning_amber_rounded, color: scheme.onErrorContainer),
+          Expanded(
+            child: Text(
+              "Start over",
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: scheme.onErrorContainer,
+              ),
+            ),
+          ),
+        ],
+      ),
+      Text(
+        "Clear the library and playlists, delete every downloaded and "
+        "imported audio file in the library, empty the playback queue, and "
+        "restore all settings. Download history and search history are kept.",
+        style: TextStyle(fontSize: 12, color: scheme.onErrorContainer),
+      ),
+      FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: scheme.error,
+          foregroundColor: scheme.onError,
+        ),
+        onPressed: () => showDataActionDialog(context, app, "everything"),
+        icon: const Icon(Icons.delete_forever_rounded),
+        label: const Text("Reset everything"),
+      ),
     ),
   );
 }
@@ -879,10 +987,7 @@ Widget _dataFolder(BuildContext context, MelodyApp app) {
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 6,
       children: [
-        const Text(
-          "App data folder",
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        _heading("App data folder"),
         SelectableText(
           folder,
           style: const TextStyle(fontSize: 12, fontFamily: "monospace"),

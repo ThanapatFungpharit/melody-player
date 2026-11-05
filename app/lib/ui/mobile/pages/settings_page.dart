@@ -42,7 +42,7 @@ class _MobileSettingsState extends State<MobileSettings> {
         ),
         leading: Icon(section.icon, color: color),
         tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 3, 16, 16),
         backgroundColor: scheme.surfaceContainerLow,
         collapsedBackgroundColor: scheme.surfaceContainerLow,
         shape: shape,
