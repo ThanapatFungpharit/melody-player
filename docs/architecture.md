@@ -162,7 +162,9 @@ them to the playback controller.
   application policy (favorite, shuffle, repeat) reach the
   app.
 - `AndroidPlatform` is the Kotlin MethodChannel for the directories Melody
-  needs from Android and for opening the Music folder in the Files app.
+  needs from Android, for opening the Music folder in the Files app, for asking
+  for audio access, and for Android's dialog confirming the deletion of files
+  Melody did not create.
 
 ## State ownership
 
@@ -323,19 +325,20 @@ songs added there join it in their order, what failed or was interrupted gets
 another try, and a name or tracks given here stay. Stopping an import keeps what
 it has so far.
 
-A download is one song. Its options set `noplaylist`, its source is stored as
-`https://music.youtube.com/watch?v=<id>` whatever form the link took, and a link
-that names no song (a playlist page) is refused. Playlists are imported instead,
-which downloads each song as its own task.
+A download is one song. Its options set `noplaylist`, its source is stored as a
+`/watch?v=<id>` link on the host of the source that found it (see
+[Track identity and files](#track-identity-and-files)) whatever form the link
+took, and a link that names no song (a playlist page) is refused. Playlists are
+imported instead, which downloads each song as its own task.
 
 Coordinator reservations use canonical source keys; requests for one source
 share active work. File allocation, duplicate lookup, and registration are
 serialized through `MusicManager.mutation`, including local imports. The
 downloader runs `concurrent_downloads` jobs and queues the rest, so a batch of any
 size waits its turn; a playlist import keeps only a window of its songs queued, so
-a long playlist does not fill the history at once. Download options (format, quality, concurrency, folder,
-cookies) are fixed when the coordinator opens, so changing them applies at the
-next launch.
+a long playlist does not fill the history at once. A new music folder is refused
+while any download is queued or running, since a job stages and finishes in one
+folder.
 
 yt-dlp keeps the thumbnail sidecar in staging while metadata is written, and
 the cover is burned in as the last postprocessor. Before promotion the
@@ -506,8 +509,8 @@ A track's details go with it in one transaction (a trigger on `tracks`), so they
 cannot outlive it. Other changes that touch both owners, such as registering a
 track and then saving its details, are separate transactions. Startup marks completed
 downloads whose library track lost its file as repairable (a track the user
-removed is not lost), starts interrupted downloads over, and filters the
-restored queue by file availability. `LibraryService.reconcile`
+removed is not lost), carries on with interrupted downloads from what their
+staging folders hold, and filters the restored queue by file availability. `LibraryService.reconcile`
 (Settings → Maintenance) removes stale secondary references and lists
 unregistered files without deleting them.
 
@@ -523,8 +526,8 @@ work stays out of builds and event handlers:
   run in `Isolate.run`. The lyrics writer keeps only the tag in memory and
   streams the audio through a fixed buffer.
 - Library and state reads come from in-memory models; only writes reach
-  SQLite, and library writes do not wait for the disk (see Crash
-  consistency).
+  SQLite. Library commits do wait for the disk (see Crash consistency), which
+  is acceptable because they are rare.
 - `ThumbnailCache.open` lists the thumbnail folder once in a background
   isolate; afterwards artwork widgets and queue activation answer from
   memory, and the cache's own writes keep that index current.

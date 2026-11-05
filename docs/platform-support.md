@@ -55,8 +55,11 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
   notification. Android can refuse to start that service for an app already in
   the background, and allows it six hours a day from Android 15. A download
   Android stops anyway picks up where it left off at the next launch.
-- Music is added one file at a time, because Android lets Melody read only its
-  own folders; **Add a folder** is desktop only.
+- Music is added one file at a time; **Add a folder** is desktop only.
+- Melody asks for audio access at launch, because Android otherwise hides music
+  it did not create (files added with a file manager, or left by an earlier
+  install), so those tracks look missing. Library cleanup does not run without
+  that access. Deleting such a file asks for confirmation in an Android dialog.
 - Only formats the Android audio decoders play can be imported: AIFF, WMA,
   APE, and WavPack need the desktop FFmpeg decoders.
 - Lyrics are written into new downloads, but tracks already in the library
