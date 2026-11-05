@@ -416,7 +416,7 @@ class PlaylistsController extends ChangeNotifier {
         existing?.name ??
         (remote.title.trim().isNotEmpty
             ? remote.title.trim()
-            : "Imported $youtubeMusicName playlist");
+            : "Imported ${app.settings.musicSource.label} playlist");
     final unique = <String, SearchResult>{
       for (final item in remote.tracks)
         if (item.url.isNotEmpty) sourceKey(item.url): item,

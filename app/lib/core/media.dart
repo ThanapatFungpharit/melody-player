@@ -4,6 +4,30 @@ library;
 const youtubeProviderId = "youtube";
 const youtubeMusicName = "YouTube Music";
 const youtubeMusicHost = "music.youtube.com";
+const youtubeName = "YouTube";
+const youtubeHost = "www.youtube.com";
+
+/// Where search, playlists, recommendations, and new downloads come from.
+/// Both name the same videos, so a track's identity ([MediaIdentity]) does not
+/// depend on the source that found it.
+enum MusicSource {
+  youtubeMusic("youtube_music", youtubeMusicName, youtubeMusicHost),
+  youtube("youtube", youtubeName, youtubeHost);
+
+  const MusicSource(this.id, this.label, this.host);
+
+  /// The form stored in settings.
+  final String id;
+  final String label;
+  final String host;
+
+  /// The stored form of a source, or YouTube Music for anything else.
+  static MusicSource parse(Object? value) => values.firstWhere(
+    (source) => source.id == value,
+    orElse: () => youtubeMusic,
+  );
+}
+
 const youtubeHosts = {
   "youtube.com",
   "www.youtube.com",
@@ -76,6 +100,24 @@ String youtubeMusicTrackUrl(String url, [String mediaId = ""]) {
   return videoId.isNotEmpty ? _musicWatchUrl(videoId) : url;
 }
 
+/// A canonical regular YouTube watch URL for a video [mediaId].
+String youtubeVideoUrl(String mediaId) =>
+    Uri.https(youtubeHost, "/watch", {"v": mediaId}).toString();
+
+/// The form Melody stores a song's link in for [source]: without playlist or
+/// tracking parameters, on that source's host. A link that names no video
+/// stays as it is.
+String youtubeTrackUrl(String url, MusicSource source) {
+  if (source == MusicSource.youtubeMusic) return youtubeMusicTrackUrl(url);
+  final identity = MediaIdentity.fromUrl(url);
+  return identity == null ? url : youtubeVideoUrl(identity.mediaId);
+}
+
+/// The link to share for a stored [source]: a regular YouTube link stays one,
+/// and everything else takes the YouTube Music form.
+String youtubeShareUrl(String source) =>
+    _storedVideoUrl.hasMatch(source) ? source : youtubeMusicTrackUrl(source);
+
 /// Remote identity: provider plus stable media ID.
 class MediaIdentity {
   const MediaIdentity(this.provider, this.mediaId);
@@ -118,9 +160,12 @@ class MediaIdentity {
   int get hashCode => Object.hash(provider, mediaId);
 }
 
-/// The form Melody stores YouTube Music sources in.
+/// The forms Melody stores sources in.
 final _storedMusicUrl = RegExp(
-  r"^https://music\.youtube\.com/watch\?v=([A-Za-z0-9_-]+)$",
+  r"^https://(?:music|www)\.youtube\.com/watch\?v=([A-Za-z0-9_-]+)$",
+);
+final _storedVideoUrl = RegExp(
+  r"^https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]+$",
 );
 
 /// The deduplication key for a source: its media identity when known,

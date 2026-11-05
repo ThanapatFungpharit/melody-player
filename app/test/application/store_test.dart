@@ -5,6 +5,7 @@ import "dart:io";
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/models.dart";
 import "package:melody/application/store.dart";
+import "package:melody/core/media.dart";
 import "package:melody/core/storage.dart";
 import "package:path/path.dart" as p;
 
@@ -50,6 +51,14 @@ void main() {
     expect(reopened.get("playback_history"), ["kept"]);
     expect(reopened.hasTrackDetails("gone"), isFalse);
     expect(reopened.favoriteTrackIds(), isEmpty);
+  });
+
+  test("the music source survives a restart", () async {
+    expect(store.settings.musicSource, MusicSource.youtubeMusic);
+    store.saveSettings(store.settings..musicSource = MusicSource.youtube);
+    expect(store.settings.musicSource, MusicSource.youtube);
+    final reopened = await reopen();
+    expect(reopened.settings.musicSource, MusicSource.youtube);
   });
 
   test("clearing library data keeps settings and search history", () async {

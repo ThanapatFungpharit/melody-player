@@ -13,7 +13,9 @@ import "package:melody/application/catalog.dart";
 import "package:melody/application/store.dart";
 import "package:melody/application/thumbnails.dart";
 import "package:melody/core/artwork.dart";
+import "package:melody/core/errors.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/media.dart";
 import "package:melody/core/storage.dart";
 import "package:melody/worker/transport.dart";
 import "package:melody/worker/worker_client.dart";
@@ -65,6 +67,62 @@ void main() {
     expect(status.ytMusic.available, isTrue);
     expect(status.ytMusic.activeVersion, startsWith("1."));
   }, skip: skip);
+
+  group("regular YouTube", () {
+    MusicCatalog catalog() =>
+        MusicCatalog(worker, source: () => MusicSource.youtube);
+
+    test(
+      "search, a pasted link, mixes, and playlists resolve to videos",
+      () async {
+        final found = await catalog().search("rick astley", limit: 3);
+        expect(found, isNotEmpty);
+        expect(found.first.url, startsWith("https://www.youtube.com/watch?v="));
+        expect(found.first.duration, greaterThan(0));
+        expect(found.first.uploader, isNot("Unknown channel"));
+
+        final pasted = await catalog().search(
+          "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        );
+        expect(pasted.single.id, "dQw4w9WgXcQ");
+
+        final related = await catalog().recommendations(
+          "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          limit: 3,
+        );
+        expect(related, isNotEmpty);
+        expect(
+          related.map((track) => track.id),
+          isNot(contains("dQw4w9WgXcQ")),
+        );
+
+        final playlist = await catalog().loadPlaylist(
+          "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI",
+        );
+        expect(playlist.tracks, isNotEmpty);
+      },
+      skip: skip,
+      tags: "network",
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+
+    test(
+      "a removed video fails with a reason",
+      () => expectLater(
+        catalog().search("https://youtu.be/aaaaaaaaaaa"),
+        throwsA(
+          isA<ProviderError>().having(
+            (error) => error.message,
+            "message",
+            contains("not available"),
+          ),
+        ),
+      ),
+      skip: skip,
+      tags: "network",
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+  });
 
   test(
     "lyrics come from YouTube Music",

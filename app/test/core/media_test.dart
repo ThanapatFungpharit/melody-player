@@ -174,4 +174,39 @@ void main() {
       MediaIdentity.fromUrl("https://music.youtube.com/watch?v=a%20b")!.key,
     );
   });
+
+  group("music sources", () {
+    test("anything unknown reads as the default", () {
+      expect(MusicSource.parse("youtube"), MusicSource.youtube);
+      expect(MusicSource.parse("youtube_music"), MusicSource.youtubeMusic);
+      expect(MusicSource.parse(null), MusicSource.youtubeMusic);
+      expect(MusicSource.parse(3), MusicSource.youtubeMusic);
+      expect(MusicSource.parse("other"), MusicSource.youtubeMusic);
+    });
+
+    test("one video has one identity on either host", () {
+      const expected = "youtube:abc";
+      expect(sourceKey("https://www.youtube.com/watch?v=abc"), expected);
+      expect(sourceKey("https://music.youtube.com/watch?v=abc"), expected);
+      expect(sourceKey("https://youtu.be/abc?si=x"), expected);
+    });
+
+    test("a song's link takes the form of its source", () {
+      const pasted = "https://youtu.be/abc?list=PL1&si=x";
+      expect(
+        youtubeTrackUrl(pasted, MusicSource.youtube),
+        "https://www.youtube.com/watch?v=abc",
+      );
+      expect(youtubeTrackUrl(pasted, MusicSource.youtubeMusic), _watch);
+      const channel = "https://www.youtube.com/@artist";
+      expect(youtubeTrackUrl(channel, MusicSource.youtube), channel);
+    });
+
+    test("shared links keep a regular video's host", () {
+      const video = "https://www.youtube.com/watch?v=abc";
+      expect(youtubeShareUrl(video), video);
+      expect(youtubeShareUrl(_watch), _watch);
+      expect(youtubeShareUrl("$video&list=PL1"), _watch);
+    });
+  });
 }

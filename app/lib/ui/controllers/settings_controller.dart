@@ -109,6 +109,10 @@ class SettingsController extends ChangeNotifier {
       app.syncSystemMedia(refreshMetadata: false);
     }
     app.appearance.value = (settings.theme, settings.accentColor);
+    if (settings.musicSource != old.musicSource) {
+      app.search.sourceChanged();
+      app.home.sourceChanged();
+    }
   }
 
   String get cookieStatus => _savedCookieExists
@@ -495,7 +499,7 @@ class SettingsController extends ChangeNotifier {
               url: track.source,
               source: details.sourceName.isNotEmpty
                   ? details.sourceName
-                  : youtubeMusicName,
+                  : app.settings.musicSource.label,
             ),
           );
           queued++;

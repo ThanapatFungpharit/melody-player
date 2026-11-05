@@ -23,6 +23,7 @@ import "package:melody/application/thumbnails.dart";
 import "package:melody/application/lyrics.dart";
 import "package:melody/application/package_runtime.dart";
 import "package:melody/core/library/manager.dart";
+import "package:melody/core/media.dart";
 import "package:melody/core/library/models.dart";
 import "package:melody/platform/paths.dart";
 import "package:melody/ui/desktop/controls.dart";
@@ -202,7 +203,10 @@ Future<MelodyApp> _app(
     thumbnails: thumbnails,
     stagingDirectory: paths.downloadStaging,
   );
-  final catalog = MusicCatalog(worker);
+  final catalog = MusicCatalog(
+    worker,
+    source: () => store.settings.musicSource,
+  );
   final services = AppServices(
     paths: paths,
     store: store,
@@ -1231,6 +1235,309 @@ void main() {
       expect(find.text("Recent searches"), findsNothing);
     });
   }
+
+  group("the music source", () {
+    Map<String, Object?> listing(String target, Map options) => {
+      "entries": [
+        {
+          "id": "videoidabcd",
+          "title": "Live at the park",
+          "channel": "A channel",
+          "duration": 240,
+        },
+      ],
+    };
+
+    for (final mobile in [false, true]) {
+      testWidgets("is chosen in Settings on ${mobile ? "mobile" : "desktop"}, "
+          "with its limits explained", (tester) async {
+        final app = await pumpShell(
+          tester,
+          mobile: mobile,
+          size: mobile ? const Size(390, 844) : const Size(1540, 960),
+        );
+        if (mobile) {
+          await tester.tap(find.byTooltip("Settings"));
+          await tester.pumpAndSettle();
+          final section = find.text("Music source");
+          await tester.ensureVisible(section);
+          await tester.pumpAndSettle();
+          await tester.tap(section);
+        } else {
+          app.openPanel(AppPanel.settings);
+        }
+        await tester.pumpAndSettle();
+        final limits = find.textContaining("With regular YouTube, searches");
+        await tester.scrollUntilVisible(
+          limits,
+          200,
+          scrollable: find.byType(Scrollable).last,
+        );
+        expect(limits, findsOneWidget);
+        final text = tester.widget<Text>(limits).data!;
+        for (final limit in [
+          "covers",
+          "incomplete",
+          "duplicates",
+          "Lyrics",
+          "region",
+        ]) {
+          expect(text, contains(limit));
+        }
+
+        final field = find.widgetWithText(
+          DropdownButtonFormField<String>,
+          "Search and download from",
+        );
+        await tester.ensureVisible(field);
+        await tester.pumpAndSettle();
+        await tester.tap(field);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text("YouTube").last);
+        await tester.pumpAndSettle();
+
+        expect(app.settings.musicSource, MusicSource.youtube);
+        expect(app.services.store.settings.musicSource, MusicSource.youtube);
+      });
+    }
+
+    testWidgets("switching keeps the library, playlists, and queue", (
+      tester,
+    ) async {
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+      );
+      final manager = app.services.manager;
+      final tracks = [for (final track in manager.listTracks()) track.id];
+      final sources = [for (final track in manager.listTracks()) track.source];
+      final playlists = manager.listPlaylists().length;
+      final queue = List.of(app.playback.queue.items);
+      final current = app.playback.currentTrackId;
+
+      app.settingsControls.update(
+        (next) => next.musicSource = MusicSource.youtube,
+      );
+      await tester.pump();
+
+      expect([for (final track in manager.listTracks()) track.id], tracks);
+      expect([for (final track in manager.listTracks()) track.source], sources);
+      expect(manager.listPlaylists(), hasLength(playlists));
+      expect(app.playback.queue.items, queue);
+      expect(app.playback.currentTrackId, current);
+    });
+
+    testWidgets("search follows it, and says which it uses", (tester) async {
+      final transport = FakeWorkerTransport()..onExtract = listing;
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+        transport: transport,
+      );
+      final search = app.search;
+      app.navigate(1);
+      await tester.pumpAndSettle();
+      expect(find.text("Find songs on YouTube Music."), findsOneWidget);
+      expect(search.sourceNote, isNull);
+
+      await tester.runAsync(() => search.searchAgain("park"));
+      await tester.pump();
+      expect(search.results.single.source, "YouTube Music");
+      expect(
+        transport.sent.where((frame) => frame["op"] == "extract"),
+        isEmpty,
+      );
+
+      app.settingsControls.update(
+        (next) => next.musicSource = MusicSource.youtube,
+      );
+      await tester.pumpAndSettle();
+      // Results of the previous source are gone; the typed text is kept.
+      expect(search.results, isEmpty);
+      expect(search.queryText, isEmpty);
+      expect(search.draft, "park");
+      expect(find.textContaining("Searching regular YouTube"), findsOneWidget);
+
+      await tester.runAsync(() => search.searchAgain("park"));
+      await tester.pumpAndSettle();
+      expect(search.results.single.title, "Live at the park");
+      expect(search.results.single.source, "YouTube");
+      expect(find.textContaining("A channel · YouTube"), findsOneWidget);
+    });
+
+    testWidgets("a failed search is reported, and the next one can work", (
+      tester,
+    ) async {
+      final transport = FakeWorkerTransport()
+        ..onExtract = (_, _) => throw Exception("Video unavailable");
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+        transport: transport,
+      );
+      app.settingsControls.update(
+        (next) => next.musicSource = MusicSource.youtube,
+      );
+      final search = app.search;
+      await tester.runAsync(() => search.searchAgain("park"));
+      await tester.pump();
+      expect(search.results, isEmpty);
+      expect(search.error, contains("not available"));
+      expect(search.busy, isFalse);
+
+      transport.onExtract = listing;
+      await tester.runAsync(() => search.searchAgain("park"));
+      await tester.pump();
+      expect(search.error, isNull);
+      expect(search.results, hasLength(1));
+    });
+
+    for (final mobile in [false, true]) {
+      final layout = mobile ? "mobile" : "desktop";
+
+      testWidgets("the $layout search button swaps it and searches again", (
+        tester,
+      ) async {
+        final transport = FakeWorkerTransport()..onExtract = listing;
+        final app = await pumpShell(
+          tester,
+          mobile: mobile,
+          size: mobile ? const Size(390, 844) : const Size(1540, 960),
+          transport: transport,
+        );
+        final search = app.search;
+        app.navigate(1);
+        await tester.pumpAndSettle();
+        await tester.runAsync(() => search.searchAgain("park"));
+        await tester.pumpAndSettle();
+        expect(search.results.single.source, "YouTube Music");
+        await shoot(tester, "${layout}_search_source_music");
+
+        final toYoutube = find.byTooltip(
+          "Searching YouTube Music. Switch to YouTube",
+        );
+        expect(toYoutube, findsOneWidget);
+        await tester.runAsync(() async {
+          await tester.tap(toYoutube);
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pumpAndSettle();
+
+        // Saved, as if chosen in Settings, and the search ran there.
+        expect(app.settings.musicSource, MusicSource.youtube);
+        expect(app.services.store.settings.musicSource, MusicSource.youtube);
+        expect(search.results.single.source, "YouTube");
+        expect(search.queryText, "park");
+        expect(
+          find.byTooltip("Searching YouTube. Switch to YouTube Music"),
+          findsOneWidget,
+        );
+        await shoot(tester, "${layout}_search_source_youtube");
+      });
+    }
+
+    testWidgets("the button waits for text that was not searched yet", (
+      tester,
+    ) async {
+      final transport = FakeWorkerTransport()..onExtract = listing;
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+        transport: transport,
+      );
+      final search = app.search;
+      search.draft = "not searched";
+      await tester.runAsync(search.swapSource);
+      await tester.pump();
+      expect(app.settings.musicSource, MusicSource.youtube);
+      // Home may fetch its new mix; no search ran.
+      expect(
+        transport.sent.where(
+          (frame) => "${frame["target"]}".startsWith("ytsearch"),
+        ),
+        isEmpty,
+      );
+      expect(search.draft, "not searched");
+
+      final links = "https://youtu.be/aaaaaaaaaaa https://youtu.be/bbbbbbbbbbb";
+      search
+        ..draft = links
+        ..queryText = links;
+      await tester.runAsync(search.swapSource);
+      await tester.pump();
+      expect(app.settings.musicSource, MusicSource.youtubeMusic);
+      expect(app.services.downloads.activeCount(), 0);
+    });
+
+    testWidgets("Settings and the button show the same source", (tester) async {
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+      );
+      app.openPanel(AppPanel.settings);
+      await tester.pumpAndSettle();
+      DropdownButtonFormField<String> field() => tester.widget(
+        find.widgetWithText(
+          DropdownButtonFormField<String>,
+          "Search and download from",
+        ),
+      );
+      final state = tester.state<FormFieldState<String>>(
+        find.widgetWithText(
+          DropdownButtonFormField<String>,
+          "Search and download from",
+        ),
+      );
+      expect(field().initialValue, "youtube_music");
+      expect(state.value, "youtube_music");
+
+      await tester.runAsync(app.search.swapSource);
+      await tester.pumpAndSettle();
+      expect(field().initialValue, "youtube");
+      expect(state.value, "youtube");
+
+      await tester.runAsync(app.search.swapSource);
+      await tester.pumpAndSettle();
+      expect(state.value, "youtube_music");
+      expect(app.services.store.settings.musicSource, MusicSource.youtubeMusic);
+    });
+
+    testWidgets("Home fetches a new mix from it", (tester) async {
+      final targets = <String>[];
+      final transport = FakeWorkerTransport()
+        ..onExtract = (target, options) {
+          targets.add(target);
+          return listing(target, options);
+        };
+      final app = await pumpShell(
+        tester,
+        mobile: false,
+        size: const Size(1540, 960),
+        transport: transport,
+      );
+      app.home.attach();
+      addTearDown(app.home.detach);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      expect(targets, isEmpty);
+
+      app.settingsControls.update(
+        (next) => next.musicSource = MusicSource.youtube,
+      );
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      expect(targets.first, contains("list=RD"));
+      expect(app.home.recommendations.single.source, "YouTube");
+    });
+  });
 
   testWidgets("mobile player follows swipes", (tester) async {
     final app = await pumpShell(

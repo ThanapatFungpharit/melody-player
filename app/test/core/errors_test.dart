@@ -201,6 +201,17 @@ void main() {
     test("passes short messages through and fills in empty ones", () {
       expect(friendlyProviderError("No results"), "No results");
       expect(friendlyProviderError(""), "YouTube Music could not be searched.");
+      expect(
+        friendlyProviderError(
+          "ERROR: [youtube:tab] PL1: YouTube said: The playlist does not exist.",
+          provider: "YouTube",
+        ),
+        "YouTube said: The playlist does not exist.",
+      );
+      expect(
+        friendlyProviderError("", provider: "YouTube"),
+        "YouTube could not be searched.",
+      );
     });
   });
 

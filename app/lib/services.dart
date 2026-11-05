@@ -118,7 +118,11 @@ class AppServices {
       cacheDirectory: paths.ytDlpCache,
       cookieFile: paths.cookieFile,
     );
-    final catalog = MusicCatalog(worker);
+    final catalog = MusicCatalog(
+      worker,
+      source: () => store.settings.musicSource,
+      ytDlpOptions: sharedOptions,
+    );
     final lyrics = LyricsLibrary(paths.lyrics, catalog.lyrics);
     final lyricsEmbedder = Platform.isAndroid
         ? null

@@ -71,10 +71,16 @@ const _lostFileError =
     "The downloaded library file is missing. Retry to restore it.";
 
 /// The form Melody stores a song's link in, without playlist or tracking
-/// parameters. Any other link stays as it is, for [DownloadCoordinator] to
-/// refuse.
-String _canonicalSource(String url) =>
-    isYoutubeUrl(url) ? youtubeMusicTrackUrl(url) : url;
+/// parameters, on the host of the source named [sourceName]. Any other link
+/// stays as it is, for [DownloadCoordinator] to refuse.
+String _canonicalSource(String url, String sourceName) => isYoutubeUrl(url)
+    ? youtubeTrackUrl(
+        url,
+        sourceName == youtubeName
+            ? MusicSource.youtube
+            : MusicSource.youtubeMusic,
+      )
+    : url;
 
 /// What [DownloadCoordinator.request] did with a result: found an intact
 /// library [track], or joined or started the download [task].
@@ -171,6 +177,7 @@ class DownloadCoordinator extends ChangeNotifier {
     this.manager,
     this.store,
     this._historyDays,
+    this._musicSource,
     this.thumbnails,
     this._downloader,
     this.lyrics,
@@ -220,6 +227,7 @@ class DownloadCoordinator extends ChangeNotifier {
       manager,
       store,
       settings.downloadHistoryDays,
+      settings.musicSource,
       thumbnails,
       Downloader(
         worker,
@@ -325,7 +333,11 @@ class DownloadCoordinator extends ChangeNotifier {
       options: downloadOptions(settings, _sharedOptions()),
     );
     historyDays = settings.downloadHistoryDays;
+    _musicSource = settings.musicSource;
   }
+
+  /// The source pasted links are downloaded from.
+  MusicSource _musicSource;
 
   /// Days a finished download stays in the history; 0 keeps it forever.
   int get historyDays => _historyDays;
@@ -404,7 +416,11 @@ class DownloadCoordinator extends ChangeNotifier {
     }
     return _request(
       resolveMetadata
-          ? _DownloadMetadata.url(result.url, title: result.title)
+          ? _DownloadMetadata.url(
+              result.url,
+              title: result.title,
+              source: result.source,
+            )
           : _DownloadMetadata.fromResult(result),
     );
   }
@@ -418,7 +434,7 @@ class DownloadCoordinator extends ChangeNotifier {
       final source = value.trim();
       if (source.isEmpty || !seen.add(source)) continue;
       if (!isYoutubeUrl(source)) {
-        throw ArgumentError("Only $youtubeMusicName URLs are supported.");
+        throw ArgumentError("Only ${_musicSource.label} URLs are supported.");
       }
       if (MediaIdentity.fromUrl(source) == null) {
         throw ArgumentError(_notASongLink);
@@ -426,7 +442,9 @@ class DownloadCoordinator extends ChangeNotifier {
       sources.add(source);
     }
     if (sources.isEmpty) {
-      throw ArgumentError("At least one $youtubeMusicName URL is required.");
+      throw ArgumentError(
+        "At least one ${_musicSource.label} URL is required.",
+      );
     }
     final batchId = const Uuid().v4();
     final createdAt = unixSeconds();
@@ -444,6 +462,7 @@ class DownloadCoordinator extends ChangeNotifier {
       final metadata = _DownloadMetadata.url(
         source,
         title: "Song ${index + 1} of ${unique.length}",
+        source: _musicSource.label,
         createdAt: createdAt,
         batchId: batchId,
         batchPosition: index + 1,
@@ -477,10 +496,10 @@ class DownloadCoordinator extends ChangeNotifier {
   Future<DownloadRequest> _request(_DownloadMetadata metadata) async {
     final url = metadata.url;
     if (url.isEmpty) {
-      throw ArgumentError("A $youtubeMusicName URL is required.");
+      throw ArgumentError("A ${_musicSource.label} URL is required.");
     }
     if (!isYoutubeUrl(url)) {
-      throw ArgumentError("Only $youtubeMusicName URLs are supported.");
+      throw ArgumentError("Only ${_musicSource.label} URLs are supported.");
     }
     if (await availableTrack(url) case final track?) {
       return DownloadRequest.existing(track);
@@ -493,7 +512,7 @@ class DownloadCoordinator extends ChangeNotifier {
   String _start(_DownloadMetadata metadata) {
     final url = metadata.url;
     if (!isYoutubeUrl(url)) {
-      throw ArgumentError("Only $youtubeMusicName URLs are supported.");
+      throw ArgumentError("Only ${_musicSource.label} URLs are supported.");
     }
     if (MediaIdentity.fromUrl(url) == null) throw ArgumentError(_notASongLink);
     if (_activeRecordForSource(url) != null) throw DuplicateDownloadError();
@@ -943,10 +962,10 @@ class _DownloadMetadata {
     this.batchSize = 0,
   });
 
-  /// A search result, with the details YouTube Music listed for it.
+  /// A search result, with the details its source listed for it.
   factory _DownloadMetadata.fromResult(SearchResult result) =>
       _DownloadMetadata(
-        url: _canonicalSource(result.url),
+        url: _canonicalSource(result.url, result.source),
         title: result.title,
         uploader: result.uploader,
         thumbnail: result.thumbnail,
@@ -959,13 +978,15 @@ class _DownloadMetadata {
   factory _DownloadMetadata.url(
     String url, {
     required String title,
+    required String source,
     double? createdAt,
     String batchId = "",
     int batchPosition = 0,
     int batchSize = 0,
   }) => _DownloadMetadata(
-    url: _canonicalSource(url),
+    url: _canonicalSource(url, source),
     title: title,
+    source: source,
     resolveMetadata: true,
     createdAt: createdAt,
     batchId: batchId,
@@ -977,7 +998,7 @@ class _DownloadMetadata {
   factory _DownloadMetadata.retrying(DownloadRecord original) {
     final batched = original.batchId.isNotEmpty;
     return _DownloadMetadata(
-      url: _canonicalSource(original.url),
+      url: _canonicalSource(original.url, original.source),
       title: original.title,
       uploader: original.uploader,
       thumbnail: original.thumbnail,

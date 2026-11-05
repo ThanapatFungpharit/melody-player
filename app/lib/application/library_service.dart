@@ -9,7 +9,7 @@ import "../core/artwork.dart";
 import "../core/errors.dart" show failureMessage;
 import "../core/library/manager.dart";
 import "../core/library/models.dart";
-import "../core/media.dart" show MediaIdentity, isHttpUrl, youtubeMusicTrackUrl;
+import "../core/media.dart" show MediaIdentity, isHttpUrl, youtubeShareUrl;
 import "../core/storage.dart";
 import "lyrics.dart";
 import "models.dart";
@@ -739,7 +739,7 @@ class LibraryService {
   /// none.
   static List<String> linksOf(Iterable<Track> tracks) => [
     for (final track in tracks)
-      if (isHttpUrl(track.source)) youtubeMusicTrackUrl(track.source.trim()),
+      if (isHttpUrl(track.source)) youtubeShareUrl(track.source.trim()),
   ];
 
   /// A track whose file is outside the music folders and that has no link
@@ -753,7 +753,7 @@ class LibraryService {
       final location = isHttpUrl(track.source)
           // Sources saved by earlier releases may still carry a pasted link's
           // playlist and tracking parameters.
-          ? youtubeMusicTrackUrl(track.source.trim())
+          ? youtubeShareUrl(track.source.trim())
           : _portablePath(track, directory);
       if (location == null) continue;
       final duration = details(track.id).duration;

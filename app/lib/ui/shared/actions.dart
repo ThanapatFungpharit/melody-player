@@ -7,7 +7,6 @@ import "../../application/library_service.dart" show LibraryService;
 import "../../application/models.dart";
 import "../../application/sleep_timer.dart";
 import "../../core/library/models.dart";
-import "../../core/media.dart" show youtubeMusicName;
 import "../controllers/playlists_controller.dart";
 import "dialogs.dart";
 import "format.dart";
@@ -41,7 +40,7 @@ List<MenuAction> importPlaylistActions(BuildContext context, MelodyApp app) => [
     () => showPlaylistFromLinksDialog(context, app),
   ),
   MenuAction(
-    "From $youtubeMusicName link",
+    "From ${app.settings.musicSource.label} link",
     Icons.link_rounded,
     () => showImportPlaylistDialog(context, app),
   ),
@@ -394,7 +393,7 @@ List<MenuAction> playlistActions(
 ) => [
   if (playlist.source.isNotEmpty)
     MenuAction(
-      "Update from $youtubeMusicName",
+      "Update from ${app.settings.musicSource.label}",
       Icons.sync_rounded,
       () => app.playlists.updateFromSource(playlist),
       enabled: !app.playlists.importing,

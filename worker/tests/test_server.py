@@ -184,6 +184,33 @@ def test_extract_returns_only_fields_the_app_reads(worker) -> None:
     assert FakeYoutubeDL.calls == [("t", {"q": 1})]
 
 
+def test_extract_keeps_what_a_video_listing_needs(worker) -> None:
+    instance, frames = worker
+    FakeYoutubeDL.info = {
+        "_type": "playlist",
+        "entries": [
+            {
+                "id": "a",
+                "title": "A",
+                "channel": "C",
+                "duration": 3,
+                "live_status": "is_live",
+                "formats": [{"url": "https://signed"}],
+            }
+        ],
+    }
+    request(instance, {"id": 1, "op": "extract", "target": "ytsearch1:a"})
+    assert response(frames, 1)["result"]["entries"] == [
+        {
+            "id": "a",
+            "title": "A",
+            "channel": "C",
+            "duration": 3,
+            "live_status": "is_live",
+        }
+    ]
+
+
 def test_failures_carry_classification_facts(worker) -> None:
     instance, frames = worker
     cause = OSError(errno.ENOSPC, "No space left on device")

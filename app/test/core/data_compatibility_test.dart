@@ -4,6 +4,7 @@ import "dart:io";
 
 import "package:flutter_test/flutter_test.dart";
 import "package:melody/application/models.dart";
+import "package:melody/core/media.dart";
 import "package:melody/application/storage_upgrade.dart";
 import "package:melody/application/store.dart";
 import "package:melody/core/library/manager.dart";
@@ -424,5 +425,22 @@ void main() {
     );
     expect(saved.normalizeLoudness, isFalse);
     expect(saved.loudnessTarget, -18);
+  });
+
+  test("the music source defaults to YouTube Music, and is kept", () {
+    final earlier = AppSettings.fromJson({}, defaultDownloadDirectory: "/m");
+    expect(earlier.musicSource, MusicSource.youtubeMusic);
+
+    final odd = AppSettings.fromJson({
+      "music_source": 7,
+    }, defaultDownloadDirectory: "/m");
+    expect(odd.musicSource, MusicSource.youtubeMusic);
+
+    final saved = AppSettings.fromJson(
+      (earlier..musicSource = MusicSource.youtube).toJson(),
+      defaultDownloadDirectory: "/m",
+    );
+    expect(saved.musicSource, MusicSource.youtube);
+    expect(earlier.copy().sameAs(saved), isTrue);
   });
 }

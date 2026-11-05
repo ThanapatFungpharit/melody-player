@@ -57,7 +57,7 @@ committed, as Flutter's templates expect, and so are the `pubspec.lock` and
   identity (`media.dart`), embedded-artwork reading, failure classification
   (`errors.dart`), and the downloader. It never imports `application/` or UI.
 - `application/` owns use cases that cross capabilities: the application store
-  and settings models, the YouTube Music catalog, saved lyrics, the download
+  and settings models, the music catalog, saved lyrics, the download
   coordinator, the library service, the queue and playback controller, the
   sleep timer, the thumbnail cache, cookie validation, the ytmusicapi and yt-dlp runtime
   status, and upgrades of older storage layouts (`storage_upgrade.dart`).
@@ -80,7 +80,7 @@ committed, as Flutter's templates expect, and so are the `pubspec.lock` and
 
 Python remains for what has no Dart equivalent: ytmusicapi (YouTube Music's
 private API: song search, radio, playlists, lyrics), yt-dlp
-(downloads), and choosing the release of each to import (the updater must run
+(downloads, and listing regular YouTube), and choosing the release of each to import (the updater must run
 inside the interpreter, before the first import). Everything else is Dart.
 
 `WorkerClient` (`app/lib/worker/worker_client.dart`) is the app's only API to
@@ -451,6 +451,17 @@ provider plus stable media ID (`MediaIdentity`); YouTube Music and YouTube
 watch, short, live, embed, and youtu.be URLs normalize to `youtube:<id>`.
 Titles and filenames never determine remote equality; local files use a
 content hash.
+
+`MusicSource` (`AppSettings.musicSource`) therefore changes only where music is
+found and fetched, never what a stored track is. `MusicCatalog` reads the
+selection for each request and answers with the same `SearchResult` either way:
+from ytmusicapi for YouTube Music, and from yt-dlp's flat extraction for regular
+YouTube. There is one download pipeline, library, and queue. A download stores
+its link on the host of the source that found it (`SearchResult.source`, then
+`DownloadRecord.source`), so a retry or repair uses the same host however the
+setting changed since. Three things stay on YouTube Music: lyrics, which exist
+only there and are looked up by video ID; `list=RD…` mix links, which yt-dlp
+cannot open without a video; and tracks already stored with its links.
 
 An imported file's title, artist, and cover come from its tags, falling back to
 its name, and tracks imported before that are filled in once by the background

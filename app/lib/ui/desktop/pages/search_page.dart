@@ -3,7 +3,6 @@ import "package:flutter/material.dart";
 import "../../app_state.dart";
 import "../../../application/models.dart";
 import "../../../core/library/models.dart" show Track;
-import "../../../core/media.dart";
 import "../../shared/actions.dart";
 import "../../shared/dialogs.dart";
 import "../../shared/format.dart";
@@ -66,11 +65,15 @@ class _SearchPageState extends State<SearchPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Heading("Search", "Find songs on $youtubeMusicName."),
+            Heading(
+              "Search",
+              search.sourceNote ?? "Find songs on ${search.sourceLabel}.",
+            ),
             const SizedBox(height: 22),
             Row(
               spacing: 10,
               children: [
+                MusicSourceButton(app),
                 Expanded(
                   child: TextField(
                     controller: _query,
@@ -80,7 +83,7 @@ class _SearchPageState extends State<SearchPage> {
                     textInputAction: TextInputAction.search,
                     style: context.text.bodyLarge,
                     decoration: InputDecoration(
-                      hintText: "Search $youtubeMusicName or paste a link",
+                      hintText: "Search ${search.sourceLabel} or paste a link",
                       prefixIcon: const Padding(
                         padding: EdgeInsets.only(left: 6),
                         child: Icon(Icons.search_rounded),
@@ -244,7 +247,7 @@ class _SearchPageState extends State<SearchPage> {
             ? Icons.travel_explore_rounded
             : Icons.search_off_rounded,
         search.queryText.isEmpty
-            ? "Start with a song, an artist, or a $youtubeMusicName link."
+            ? "Start with a song, an artist, or a ${search.sourceLabel} link."
             : "No matching music was found.",
       );
     }

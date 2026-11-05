@@ -275,14 +275,20 @@ String? _sessionProblem(String lowered) {
   return null;
 }
 
-String friendlyProviderError(Object error) {
+/// How yt-dlp starts an extractor's error: `ERROR: [youtube] <id>: `.
+final _ytDlpPrefix = RegExp(r"^ERROR: (\[[^\]]+\] [^:\s]+: )?");
+
+String friendlyProviderError(
+  Object error, {
+  String provider = youtubeMusicName,
+}) {
   final message = "$error".trim();
   final lowered = message.toLowerCase();
   if (lowered.contains("unsupported url")) {
-    return "Only $youtubeMusicName URLs are supported.";
+    return "Only $provider URLs are supported.";
   }
   if (lowered.contains("timed out") || lowered.contains("timeout")) {
-    return "$youtubeMusicName took too long to respond. "
+    return "$provider took too long to respond. "
         "Check your connection and retry.";
   }
   final unreachable =
@@ -295,12 +301,20 @@ String friendlyProviderError(Object error) {
       // requests (ytmusicapi) wraps DNS and socket failures this way.
       lowered.contains("max retries exceeded") ||
       lowered.contains("failed to resolve")) {
-    return "$youtubeMusicName could not be reached. "
+    return "$provider could not be reached. "
         "Check your connection and retry.";
   }
   if (_sessionProblem(lowered) case final message?) return message;
+  if (lowered.contains("video unavailable") ||
+      lowered.contains("video is unavailable") ||
+      lowered.contains("video is not available") ||
+      lowered.contains("available in your country")) {
+    return "This video is not available. It may have been removed, or be "
+        "restricted by region or account.";
+  }
+  final reason = message.replaceFirst(_ytDlpPrefix, "");
   return publicErrorMessage(
-    message.isNotEmpty ? message : "$youtubeMusicName could not be searched.",
+    reason.isNotEmpty ? reason : "$provider could not be searched.",
   );
 }
 
