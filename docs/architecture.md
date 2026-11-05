@@ -325,10 +325,11 @@ songs added there join it in their order, what failed or was interrupted gets
 another try, and a name or tracks given here stay. Stopping an import keeps what
 it has so far.
 
-A download is one song. Its options set `noplaylist`, its source is stored as
-`https://music.youtube.com/watch?v=<id>` whatever form the link took, and a link
-that names no song (a playlist page) is refused. Playlists are imported instead,
-which downloads each song as its own task.
+A download is one song. Its options set `noplaylist`, its source is stored as a
+`/watch?v=<id>` link on the host of the source that found it (see
+[Track identity and files](#track-identity-and-files)) whatever form the link
+took, and a link that names no song (a playlist page) is refused. Playlists are
+imported instead, which downloads each song as its own task.
 
 Coordinator reservations use canonical source keys; requests for one source
 share active work. File allocation, duplicate lookup, and registration are
