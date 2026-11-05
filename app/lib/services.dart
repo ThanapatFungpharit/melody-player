@@ -19,7 +19,7 @@ import "audio/audio_backend.dart" show audioLimiterHeadroomDb, audioMaxBoostDb;
 import "core/loudness.dart" show ffmpegExecutable, ffmpegLoudnessMeter;
 import "core/storage.dart" show existingFiles, removeStaleTemporaries;
 import "package:melody_audio/melody_audio.dart"
-    show useNotificationArtworkDirectory;
+    show AndroidPlatform, useNotificationArtworkDirectory;
 import "platform/paths.dart";
 import "worker/worker_client.dart";
 
@@ -137,6 +137,9 @@ class AppServices {
       store,
       thumbnails: thumbnails,
       lyrics: lyrics,
+      deleteProtectedFiles: Platform.isAndroid
+          ? AndroidPlatform.deleteMediaFiles
+          : null,
     );
     // Before downloads open, so no finishing download is caching artwork or
     // registering a file.

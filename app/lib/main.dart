@@ -99,9 +99,23 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       _stage.value = "Ready";
       if (mounted) setState(() => _finishing = true);
+      unawaited(_askForAudioAccess(app));
     } catch (error, stack) {
       debugPrint("Melody failed to start: $error\n$stack");
       if (mounted) setState(() => _failure = error);
+    }
+  }
+
+  /// Without audio access Android hides music Melody did not create, such as
+  /// files added with a file manager or left by an earlier install, so
+  /// tracks look missing. Android stops showing the prompt once refused.
+  Future<void> _askForAudioAccess(MelodyApp app) async {
+    if (!Platform.isAndroid) return;
+    try {
+      if (await AndroidPlatform.hasAudioAccess()) return;
+      if (await AndroidPlatform.requestAudioAccess()) app.touchLibrary();
+    } on Object catch (error) {
+      debugPrint("Audio access could not be requested: $error");
     }
   }
 

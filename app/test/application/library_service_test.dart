@@ -333,6 +333,68 @@ void main() {
     expect(await File(song).exists(), isTrue);
   });
 
+  group("deleting files the app may not delete itself", () {
+    late String stray;
+
+    // A read-only folder stands in for Android refusing to delete music
+    // another app put there.
+    setUp(() async {
+      stray = p.join(music, "locked", "stray.mp3");
+      await File(stray).create(recursive: true);
+      await File(stray).writeAsString("stray");
+      await Process.run("chmod", ["555", p.dirname(stray)]);
+    });
+
+    tearDown(() => Process.run("chmod", ["755", p.dirname(stray)]));
+
+    LibraryService withConsent(Future<bool> Function(List<String>) consent) =>
+        LibraryService(
+          manager,
+          store,
+          thumbnails: thumbnails,
+          lyrics: lyrics,
+          deleteProtectedFiles: consent,
+        );
+
+    test("asks, and deletes once the user allows it", () async {
+      List<String>? asked;
+      final service = withConsent((paths) async {
+        asked = paths;
+        await Process.run("chmod", ["755", p.dirname(stray)]);
+        await File(stray).delete();
+        return true;
+      });
+
+      final outcome = await service.deleteStrayFiles([stray]);
+
+      expect(asked, [stray]);
+      expect(outcome.done, 1);
+      expect(outcome.failures, isEmpty);
+      expect(await File(stray).exists(), isFalse);
+    });
+
+    test("reports a file the user did not allow to be deleted", () async {
+      final service = withConsent((paths) async => false);
+      final outcome = await service.deleteStrayFiles([stray]);
+      expect(outcome.done, 0);
+      expect(outcome.failures, hasLength(1));
+      expect(await File(stray).exists(), isTrue);
+    });
+
+    test("reports the failure when asking fails", () async {
+      final service = withConsent((paths) => throw StateError("no activity"));
+      final outcome = await service.deleteStrayFiles([stray]);
+      expect(outcome.done, 0);
+      expect(outcome.failures.single, contains("stray.mp3"));
+    });
+
+    test("without a way to ask, the refusal is a failure", () async {
+      final outcome = await library.deleteStrayFiles([stray]);
+      expect(outcome.done, 0);
+      expect(outcome.failures, hasLength(1));
+    });
+  }, skip: Platform.isWindows ? "needs POSIX permissions" : null);
+
   test("deleting stray files keeps library files", () async {
     final id = await downloaded("song.mp3");
     final stray = p.join(music, "stray.mp3");

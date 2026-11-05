@@ -2,6 +2,7 @@ import "dart:async";
 import "dart:io";
 
 import "package:flutter/foundation.dart";
+import "package:melody_audio/melody_audio.dart" show AndroidPlatform;
 import "package:path/path.dart" as p;
 
 import "../app_state.dart";
@@ -417,6 +418,15 @@ class SettingsController extends ChangeNotifier {
     cleaningUp = true;
     notifyListeners();
     try {
+      // Without audio access Android hides files Melody did not create, so
+      // the scan would call present tracks missing and miss stray files.
+      if (Platform.isAndroid && !await AndroidPlatform.requestAudioAccess()) {
+        app.showError(
+          "Library cleanup needs access to audio files to see your whole Music "
+          "folder. Allow it, in Melody's app settings if Android no longer asks.",
+        );
+        return null;
+      }
       final report = await app.services.library.reconcile();
       if (report.staleReferencesRemoved > 0) app.touchLibrary();
       return report;

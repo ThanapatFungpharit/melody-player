@@ -67,8 +67,13 @@ class CleanupOutcome {
 }
 
 class LibraryService {
-  LibraryService(this.manager, this.store, {this.thumbnails, this.lyrics})
-    : _files = OwnedFiles(store, manager);
+  LibraryService(
+    this.manager,
+    this.store, {
+    this.thumbnails,
+    this.lyrics,
+    this.deleteProtectedFiles,
+  }) : _files = OwnedFiles(store, manager);
 
   final MusicManager manager;
   final ApplicationStore store;
@@ -77,6 +82,12 @@ class LibraryService {
   /// with it once no other track uses them.
   final ThumbnailCache? thumbnails;
   final LyricsLibrary? lyrics;
+
+  /// Deletes files the app may not delete itself, after asking the user
+  /// (Android: music other apps put in the Music folder). Returns whether the
+  /// user agreed; the caller checks which files are gone. Null where a plain
+  /// delete always works.
+  final Future<bool> Function(List<String> paths)? deleteProtectedFiles;
   final OwnedFiles _files;
 
   TrackDetails details(String trackId) => store.trackDetails(trackId);
@@ -181,23 +192,50 @@ class LibraryService {
 
   /// Deletes audio files in the music folder that no library track uses,
   /// with the lyrics beside them.
-  Future<CleanupOutcome> deleteStrayFiles(Iterable<String> paths) =>
-      manager.mutation.run(() async {
-        var done = 0;
-        final failures = <String>[];
-        for (final path in paths) {
-          try {
-            _requireStray(path);
-            final file = File(path);
-            if (await file.exists()) await file.delete();
-            await LyricsLibrary.deleteSidecar(path);
-            done++;
-          } on Object catch (error) {
-            failures.add("${p.basename(path)}: ${failureMessage(error)}");
-          }
+  Future<CleanupOutcome> deleteStrayFiles(
+    Iterable<String> paths,
+  ) => manager.mutation.run(() async {
+    var done = 0;
+    final failures = <String>[];
+    final refused = <String>[];
+    for (final path in paths) {
+      try {
+        _requireStray(path);
+        final file = File(path);
+        try {
+          if (await file.exists()) await file.delete();
+        } on FileSystemException {
+          // Not ours to delete: the user may still allow it.
+          if (deleteProtectedFiles == null || !await file.exists()) rethrow;
+          refused.add(path);
+          continue;
         }
-        return CleanupOutcome(done, failures);
-      });
+        await LyricsLibrary.deleteSidecar(path);
+        done++;
+      } on Object catch (error) {
+        failures.add("${p.basename(path)}: ${failureMessage(error)}");
+      }
+    }
+    if (refused.isNotEmpty) {
+      Object? failure;
+      try {
+        await deleteProtectedFiles!(refused);
+      } on Object catch (error) {
+        failure = error;
+      }
+      for (final path in refused) {
+        if (await File(path).exists()) {
+          failures.add(
+            "${p.basename(path)}: ${failure == null ? "it was not deleted" : failureMessage(failure)}",
+          );
+        } else {
+          await LyricsLibrary.deleteSidecar(path);
+          done++;
+        }
+      }
+    }
+    return CleanupOutcome(done, failures);
+  });
 
   /// Whether a path relative to a folder names an audio file Melody would
   /// list: not itself, or inside, anything hidden.

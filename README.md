@@ -117,7 +117,11 @@ installed Melody upgrades in place with its library, playlists, and settings:
 
 Downloaded audio defaults to `~/Music/Melody` on desktop. On Android (11 or newer),
 downloads are saved straight to the public `Music/Melody` folder, or another
-folder inside `Music` chosen in Settings, without any storage permission. The
+folder inside `Music` chosen in Settings; saving needs no storage permission.
+Library cleanup asks for audio access, because Android otherwise hides music
+that Melody did not create itself (files added with a file manager, or left by
+an earlier install), and the scan would misreport it. Android may still refuse
+to delete such files; cleanup then lists them as failures. The
 music folder only ever receives finished audio: each download stages in the app
 data folder (partial streams and thumbnails), and that staging is removed when
 the download ends, or kept for up to a week if another attempt can pick up from
