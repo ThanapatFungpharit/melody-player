@@ -526,8 +526,8 @@ work stays out of builds and event handlers:
   run in `Isolate.run`. The lyrics writer keeps only the tag in memory and
   streams the audio through a fixed buffer.
 - Library and state reads come from in-memory models; only writes reach
-  SQLite, and library writes do not wait for the disk (see Crash
-  consistency).
+  SQLite. Library commits do wait for the disk (see Crash consistency), which
+  is acceptable because they are rare.
 - `ThumbnailCache.open` lists the thumbnail folder once in a background
   isolate; afterwards artwork widgets and queue activation answer from
   memory, and the cache's own writes keep that index current.
