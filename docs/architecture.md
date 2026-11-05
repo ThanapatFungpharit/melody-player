@@ -336,9 +336,9 @@ share active work. File allocation, duplicate lookup, and registration are
 serialized through `MusicManager.mutation`, including local imports. The
 downloader runs `concurrent_downloads` jobs and queues the rest, so a batch of any
 size waits its turn; a playlist import keeps only a window of its songs queued, so
-a long playlist does not fill the history at once. Download options (format, quality, concurrency, folder,
-cookies) are fixed when the coordinator opens, so changing them applies at the
-next launch.
+a long playlist does not fill the history at once. A new music folder is refused
+while any download is queued or running, since a job stages and finishes in one
+folder.
 
 yt-dlp keeps the thumbnail sidecar in staging while metadata is written, and
 the cover is burned in as the last postprocessor. Before promotion the
