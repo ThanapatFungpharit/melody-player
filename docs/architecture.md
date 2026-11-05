@@ -162,7 +162,9 @@ them to the playback controller.
   application policy (favorite, shuffle, repeat) reach the
   app.
 - `AndroidPlatform` is the Kotlin MethodChannel for the directories Melody
-  needs from Android and for opening the Music folder in the Files app.
+  needs from Android, for opening the Music folder in the Files app, for asking
+  for audio access, and for Android's dialog confirming the deletion of files
+  Melody did not create.
 
 ## State ownership
 
