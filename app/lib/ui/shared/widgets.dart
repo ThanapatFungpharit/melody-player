@@ -655,12 +655,12 @@ class QueueModeStatus {
 QueueModeStatus queueModeStatus(PlaybackQueue queue) => switch (queue.repeat) {
   RepeatMode.track => const QueueModeStatus(
     "Repeat track",
-    "The current track repeats. Every other track waits until repeat is changed.",
+    "The current track plays on repeat.",
     Icons.repeat_one_rounded,
   ),
   RepeatMode.playlist => const QueueModeStatus(
     "Repeat queue",
-    "After the last track, playback continues again from the first track.",
+    "After the last track, the queue starts over.",
     Icons.repeat_rounded,
   ),
   RepeatMode.off => const QueueModeStatus(

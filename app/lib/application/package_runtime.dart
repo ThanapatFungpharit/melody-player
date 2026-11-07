@@ -20,6 +20,8 @@ class RuntimePackageInfo {
     required this.label,
     required this.purpose,
     required this.requestKey,
+    required this.allowed,
+    required this.supported,
   });
 
   /// The PyPI name the worker selects by.
@@ -33,6 +35,13 @@ class RuntimePackageInfo {
 
   /// The store key holding a release scheduled for the next launch.
   final String requestKey;
+
+  /// The releases the worker accepts as updates: its `RuntimePackage.allowed`
+  /// specifier, kept equal by `tools/tests/test_runtime_packages.py`.
+  final String allowed;
+
+  /// [allowed] in words, shown in Settings.
+  final String supported;
 }
 
 const ytDlpRuntimeInfo = RuntimePackageInfo(
@@ -41,6 +50,8 @@ const ytDlpRuntimeInfo = RuntimePackageInfo(
   purpose: "downloads",
   // Unchanged from earlier releases, so a scheduled update survives upgrading.
   requestKey: "yt_dlp_update_request",
+  allowed: ">=2026.8.19,<2030",
+  supported: "2026.8.19 and later releases through 2029",
 );
 
 const ytMusicRuntimeInfo = RuntimePackageInfo(
@@ -48,6 +59,8 @@ const ytMusicRuntimeInfo = RuntimePackageInfo(
   label: "ytmusicapi",
   purpose: "YouTube Music search, recommendations, and lyrics",
   requestKey: "ytmusicapi_update_request",
+  allowed: ">=1.12.3,<2",
+  supported: "1.12.3 and later 1.x releases",
 );
 
 class PackageStatus {

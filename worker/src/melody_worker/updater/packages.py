@@ -73,7 +73,7 @@ class RuntimePackage:
 YT_DLP = RuntimePackage(
     distribution="yt-dlp",
     module="yt_dlp",
-    allowed=SpecifierSet(">=2026.8.19,<2027"),
+    allowed=SpecifierSet(">=2026.8.19,<2030"),
     required_members=frozenset({"yt_dlp/__init__.py", "yt_dlp/version.py"}),
     probe="""
 import yt_dlp

@@ -708,6 +708,27 @@ void main() {
     }
   }
 
+  testWidgets("Maintenance says which engine versions this release supports", (
+    tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      mobile: false,
+      size: const Size(1540, 960),
+    );
+    app.openPanel(AppPanel.settings);
+    await tester.pumpAndSettle();
+    for (final info in [ytDlpRuntimeInfo, ytMusicRuntimeInfo]) {
+      expect(
+        find.textContaining(
+          "supports ${info.label} ${info.supported}",
+          skipOffstage: false,
+        ),
+        findsOneWidget,
+      );
+    }
+  });
+
   testWidgets("an accent is chosen from its swatch and marked as chosen", (
     tester,
   ) async {

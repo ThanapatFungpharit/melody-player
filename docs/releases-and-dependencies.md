@@ -60,7 +60,7 @@ archive members a genuine wheel must contain, and the import/API probe:
 
 | Package | Runtime storage | Accepted window | Activated as |
 | --- | --- | --- | --- |
-| yt-dlp | `runtime/yt-dlp` | `>=2026.8.19,<2027` | the wheel itself on `sys.path` |
+| yt-dlp | `runtime/yt-dlp` | `>=2026.8.19,<2030` | the wheel itself on `sys.path` |
 | ytmusicapi | `runtime/ytmusicapi` | `>=1.12.3,<2` | an extracted copy of the wheel |
 
 ytmusicapi loads gettext catalogs from files beside its modules, which a

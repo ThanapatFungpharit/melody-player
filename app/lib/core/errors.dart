@@ -115,8 +115,8 @@ DownloadFailure classifyDownloadError(Object error) {
       ])) {
     return const DownloadFailure(
       DownloadErrorKind.authentication,
-      "This media requires a valid session. Upload fresh Netscape cookies.txt "
-          "in Settings, or remove cookies for public media.",
+      "This media requires sign-in. Upload a fresh cookies.txt file in "
+          "Settings, or remove cookies for public media.",
       "refresh_cookies",
     );
   }

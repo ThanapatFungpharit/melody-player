@@ -154,11 +154,11 @@ Future<void> applyMusicFolder(BuildContext context, MelodyApp app) {
     context,
     title: "Move your library?",
     message:
-        "Melody will move the audio of ${plural(tracks, "library track")} "
-        "from ${app.settings.downloadDirectory} to "
-        "${settings.requestedMusicFolder}, and save new downloads there. "
-        "Playback stops while the files move. Other files in the old folder "
-        "stay where they are.",
+        "${plural(tracks, "library track")} will move from "
+        "${app.settings.downloadDirectory} to "
+        "${settings.requestedMusicFolder}, and new downloads will go there. "
+        "Playback stops during the move. Other files in the old folder stay "
+        "put.",
     confirmLabel: "Move library",
     icon: Icons.drive_file_move_rounded,
     onConfirm: () =>
@@ -322,9 +322,9 @@ Future<void> showDeleteTrackDialog(
   context,
   title: "Delete track?",
   message:
-      "“${track.displayTitle}” will be removed from the library and every playlist, "
-      "and Melody's file for it deleted. An original you imported it from is not "
-      "touched, and a file added from the music folder stays on disk.",
+      "“${track.displayTitle}” will be removed from your library and playlists, "
+      "and its audio deleted. Imported originals and files added from your "
+      "music folder stay on disk.",
   confirmLabel: "Delete track",
   icon: Icons.delete_forever_rounded,
   onConfirm: () async {
@@ -349,10 +349,10 @@ Future<void> showDeleteSelectedTracksDialog(
     context,
     title: "Delete ${plural(count, "track")}?",
     message:
-        "${count == 1 ? "This track" : "These tracks"} will be removed from the "
-        "library and every playlist, and Melody's files for them deleted. "
-        "Originals you imported from are not touched, and files added from the "
-        "music folder stay on disk.",
+        "${count == 1 ? "This track" : "These tracks"} will be removed from your "
+        "library and playlists, and ${count == 1 ? "its" : "their"} audio "
+        "deleted. Imported originals and files added from your music folder "
+        "stay on disk.",
     confirmLabel: "Delete",
     icon: Icons.delete_forever_rounded,
     onConfirm: () => app.run(app.library.deleteSelected),
@@ -485,8 +485,8 @@ Future<void> showImportPlaylistDialog(BuildContext context, MelodyApp app) {
     label: "${source.label} playlist URL",
     hint: "https://${source.host}/playlist?list=…",
     description:
-        "Paste a ${source.label} playlist link. Melody will reuse tracks already in "
-        "your library and download only the missing ones.",
+        "Paste a ${source.label} playlist link. Only tracks not already in "
+        "your library are downloaded.",
     confirmLabel: "Import playlist",
     confirmIcon: Icons.download_rounded,
     onConfirm: (value) async {
@@ -717,9 +717,9 @@ Future<void> showBatchDownloadDialog(BuildContext context, MelodyApp app) {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  "Add links to one or more songs on ${app.settings.musicSource.label}. Melody will "
-                  "queue them together and show progress for each song. To save a "
-                  "playlist, use Import playlist on the Playlists page.",
+                  "Paste links to one or more ${app.settings.musicSource.label} songs. "
+                  "Each shows its own progress. For playlists, use Import "
+                  "playlist on the Playlists page.",
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -992,9 +992,9 @@ Future<void> showMissingTracksDialog(
                   Text(
                     pending.isEmpty
                         ? "Every track is now in the playlist."
-                        : "Melody could not find ${pending.length != 1 ? "these tracks" : "this track"} "
-                              "in your library. Locate the audio file to add it to the "
-                              "playlist in its place.",
+                        : "${pending.length != 1 ? "These tracks aren't" : "This track isn't"} "
+                              "in your library. Locate the audio file to add it to "
+                              "the playlist in its place.",
                   ),
                   for (final index in pending)
                     Row(
@@ -1090,8 +1090,8 @@ Future<void> pickMusicFolder(MelodyApp app) async {
   final publicRoot = app.services.paths.publicMusicRoot;
   if (publicRoot != null && !p.isWithin(publicRoot, folder)) {
     app.showError(
-      "Choose or create a folder inside Music. Android lets Melody save "
-      "music only there.",
+      "Choose or create a folder inside Music. Android only lets Melody save "
+      "music there.",
     );
     return;
   }
@@ -1155,34 +1155,33 @@ Future<void> showDataActionDialog(
   final (title, message, label, prominent) = switch (action) {
     "library" => (
       "Clear library?",
-      "Remove $tracks library $trackWord and $playlists $playlistWord. All playlists, the "
-          "playback queue, favorites, and track-linked listening history will be cleared. "
-          "Audio Melody downloaded is deleted; imported files stay on disk. Settings, "
-          "download history, and search history are not changed.",
+      "Remove $tracks $trackWord and $playlists $playlistWord, and clear the queue, "
+          "favorites, and listening history for these tracks. Downloaded audio is "
+          "deleted; imported files stay on disk. Settings, download history, and "
+          "search history are kept.",
       "Clear library",
       false,
     ),
     "playlists" => (
       "Clear playlists?",
-      "Delete $playlists user-created $playlistWord. Library tracks, audio files, settings, "
-          "the playback queue, and histories are not changed.",
+      "Delete $playlists $playlistWord you created. Tracks, audio files, settings, "
+          "the queue, and history are kept.",
       "Clear playlists",
       false,
     ),
     "settings" => (
       "Reset settings?",
-      "Restore appearance, volume, session, download, cookie, and notification settings to "
-          "their defaults. Library tracks, playlists, audio files, download history, and "
-          "search history are not changed. Your uploaded cookie file will be removed.",
+      "Restore all settings to their defaults and remove your uploaded cookie file. "
+          "Your library, playlists, audio files, and history are kept.",
       "Reset settings",
       false,
     ),
     "everything" => (
       "Reset everything?",
-      "Remove $tracks library $trackWord and $playlists $playlistWord, clear the playback "
-          "queue and track-linked history, delete every downloaded and imported audio file "
-          "in the library, and restore every setting to its default. Download history and "
-          "search history remain on this device. This cannot be undone.",
+      "Remove $tracks $trackWord and $playlists $playlistWord, delete every downloaded "
+          "and imported audio file in the library, clear the queue and listening history, "
+          "and reset all settings. Download and search history are kept. This can't be "
+          "undone.",
       "Reset everything",
       true,
     ),
@@ -1226,9 +1225,7 @@ Future<void> showCleanupReport(
   ];
   final stray = [...report.unregisteredFiles];
   if (removed == 0 && missing.isEmpty && stray.isEmpty) {
-    app.showMessage(
-      "Library cleanup found nothing to fix. No stale references or stray audio files.",
-    );
+    app.showMessage("Library cleanup found nothing to fix.");
     return Future.value();
   }
   final settings = app.settingsControls;
@@ -1289,9 +1286,8 @@ Future<void> showCleanupReport(
                     heading("Missing audio (${missing.length})"),
                     Text(
                       "${missing.length != 1 ? "These tracks have" : "This track has"} "
-                      "no audio file on disk. Restore copies an imported file again "
-                      "from its original, or downloads the song again. If the file "
-                      "was moved, locate it instead.",
+                      "no audio file. Restore copies imported files again or "
+                      "redownloads songs. If a file was moved, locate it instead.",
                     ),
                     for (final track in missing.take(_cleanupListed))
                       Row(

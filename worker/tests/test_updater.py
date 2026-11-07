@@ -511,13 +511,13 @@ class YtDlpUpdaterTests(unittest.TestCase):
         self.assertEqual(self._prepare_counting_probes(), 1)
 
     def test_release_outside_compatibility_window_is_not_downloaded(self):
-        future = _make_wheel(self.sources, "2027.1.1")
+        future = _make_wheel(self.sources, "2030.1.1")
         download = Mock()
         result = PackageUpdater(
             YT_DLP,
             storage_directory=self.storage,
             bundled_version="2026.8.19",
-            fetch_remote=lambda _: _remote(future, "2027.1.1"),
+            fetch_remote=lambda _: _remote(future, "2030.1.1"),
             download=download,
         ).prepare()
         self.assertEqual(result.active_source, "bundled")
@@ -906,7 +906,7 @@ class RemoteIndexTests(unittest.TestCase):
                 wheel("2026.9.29b2"),
                 wheel("2026.9.29.post1"),
                 wheel("2026.9.12.post1"),
-                wheel("2027.1.1"),
+                wheel("2030.1.1"),
                 {"filename": "yt_dlp-2026.9.30.tar.gz", "hashes": {}},
             ]
         )

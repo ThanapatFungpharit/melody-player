@@ -61,8 +61,8 @@ enum DownloadFormat {
     "flac",
     "FLAC (lossless)",
     ".flac",
-    "Avoids a second lossy encode for editing or archiving. Much larger, "
-        "and no better than the source.",
+    "For editing or archiving without another lossy encode. Much larger, "
+        "but no better than the source.",
     lossless: true,
   ),
   alac(

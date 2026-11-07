@@ -132,7 +132,7 @@ class _MobileHomeState extends State<MobileHome> {
           ] else
             const EmptyState(
               Icons.auto_awesome_rounded,
-              "Recommendations come from tracks downloaded from YouTube or YouTube Music; imported files are not used.",
+              "Download tracks from YouTube or YouTube Music to get recommendations. Imported files aren't used.",
             ),
         ]);
       },
