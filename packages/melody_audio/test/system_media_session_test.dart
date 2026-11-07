@@ -129,6 +129,32 @@ void main() {
     expect(shown({}), isEmpty);
   });
 
+  test(
+    "Linux, which the plugin does not implement, publishes nothing",
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final activations = Completer<void>();
+      platform.activateGate = activations;
+
+      await session.ensurePlaybackActive();
+      await session.sync(const MediaSessionState(title: "Track"));
+      session.onEngineEvent(
+        const AudioStateChanged(AudioPlaybackState.playing, 0),
+      );
+      await pumpEventQueue();
+
+      expect(
+        platform.activateGate,
+        same(activations),
+        reason: "never activated",
+      );
+      expect(platform.metadata, isEmpty);
+      expect(platform.availableActions, isEmpty);
+      expect(platform.states, isEmpty);
+    },
+  );
+
   group("built-in shuffle and repeat controls", () {
     setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.windows);
     tearDown(() => debugDefaultTargetPlatformOverride = null);
