@@ -749,6 +749,11 @@ Widget _engineControls(
         Icons.memory_rounded,
         _note(context, controls.packageStatusText(runtime)),
       ),
+      _note(
+        context,
+        "This version of Melody supports ${runtime.info.label} "
+        "${runtime.info.supported}. Newer releases need a Melody update.",
+      ),
       _buttonRow([
         OutlinedButton.icon(
           onPressed: checking ? null : () => controls.checkForUpdate(runtime),
