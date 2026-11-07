@@ -334,8 +334,7 @@ SettingsSection downloadSettings(
   return SettingsSection(
     icon: Icons.download_for_offline_rounded,
     title: "Download defaults",
-    subtitle:
-        "Control where audio is saved and how new downloads are processed.",
+    subtitle: "Where new downloads are saved and how they're processed.",
     mobileTitle: "Downloads",
     mobileSubtitle: "Folder, format, quality and speed",
     body: Column(
@@ -538,13 +537,13 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
   final loudness = app.services.loudness;
   final maxBoostDb = loudness.maxBoostDb.round();
   final loudnessHelper = loudness.limiterHeadroomDb > 0
-      ? "Quiet tracks are raised by up to $maxBoostDb dB, with a limiter "
-            "keeping their peaks from clipping."
+      ? "Quiet tracks are boosted by up to $maxBoostDb dB, with a limiter "
+            "to prevent clipping."
       : loudness.maxBoostDb > 0
-      ? "Quiet tracks are raised by up to $maxBoostDb dB, as far as their "
+      ? "Quiet tracks are boosted by up to $maxBoostDb dB, as far as their "
             "peaks allow."
-      : "Tracks quieter than the target play as they are on this device. "
-            "A lower target evens out more tracks.";
+      : "Quiet tracks aren't boosted on this device. A lower target evens "
+            "out more tracks.";
 
   return SettingsSection(
     icon: Icons.tune_rounded,
@@ -602,7 +601,7 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
               title: const Text("Normalize loudness"),
               subtitle: const Text(
                 "Play songs at a similar volume. Your files and volume "
-                "setting are not changed.",
+                "setting stay the same.",
               ),
               contentPadding: EdgeInsets.zero,
             ),
@@ -645,13 +644,11 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
 // ---------------------------------------------------------------------------
 
 const _regularYoutubeLimits =
-    "With regular $youtubeName, searches can return music videos, live "
-    "performances, covers, remixes, or unrelated videos instead of official "
-    "releases. Titles, artists, and artwork may be incomplete, since a video's "
-    "channel stands in for its artist. The same song in another video counts "
-    "as a different track, so duplicates are harder to spot. Lyrics are often "
-    "missing and mix links still open on $youtubeMusicName. Availability varies "
-    "by video, region, account, and platform.";
+    "With regular $youtubeName, searches may return music videos, covers, "
+    "remixes, or unrelated videos. Details can be incomplete, and duplicates "
+    "are harder to spot because each video counts as its own track. Lyrics are "
+    "often missing, mixes open on $youtubeMusicName, and availability varies "
+    "by region.";
 
 const _musicSourceDescriptions = {
   "youtube_music": "Official songs, with artists and album artwork.",
@@ -684,8 +681,8 @@ SettingsSection youtubeSettings(BuildContext context, MelodyApp app) {
             ),
             descriptions: _musicSourceDescriptions,
             helper:
-                "Your library, playlists, and queue stay as they are. The "
-                "source applies to searches and downloads from now on.",
+                "Applies to new searches and downloads. Your library, "
+                "playlists, and queue aren't affected.",
           ),
         ),
         _infoBox(
@@ -811,9 +808,9 @@ SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
           _heading("Library cleanup"),
           _note(
             context,
-            "Remove links to deleted tracks, then review tracks whose audio is "
-            "missing and music files that are not in your library. Nothing is "
-            "deleted until you choose.",
+            "Remove links to deleted tracks, then review missing audio and "
+            "files that aren't in your library. Nothing is deleted until you "
+            "choose.",
           ),
           _buttonRow([
             OutlinedButton.icon(
@@ -829,9 +826,8 @@ SettingsSection maintenanceSettings(BuildContext context, MelodyApp app) {
             _heading("Lyrics in files"),
             _note(
               context,
-              "New downloads already carry their lyrics. This adds them to "
-              "older tracks whose files have none, so they travel with the "
-              "file.",
+              "Save lyrics inside older tracks' files so they go wherever "
+              "the file goes. New downloads already include them.",
             ),
             _buttonRow([
               OutlinedButton.icon(
@@ -864,25 +860,22 @@ const _dataActions = [
     actionKey: "library",
     title: "Library",
     description:
-        "Remove every library track and all playlists. Downloaded audio is "
-        "deleted; imported files stay on disk.",
+        "Remove all tracks and playlists. Downloaded audio is deleted; "
+        "imported files stay on disk.",
     buttonLabel: "Clear library",
     icon: Icons.library_music_rounded,
   ),
   (
     actionKey: "playlists",
     title: "Playlists",
-    description:
-        "Delete user-created playlists while keeping every library track.",
+    description: "Delete your playlists. Library tracks are kept.",
     buttonLabel: "Clear playlists",
     icon: Icons.queue_music_rounded,
   ),
   (
     actionKey: "settings",
     title: "Settings",
-    description:
-        "Restore appearance, playback, download, and session settings to "
-        "defaults.",
+    description: "Restore all settings to their defaults.",
     buttonLabel: "Reset settings",
     icon: Icons.restart_alt_rounded,
   ),
@@ -893,9 +886,7 @@ SettingsSection dataManagementSettings(BuildContext context, MelodyApp app) {
   return SettingsSection(
     icon: Icons.delete_sweep_rounded,
     title: "Data management",
-    subtitle:
-        "Remove only the local data you choose. Every action asks for "
-        "confirmation.",
+    subtitle: "Clear or reset local data. Every action asks first.",
     mobileTitle: "Data management",
     mobileSubtitle: "Clear or reset local data",
     destructive: true,
@@ -958,9 +949,9 @@ Widget _resetEverythingCard(BuildContext context, MelodyApp app) {
         ],
       ),
       Text(
-        "Clear the library and playlists, delete every downloaded and "
-        "imported audio file in the library, empty the playback queue, and "
-        "restore all settings. Download history and search history are kept.",
+        "Clear the library and playlists, delete every downloaded and imported "
+        "audio file in the library, empty the queue, and reset all settings. "
+        "Download and search history are kept.",
         style: TextStyle(fontSize: 12, color: scheme.onErrorContainer),
       ),
       FilledButton.icon(
@@ -994,9 +985,8 @@ Widget _dataFolder(BuildContext context, MelodyApp app) {
         ),
         _note(
           context,
-          "Library and settings databases, saved lyrics, cookies, and "
-          "caches. Close Melody before changing files here; the cache "
-          "folder is safe to delete.",
+          "Databases, lyrics, cookies, and caches. Close Melody before "
+          "changing files here. The cache folder is safe to delete.",
         ),
         Wrap(
           spacing: 8,

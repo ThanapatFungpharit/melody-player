@@ -403,8 +403,8 @@ class NativeAudioBackend implements TrackPlayerBackend {
         callbacks.onPlaying?.call(false);
         _failService(
           generation,
-          "The track could not be loaded by the audio service. The file may "
-          "be corrupted or encoded in an unsupported format.",
+          "The track couldn't be loaded. The file may be damaged or in an "
+          "unsupported format.",
         );
       }
     });
@@ -481,8 +481,8 @@ class NativeAudioBackend implements TrackPlayerBackend {
 }
 
 const _unresponsive =
-    "The audio player did not respond. The track may be unsupported or "
-    "the playback service may have disconnected.";
+    "The audio player didn't respond. The track may be unsupported, or "
+    "the playback service disconnected.";
 
 Duration _milliseconds(int value) =>
     Duration(milliseconds: value < 0 ? 0 : value);

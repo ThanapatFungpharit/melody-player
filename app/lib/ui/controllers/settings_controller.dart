@@ -203,16 +203,16 @@ class SettingsController extends ChangeNotifier {
   String get loudnessStatus {
     final loudness = app.services.loudness;
     if (!loudness.available) {
-      return "Melody's bundled FFmpeg could not be started, so tracks play "
-          "at their own loudness until Melody restarts.";
+      return "FFmpeg couldn't start, so tracks play at their own loudness "
+          "until Melody restarts.";
     }
     final total = app.services.manager.counts().$1;
     final measured = loudness.analyzedCount.clamp(0, total);
     return measured >= total
         ? "Every library track has been measured."
-        : "Measured ${plural(measured, "library track")} of $total. Melody "
-              "measures the rest in the background; until then they play "
-              "at a typical level.";
+        : "Measured ${plural(measured, "library track")} of $total. The "
+              "rest are measured in the background and play at a typical "
+              "level until then.";
   }
 
   /// Moves the live library back to [previous] after the new [folder]
@@ -266,8 +266,8 @@ class SettingsController extends ChangeNotifier {
         if (tracks == 0 && playlists == 0 && alreadyDefault) {
           return "The library, playlists, and settings are already reset.";
         }
-        return "Library, playlists, and settings were reset, and library audio was "
-            "deleted. Unrelated history was kept.";
+        return "Library, playlists, and settings were reset, and library "
+            "audio deleted. Download and search history were kept.";
     }
     throw ArgumentError("Unknown data-management action: $action");
   }
@@ -409,8 +409,8 @@ class SettingsController extends ChangeNotifier {
       final status = await runtime.requestUpdate();
       packageStatus[info.package] = status;
       app.showMessage(
-        "Restart Melody to install ${info.label} ${status.scheduledVersion}. "
-        "The current version stays in use until then.",
+        "Restart Melody to finish installing ${info.label} "
+        "${status.scheduledVersion}.",
       );
     } on PackageUpdateError catch (error) {
       app.showError(error.message);
@@ -426,8 +426,8 @@ class SettingsController extends ChangeNotifier {
       // the scan would call present tracks missing and miss stray files.
       if (Platform.isAndroid && !await AndroidPlatform.requestAudioAccess()) {
         app.showError(
-          "Library cleanup needs access to audio files to see your whole Music "
-          "folder. Allow it, in Melody's app settings if Android no longer asks.",
+          "Library cleanup needs access to your audio files. Allow it when "
+          "asked, or in Melody's app settings.",
         );
         return null;
       }

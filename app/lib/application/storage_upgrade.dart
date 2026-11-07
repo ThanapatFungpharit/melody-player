@@ -30,9 +30,10 @@ class UnsupportedDataFolder implements Exception {
   const UnsupportedDataFolder();
 
   String get message =>
-      "This library was made by Melody 1.0.1 or earlier, which this version "
-      "can't read. Install Melody 1.0.3 and open it once to bring your library "
-      "across, then update again. Nothing has been changed.";
+      "This library is from Melody 1.0.1 or earlier, which this version can't "
+      "read. Install Melody 1.0.3 and open it once to convert your library, "
+      "then update again. "
+      "Nothing has been changed.";
 
   @override
   String toString() => message;
