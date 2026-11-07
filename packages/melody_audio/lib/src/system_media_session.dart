@@ -176,6 +176,12 @@ class SystemMediaSession {
   Future<void> _playbackStateTail = Future<void>.value();
   bool _nativeLoading = false;
 
+  /// flutter_media_session has no Linux (MPRIS) implementation, so there
+  /// the session is never activated and every native call is skipped, rather
+  /// than reporting a MissingPluginException on each sync.
+  static bool get _supported =>
+      !kIsWeb && defaultTargetPlatform != TargetPlatform.linux;
+
   void attach(MediaActionListener listener) {
     _actionListener = listener;
   }
@@ -277,7 +283,7 @@ class SystemMediaSession {
   /// Start background retention with playback itself, independently of a
   /// later metadata sync from the app.
   Future<void> ensurePlaybackActive() async {
-    if (kIsWeb) return;
+    if (!_supported) return;
     final epoch = _lifecycleEpoch;
     await _ensureActive();
     if (epoch != _lifecycleEpoch || !_active) return;
@@ -291,6 +297,7 @@ class SystemMediaSession {
   /// still in progress. [reattach] forces a full republish, for a session the
   /// OS may have dropped while the app was away.
   Future<void> sync(MediaSessionState state, {bool reattach = false}) async {
+    if (!_supported) return;
     final revision = ++_syncRevision;
     final sync = _syncTail.then((_) => _sync(state, reattach, revision));
     _syncTail = sync.catchError((Object _) {});
