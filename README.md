@@ -87,12 +87,14 @@ any of them with `uv run <name> --help` for details:
 | `melody-version` | `tools/build/` | Print and validate the release version |
 | `melody-android-key` | `tools/build/` | Create an Android release keystore |
 
-The app icon is the in-app `BrandMark` in the default violet accent, the same on
-every platform whichever accent you choose. `tools/build/icons.py` renders the
-bundled icons from `tools/build/icon_colors.json` with the Flutter SDK's Material
-Icons font; after changing `BrandMark` or the default accent, regenerate them with
+The app icon is the in-app `BrandMark`. On Android the launcher icon follows
+the saved accent: Melody switches between per-accent launcher entries
+(`icon.<accent>` aliases in the manifest) once it leaves the screen. Desktop
+builds keep the default violet icon. `tools/build/icons.py` renders the bundled
+icons from `tools/build/icon_accents.json` with the Flutter SDK's Material Icons
+font; after changing `BrandMark` or the accents, regenerate them with
 `uv run python -m tools.build.icons` (`app/test/ui/app_icon_test.dart` fails until
-the colors match the theme).
+the table matches the theme).
 
 Flutter tools are found on `PATH`, or in `$FLUTTER_ROOT/bin`. Every tool loads
 local settings such as `FLUTTER_ROOT` and `JAVA_HOME` from `.env` in the

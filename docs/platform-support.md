@@ -20,6 +20,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Import AIFF, WMA, APE, WavPack | Yes | Yes | Yes | No |
 | Embed lyrics into tracks already in the library | Yes | Yes | Yes | No |
 | ytmusicapi and yt-dlp engine updates | Yes | Yes | Yes | Yes |
+| App icon follows the accent color | No | No | No | Yes, once Melody leaves the screen |
 
 "Disabled" means the setting is shown greyed out, with a note explaining why.
 
