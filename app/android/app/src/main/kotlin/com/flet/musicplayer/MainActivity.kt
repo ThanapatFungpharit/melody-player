@@ -45,6 +45,9 @@ class MainActivity : FlutterActivity() {
     // the icon then can close the task, picker included.
     private var startingOwnActivity = false
 
+    // Set when Android reports the user leaving, until Melody stops or resumes.
+    private var userLeft = false
+
     override fun provideFlutterEngine(context: Context): FlutterEngine? =
         FlutterEngineCache.getInstance().get(ENGINE_ID)
 
@@ -88,13 +91,24 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         startingOwnActivity = false
+        userLeft = false
     }
 
     // Launchers can close a task whose entry is switched under it, so the
-    // icon changes only once the user takes Melody off the screen.
+    // icon changes only once the user takes Melody off the screen. Android
+    // reports the permission prompt and the delete confirmation as the user
+    // leaving too, but those dialogs only pause Melody; leaving stops it.
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (!startingOwnActivity) applyPendingIcon()
+        if (!startingOwnActivity) userLeft = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (userLeft) {
+            userLeft = false
+            applyPendingIcon()
+        }
     }
 
     override fun onDestroy() {
