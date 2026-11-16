@@ -3,6 +3,7 @@ package com.flet.musicplayer
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
@@ -121,7 +122,13 @@ class MainActivity : FlutterActivity() {
     private fun applyPendingIcon() {
         val accent = pendingIcon ?: return
         pendingIcon = null
-        LauncherIcon.apply(this, accent)
+        // Runs in onStop and onDestroy: a PackageManager refusal must cost
+        // only the icon, never Melody itself (and its playback).
+        try {
+            LauncherIcon.apply(this, accent)
+        } catch (error: RuntimeException) {
+            Log.w("Melody", "Could not switch the launcher icon", error)
+        }
     }
 
     override fun shouldDestroyEngineWithHost(): Boolean = false
