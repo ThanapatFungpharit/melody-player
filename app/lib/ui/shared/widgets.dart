@@ -696,8 +696,9 @@ const brandMarkGlyph = 0.62;
 
 /// The app's mark: an accent tile with the equalizer glyph.
 ///
-/// The bundled app icons reproduce it in the default accent's light theme; run
-/// `tools/build/icons.py` again after changing it.
+/// The bundled app icons reproduce it in the light theme: the Android launcher
+/// for every accent (`AppIcon` switches between them), and the other platforms
+/// in the default violet. Run `tools/build/icons.py` again after changing it.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 36});
 
