@@ -14,7 +14,9 @@ void main() {
     dataDirectory: "$files/data",
     defaultMusicDirectory: "/music",
   );
-  String relative(String path) => p.posix.relative(path, from: files);
+  // AppPaths joins with the host's separator; Android paths always use "/".
+  String relative(String path) =>
+      p.posix.relative(path.split(p.separator).join("/"), from: files);
 
   final excluded = {
     "flet/", // serious_python's extracted interpreter and packages
