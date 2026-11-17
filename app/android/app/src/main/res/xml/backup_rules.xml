@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11's Auto Backup (data_extraction_rules.xml is Android 12+'s
+     copy of these rules; keep the two in step). files/ is the application
+     support folder. The library database, settings, and saved lyrics are
+     backed up; what is left out is secret, machine-local, or rebuilt:
+     - flet/: the embedded Python, re-extracted from the APK. Alone it
+       exceeds the 25 MB cloud quota, which makes Android skip the backup.
+     - data/cookies.txt: a signed-in session the user uploaded.
+     - data/runtime/: yt-dlp and ytmusicapi updates; the bundled copies run
+       until the next update check.
+     - data/cache/, data/downloads/: thumbnails and download staging.
+     - data/music-move.json: an unfinished music folder move on this device. -->
+<full-backup-content>
+    <exclude domain="file" path="flet/" />
+    <exclude domain="file" path="data/cookies.txt" />
+    <exclude domain="file" path="data/runtime/" />
+    <exclude domain="file" path="data/cache/" />
+    <exclude domain="file" path="data/downloads/" />
+    <exclude domain="file" path="data/music-move.json" />
+</full-backup-content>

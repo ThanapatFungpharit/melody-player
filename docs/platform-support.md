@@ -68,3 +68,8 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
   still show in Melody and work offline.
 - Notification shortcut buttons appear beside the playback controls; choose
   which two in **Settings → Appearance → Notifications**.
+- Android's backup and device-to-device transfer carry the library, playlists,
+  settings, history, and saved lyrics, but not the audio (it is in `Music`,
+  outside app data), a cookie file, engine updates, or caches. After a restore,
+  upload the cookie file again; tracks whose audio is missing can be repaired
+  or downloaded again. The rules are in `app/android/app/src/main/res/xml/`.

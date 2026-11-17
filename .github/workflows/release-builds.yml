@@ -6,6 +6,12 @@ on:
     tags:
       - "v*"
 
+# The builds only read the repository and upload workflow artifacts. Every
+# step sees GITHUB_TOKEN (below) beside the signing secrets, so it gets no
+# write access.
+permissions:
+  contents: read
+
 env:
   FLUTTER_VERSION: "3.47.7"
   # Authenticates the media tools' GitHub release lookups.
