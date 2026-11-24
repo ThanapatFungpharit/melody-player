@@ -232,6 +232,19 @@ class PlaybackController {
   bool _closed = false;
   bool _playerLoading = false;
   DateTime _lastPersistedPosition = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// How often a playing track's position is saved. Pause, stop, and track
+  /// changes save it regardless.
+  Duration positionSaveInterval = const Duration(seconds: 5);
+
+  /// Saves the position now, such as when the app leaves the screen and may
+  /// not be given the chance later.
+  void savePosition() {
+    if (currentTrackId == null) return;
+    persistence.savePosition(positionMs, durationMs);
+    _lastPersistedPosition = DateTime.now();
+  }
+
   DateTime? _lastBackendErrorAt;
   String? _pendingPlayRecordId;
   bool _mediaSessionActive = false;
@@ -706,9 +719,8 @@ class PlaybackController {
     final clamped = position < 0 ? 0 : position;
     positionMs = durationMs > 0 && clamped > durationMs ? durationMs : clamped;
     final now = DateTime.now();
-    if (now.difference(_lastPersistedPosition) >= const Duration(seconds: 5)) {
-      persistence.savePosition(positionMs, durationMs);
-      _lastPersistedPosition = now;
+    if (now.difference(_lastPersistedPosition) >= positionSaveInterval) {
+      savePosition();
     }
     _notify(PlaybackChange.progress);
   }
@@ -738,8 +750,12 @@ class PlaybackController {
       // A playing event also confirms preparation finished.
       _playerLoading = false;
     }
+    final paused = _playing && !playing;
     _playing = playing;
     if (playing) _mediaSessionActive = true;
+    // Position saves are spaced out while playing; a pause saves where it
+    // stopped at once.
+    if (paused) savePosition();
     final trackId = currentTrackId;
     if (playing && trackId != null && trackId == _pendingPlayRecordId) {
       _pendingPlayRecordId = null;

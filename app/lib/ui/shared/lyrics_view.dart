@@ -151,6 +151,11 @@ class _LyricsViewState extends State<LyricsView> {
     return false;
   }
 
+  /// Lines change every few seconds for as long as lyrics show; Low Power
+  /// Mode moves to each one at once rather than animating there.
+  Duration _motion(Duration duration) =>
+      widget.app.lowPower ? Duration.zero : duration;
+
   void _follow() {
     setState(() => _following = true);
     _scrollToActive();
@@ -158,13 +163,14 @@ class _LyricsViewState extends State<LyricsView> {
 
   void _scrollToActive() {
     if (!_following) return;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final context = _activeLine.currentContext;
       if (context == null || !context.mounted) return;
       Scrollable.ensureVisible(
         context,
         alignment: 0.4,
-        duration: const Duration(milliseconds: 250),
+        duration: _motion(const Duration(milliseconds: 250)),
         curve: Curves.easeOut,
       );
     });
@@ -292,7 +298,7 @@ class _LyricsViewState extends State<LyricsView> {
       child: AnimatedScale(
         scale: active ? _activeScale : 1,
         alignment: Alignment.centerLeft,
-        duration: const Duration(milliseconds: 200),
+        duration: _motion(const Duration(milliseconds: 200)),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
           child: text,

@@ -59,6 +59,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       spacing: 16,
                       children: [
                         card(appearanceSettings(context, app)),
+                        card(powerSettings(context, app)),
                         card(maintenanceSettings(context, app)),
                       ],
                     ),

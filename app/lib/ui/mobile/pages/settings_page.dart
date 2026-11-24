@@ -73,6 +73,7 @@ class _MobileSettingsState extends State<MobileSettings> {
         ),
         tile(appearanceSettings(context, app)),
         tile(downloadSettings(context, app, mobile: true)),
+        tile(powerSettings(context, app)),
         tile(youtubeSettings(context, app)),
         tile(maintenanceSettings(context, app)),
         tile(dataManagementSettings(context, app)),

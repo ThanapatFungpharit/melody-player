@@ -281,6 +281,10 @@ class NativeAudioBackend implements TrackPlayerBackend {
     _scheduleTransport(() => _engine.seek(_milliseconds(position)));
   }
 
+  /// How often the engine reports a playing track's position (see
+  /// `AudioEngine.positionInterval`).
+  set positionInterval(Duration value) => _engine.positionInterval = value;
+
   @override
   void setVolume(double value) {
     final gain = value.clamp(0.0, 1.0);

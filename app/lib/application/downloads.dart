@@ -167,7 +167,7 @@ Map<String, Object?> _noSharedOptions() => const {};
 /// Turns downloader jobs into persistent, library-aware operations.
 ///
 /// Worker callbacks can arrive many times per second. Listeners hear about
-/// byte progress at most every [progressNotifyInterval]; status changes are
+/// byte progress at most every [notifyInterval]; status changes are
 /// written and published immediately, and byte progress saved every few
 /// seconds. A download still active at startup carries on from
 /// what it left on disk ([resumeInterrupted]), and its row from what it last
@@ -186,6 +186,32 @@ class DownloadCoordinator extends ChangeNotifier {
   );
 
   static const progressNotifyInterval = Duration(milliseconds: 200);
+
+  /// How often byte progress reaches the views; longer while nobody sees
+  /// them or in Low Power Mode.
+  Duration notifyInterval = progressNotifyInterval;
+
+  /// The most downloads Low Power Mode lets run at once, below the user's
+  /// setting; null leaves the setting alone. Running ones finish either way.
+  int? get workerLimit => _workerLimit;
+  set workerLimit(int? value) {
+    if (value == _workerLimit) return;
+    _workerLimit = value;
+    _downloader.configure(
+      maxWorkers: _workers,
+      audioExtensions: _audioExtensions,
+      options: _options,
+    );
+  }
+
+  int? _workerLimit;
+  int _concurrentSetting = 1;
+  Set<String> _audioExtensions = const {};
+  Map<String, Object?> _options = const {};
+
+  int get _workers => _workerLimit == null || _concurrentSetting < _workerLimit!
+      ? _concurrentSetting
+      : _workerLimit!;
   static const maxRetainedRecords = ApplicationStore.maxDownloadRecords;
 
   final MusicManager manager;
@@ -241,6 +267,10 @@ class DownloadCoordinator extends ChangeNotifier {
       sharedOptions,
       progressSaveInterval,
     );
+    coordinator
+      .._concurrentSetting = settings.concurrentDownloads
+      .._audioExtensions = {settings.downloadFormat.extension}
+      .._options = downloadOptions(settings, sharedOptions());
     await coordinator._recover();
     return coordinator;
   }
@@ -327,10 +357,13 @@ class DownloadCoordinator extends ChangeNotifier {
   /// Applies [settings] to the history and to downloads that start from now
   /// on, with the cookie file as it is now.
   void applySettings(AppSettings settings) {
+    _concurrentSetting = settings.concurrentDownloads;
+    _audioExtensions = {settings.downloadFormat.extension};
+    _options = downloadOptions(settings, _sharedOptions());
     _downloader.configure(
-      maxWorkers: settings.concurrentDownloads,
-      audioExtensions: {settings.downloadFormat.extension},
-      options: downloadOptions(settings, _sharedOptions()),
+      maxWorkers: _workers,
+      audioExtensions: _audioExtensions,
+      options: _options,
     );
     historyDays = settings.downloadHistoryDays;
     _musicSource = settings.musicSource;
@@ -663,7 +696,7 @@ class DownloadCoordinator extends ChangeNotifier {
       _lastProgressSave = now;
       _persist();
     }
-    if (changed || now - _lastNotify >= progressNotifyInterval) {
+    if (changed || now - _lastNotify >= notifyInterval) {
       _lastNotify = now;
       _publish(record);
     }

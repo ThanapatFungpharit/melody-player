@@ -105,6 +105,30 @@ void main() {
     },
   );
 
+  test(
+    "deferred, the library waits while tracks about to play are measured",
+    () async {
+      final library = await track("library.mp3");
+      final next = await track("next.mp3");
+      loudness.addAll({"library.mp3": -8, "next.mp3": -10});
+      final normalizer = await open();
+      normalizer.deferred = true;
+      await normalizer.analyzeLibrary();
+      normalizer.analyze([next], first: true);
+      await normalizer.idle;
+      expect(measured, ["next.mp3"]);
+      expect(normalizer.gainFor(next), closeTo(linearGain(-4), 1e-9));
+
+      // Ending the deferral measures what waited.
+      normalizer.deferred = false;
+      await pumpEventQueue();
+      await normalizer.idle;
+      expect(measured, ["next.mp3", "library.mp3"]);
+      expect(normalizer.gainFor(library), closeTo(linearGain(-6), 1e-9));
+      await normalizer.close();
+    },
+  );
+
   test("quiet tracks are raised where the engine can boost", () async {
     final quiet = await track("quiet.mp3");
     final faint = await track("faint.mp3");

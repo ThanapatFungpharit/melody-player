@@ -27,9 +27,17 @@ export "src/system_media_session.dart"
         MediaShortcut,
         SystemMediaSession;
 
+import "package:flutter/foundation.dart";
+import "package:flutter_media_session/flutter_media_session.dart";
 import "package:just_audio_media_kit/just_audio_media_kit.dart";
 
-/// Registers desktop decoders. Call once before the first player is created.
+import "src/mpris_media_session.dart";
+
+/// Registers desktop decoders, and on Linux the MPRIS media session. Call
+/// once before the first player is created.
 void ensureMelodyAudioInitialized() {
   JustAudioMediaKit.ensureInitialized();
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.linux) {
+    FlutterMediaSessionPlatform.instance = MprisMediaSessionPlatform();
+  }
 }

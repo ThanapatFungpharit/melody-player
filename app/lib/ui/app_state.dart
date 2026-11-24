@@ -8,6 +8,7 @@ import "../application/download_report.dart";
 import "../application/lyrics.dart";
 import "../application/models.dart";
 import "../application/playback.dart";
+import "../application/power.dart";
 import "../application/sleep_timer.dart";
 import "../audio/audio_backend.dart";
 import "../core/errors.dart";
@@ -18,6 +19,7 @@ import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
 import "../platform/download_keep_alive.dart";
+import "../platform/power.dart";
 import "shared/app_icon.dart";
 import "shared/format.dart" show downloadReportMessage, plural;
 
@@ -57,7 +59,9 @@ class PendingTrackAction {
 /// playback to the audio engine, keeps system media controls in sync, and
 /// routes cross-feature events such as finished downloads.
 class MelodyApp {
-  MelodyApp(this.services, {required bool mobile}) : isMobile = mobile {
+  MelodyApp(this.services, {required bool mobile, SystemPowerSaver? powerSaver})
+    : isMobile = mobile,
+      powerSaver = powerSaver ?? SystemPowerSaver() {
     settings = services.store.settings;
     persistence = PlaybackPersistence(services.store, showError);
     backend = NativeAudioBackend(useDeviceVolume: mobile);
@@ -93,10 +97,15 @@ class MelodyApp {
         playback.currentTrackId == trackId;
     // Measuring waits for the first view to settle; FFmpeg then runs one
     // file at a time in its own process.
-    _loudnessStart = Timer(
-      const Duration(seconds: 10),
-      () => unawaited(services.loudness.analyzeLibrary()),
-    );
+    _loudnessStart = Timer(const Duration(seconds: 10), () {
+      _loudnessStart = null;
+      // Low Power Mode leaves it until it ends.
+      if (power.value.deferLibraryAnalysis) {
+        _libraryAnalysisDeferred = true;
+      } else {
+        unawaited(services.loudness.analyzeLibrary());
+      }
+    });
     libraryRevision.addListener(services.loudness.analyzeNew);
     // Files are read once the first view has settled, one small batch at a time.
     _metadataStart = Timer(
@@ -112,7 +121,75 @@ class MelodyApp {
     );
     services.downloads.addListener(_reportActiveDownloads);
     unawaited(run(services.downloads.resumeInterrupted));
+    _applyPower();
+    this.powerSaver.saving.addListener(_applyPower);
+    unawaited(this.powerSaver.start());
   }
+
+  // -- power ---------------------------------------------------------------
+
+  /// Whether the system saves power, for Low Power Mode's automatic setting.
+  final SystemPowerSaver powerSaver;
+
+  /// How hard Melody works now; views read [PowerProfile.pixelProgress].
+  final ValueNotifier<PowerProfile> power = ValueNotifier(
+    PowerProfile.of(lowPower: false, visible: true),
+  );
+
+  bool _visible = true;
+  bool _libraryAnalysisDeferred = false;
+
+  /// Whether Low Power Mode is on now.
+  bool get lowPower => power.value.lowPower;
+
+  /// Whether the system says it is saving power.
+  bool get systemSavingPower => powerSaver.saving.value;
+
+  /// Follows the window on and off the screen.
+  void lifecycleChanged(AppLifecycleState state) {
+    final visible =
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    if (visible == _visible) return;
+    _visible = visible;
+    // What a process ended off screen would lose; the next saves are spaced
+    // further apart there.
+    if (!visible) playback.savePosition();
+    _applyPower();
+  }
+
+  /// Puts the current settings, system power mode, and visibility into
+  /// effect.
+  void _applyPower() {
+    if (_closed) return;
+    final settings = this.settings;
+    final profile = PowerProfile.of(
+      lowPower: settings.lowPowerMode.active(
+        systemSaving: powerSaver.saving.value,
+      ),
+      visible: _visible,
+      limitDownloads: settings.lowPowerLimitDownloads,
+      deferAnalysis: settings.lowPowerDeferAnalysis,
+    );
+    backend.positionInterval = profile.positionReportInterval;
+    playback.positionSaveInterval = profile.positionSaveInterval;
+    services.downloads
+      ..notifyInterval = profile.downloadNotifyInterval
+      ..workerLimit = profile.downloadLimit;
+    services.loudness.deferred = profile.deferLibraryAnalysis;
+    // Tracks already queued wait in the normalizer itself.
+    if (!profile.deferLibraryAnalysis && _libraryAnalysisDeferred) {
+      _libraryAnalysisDeferred = false;
+      unawaited(services.loudness.analyzeLibrary());
+    }
+    final changed = profile != power.value;
+    power.value = profile;
+    // The views extrapolate from the last report under the new limit.
+    if (changed) playbackProgress.emit();
+  }
+
+  /// Settings changed; Low Power Mode may have too.
+  void powerSettingsChanged() => _applyPower();
 
   void _reportActiveDownloads() =>
       DownloadKeepAlive.report(services.downloads.activeCount());
@@ -292,11 +369,9 @@ class MelodyApp {
     final elapsed = _positionClock.elapsedMilliseconds - _positionAnchorAt;
     return min(
       playback.durationMs,
-      _positionAnchorMs + min(elapsed, _maxExtrapolationMs),
+      _positionAnchorMs + min(elapsed, power.value.maxExtrapolationMs),
     );
   }
-
-  static const _maxExtrapolationMs = 1500;
 
   /// Keeps lock-screen and notification controls aligned with playback.
   void syncSystemMedia({bool refreshMetadata = true}) {
@@ -479,6 +554,9 @@ class MelodyApp {
 
   /// Called when the app returns to the foreground.
   void resumed() {
+    // Only Android announces battery saver changes; elsewhere they are read
+    // when the user comes back.
+    unawaited(powerSaver.refresh());
     unawaited(backend.refreshState());
     backend.invalidateMediaSession();
     syncSystemMedia(refreshMetadata: false);
@@ -639,6 +717,8 @@ class MelodyApp {
     services.lyricsEmbedder?.close();
     _loudnessStart?.cancel();
     _metadataStart?.cancel();
+    powerSaver.saving.removeListener(_applyPower);
+    powerSaver.dispose();
     libraryRevision.removeListener(services.loudness.analyzeNew);
     unawaited(services.loudness.close());
     // Running jobs observe cancellation at their next yt-dlp callback.

@@ -1,8 +1,11 @@
 package com.flet.musicplayer
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,6 +25,18 @@ class MainActivity : FlutterActivity() {
         private const val ENGINE_ID = "melody-player"
         private const val ICON_CHANNEL = "melody/app_icon"
         private const val DOWNLOADS_CHANNEL = "melody/downloads"
+        private const val POWER_CHANNEL = "melody/power"
+
+        // The channel of the engine attached last; Battery Saver changes go there.
+        private var powerChannel: MethodChannel? = null
+
+        // Registered once on the application context, for the process's life,
+        // like the cached engine it reports to.
+        private var powerReceiver: BroadcastReceiver? = null
+
+        private fun powerSaveMode(context: Context): Boolean =
+            (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                ?.isPowerSaveMode == true
 
         // The accent whose launcher icon waits for Melody to leave the screen.
         // It lives with the process, like the cached engine that sends it, so
@@ -75,6 +90,28 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        val power = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, POWER_CHANNEL)
+        power.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isPowerSaveMode" -> result.success(powerSaveMode(appContext))
+                else -> result.notImplemented()
+            }
+        }
+        powerChannel = power
+        if (powerReceiver == null) {
+            // Battery Saver can switch while Melody plays off screen; the
+            // broadcast arrives on the main thread, where channels are called.
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    powerChannel?.invokeMethod("changed", powerSaveMode(context))
+                }
+            }
+            appContext.registerReceiver(
+                receiver,
+                IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+            )
+            powerReceiver = receiver
+        }
     }
 
     // startActivity and its overloads all end here.

@@ -12,15 +12,16 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 
 | Feature | Windows | macOS | Linux | Android |
 | --- | --- | --- | --- | --- |
-| System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | No | Yes |
+| System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | Yes (MPRIS) | Yes |
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
-| Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
+| Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | MPRIS `Shuffle` and `LoopStatus` | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |
 | Choose the download folder | Yes | Yes | Yes | Inside `Music` (default `Music/Melody`) |
 | Import AIFF, WMA, APE, WavPack | Yes | Yes | Yes | No |
 | Embed lyrics into tracks already in the library | Yes | Yes | Yes | No |
 | ytmusicapi and yt-dlp engine updates | Yes | Yes | Yes | Yes |
 | App icon follows the accent color | No | No | No | Yes, once Melody leaves the screen |
+| Low Power Mode follows the system's power saving | Energy Saver, read on return to Melody | Low Power Mode (`pmset`), read on return | Power saver profile (ACPI platform profile or power-profiles-daemon), read on return | Battery Saver, as it changes |
 
 "Disabled" means the setting is shown greyed out, with a note explaining why.
 
@@ -28,13 +29,30 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 
 ### Linux
 
-- **No system media controls.** The media-session plugin has no Linux (MPRIS)
-  implementation, so Melody does not appear in the desktop's media applet
-  and hardware media keys do nothing. Playback, background playback, and
-  Melody's own keyboard shortcuts work normally.
+- **System media controls use MPRIS.** The media-session plugin has no Linux
+  implementation, so Melody publishes its own MPRIS player
+  (`org.mpris.MediaPlayer2.melody`, or `...melody.instance<pid>` for a second
+  copy) on the session bus. Desktop media applets, hardware media keys (which
+  the desktop routes to MPRIS), and `playerctl` see it. Without a session bus
+  Melody plays normally with no system controls.
+- **Shuffle and repeat work Melody's way.** Turning MPRIS `Shuffle` on
+  shuffles the upcoming tracks once and the toggle returns to off. Setting
+  `LoopStatus` to a different value moves Melody's repeat one step through
+  its cycle, and `LoopStatus` then reports the mode it landed on. Volume and
+  rate stay at 1.0: Melody's volume is its own.
 - **File dialogs need a helper.** Importing music, uploading a cookie file,
   and exporting playlists use the desktop's file dialog through `zenity`,
   `kdialog`, or `qarma`. Install one if the dialogs do not open.
+
+### Low Power Mode
+
+**Settings → Power** sets Low Power Mode to off, always on, or on while the
+system saves power (the default). Only Android announces a change of its
+Battery Saver; on desktop Melody reads the system's state at launch and when
+its window comes back, at most every 30 seconds, rather than polling. A
+change made while Melody is in the background applies once it returns. A
+platform that cannot tell counts as not saving power. The macOS and Windows
+readings have not been checked on those systems yet.
 
 ### Windows and macOS
 
