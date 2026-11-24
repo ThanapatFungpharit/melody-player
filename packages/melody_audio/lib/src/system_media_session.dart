@@ -4,6 +4,7 @@ import "package:flutter/foundation.dart";
 import "package:flutter_media_session/flutter_media_session.dart";
 
 import "audio_engine.dart";
+import "mpris_media_session.dart";
 import "notification_artwork.dart";
 
 /// Receives a system media command the engine could not satisfy alone.
@@ -176,11 +177,14 @@ class SystemMediaSession {
   Future<void> _playbackStateTail = Future<void>.value();
   bool _nativeLoading = false;
 
-  /// flutter_media_session has no Linux (MPRIS) implementation, so there
+  /// flutter_media_session has no Linux implementation; Melody's MPRIS one
+  /// stands in once [ensureMelodyAudioInitialized] registers it. Without it
   /// the session is never activated and every native call is skipped, rather
   /// than reporting a MissingPluginException on each sync.
   static bool get _supported =>
-      !kIsWeb && defaultTargetPlatform != TargetPlatform.linux;
+      !kIsWeb &&
+      (defaultTargetPlatform != TargetPlatform.linux ||
+          FlutterMediaSessionPlatform.instance is MprisMediaSessionPlatform);
 
   void attach(MediaActionListener listener) {
     _actionListener = listener;

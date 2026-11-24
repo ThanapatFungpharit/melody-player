@@ -12,9 +12,9 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 
 | Feature | Windows | macOS | Linux | Android |
 | --- | --- | --- | --- | --- |
-| System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | No | Yes |
+| System media controls (lock screen, notification, media keys, Now Playing) | Yes | Yes | Yes (MPRIS) | Yes |
 | Notification shortcut buttons (shuffle, repeat, favorite) | Disabled | Disabled | Disabled | Yes |
-| Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | No | Custom buttons |
+| Shuffle and repeat in system controls | Built-in buttons | Built-in buttons | MPRIS `Shuffle` and `LoopStatus` | Custom buttons |
 | Favorite in system controls | No | No | No | Yes |
 | Choose the download folder | Yes | Yes | Yes | Inside `Music` (default `Music/Melody`) |
 | Import AIFF, WMA, APE, WavPack | Yes | Yes | Yes | No |
@@ -29,10 +29,17 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 
 ### Linux
 
-- **No system media controls.** The media-session plugin has no Linux (MPRIS)
-  implementation, so Melody does not appear in the desktop's media applet
-  and hardware media keys do nothing. Playback, background playback, and
-  Melody's own keyboard shortcuts work normally.
+- **System media controls use MPRIS.** The media-session plugin has no Linux
+  implementation, so Melody publishes its own MPRIS player
+  (`org.mpris.MediaPlayer2.melody`, or `...melody.instance<pid>` for a second
+  copy) on the session bus. Desktop media applets, hardware media keys (which
+  the desktop routes to MPRIS), and `playerctl` see it. Without a session bus
+  Melody plays normally with no system controls.
+- **Shuffle and repeat work Melody's way.** Turning MPRIS `Shuffle` on
+  shuffles the upcoming tracks once and the toggle returns to off. Setting
+  `LoopStatus` to a different value moves Melody's repeat one step through
+  its cycle, and `LoopStatus` then reports the mode it landed on. Volume and
+  rate stay at 1.0: Melody's volume is its own.
 - **File dialogs need a helper.** Importing music, uploading a cookie file,
   and exporting playlists use the desktop's file dialog through `zenity`,
   `kdialog`, or `qarma`. Install one if the dialogs do not open.

@@ -160,7 +160,10 @@ them to the playback controller.
   notification, and desktop controls, and routes `MediaCommand`s: the engine
   carries out transport commands itself, and only commands that need
   application policy (favorite, shuffle, repeat) reach the
-  app.
+  app. On Linux, where flutter_media_session has no implementation,
+  `ensureMelodyAudioInitialized` registers `MprisMediaSessionPlatform` as its
+  platform, an MPRIS player on the session bus written in Dart with
+  `package:dbus`. `SystemMediaSession` drives it like any other platform.
 - `AndroidPlatform` is the Kotlin MethodChannel for the directories Melody
   needs from Android, for opening the Music folder in the Files app, for asking
   for audio access, and for Android's dialog confirming the deletion of files
