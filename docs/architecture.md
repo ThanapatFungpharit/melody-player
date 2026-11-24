@@ -492,6 +492,41 @@ repaired by downloading the song again.
 | Saved lyrics | `lyrics/`; written atomically; removed with the last track of the same song, and at launch when no library track uses them |
 | `.lrc` beside an audio file | The user's (Melody's old ones are marked `[re:Melody]` and cleaned up); removed with its audio file |
 
+## Power
+
+Melody does periodic work only while something needs it: views redraw when
+what they show changes (`PositionTicker`), nothing draws while the window is
+hidden, and nothing polls. What remains runs at rates set by one
+`PowerProfile` (`application/power.dart`), chosen by `MelodyApp` from Low
+Power Mode and from whether the window is on screen, and put into effect in
+`MelodyApp._applyPower`:
+
+| Work | Normal | Low Power Mode |
+| --- | --- | --- |
+| Position reports from the engine while playing (`AudioEngine.positionInterval`) | 0.5 s on screen, 1 s hidden | 1 s on screen, 5 s hidden |
+| Saving the playing position (`PlaybackController.positionSaveInterval`) | 5 s | 30 s |
+| Download progress reaching the views | 0.2 s on screen, 5 s hidden | 1 s on screen, 5 s hidden |
+| Progress bars and the position clock | Every device pixel or second | Every second |
+| Lyrics following the playing line | Animated | Moves at once |
+| Library loudness measuring (`LoudnessNormalizer.deferred`) | Runs | Waits; what plays next is still measured |
+| Concurrent downloads (`DownloadCoordinator.workerLimit`) | The setting | One (running downloads finish) |
+
+The last two are options of Low Power Mode. Nothing here changes what is
+played, kept, or downloaded. Pause and leaving the screen save the position
+at once, so the longer save interval only widens what a crash mid-playback
+can lose. The engine's position clock is its own timer, running only while
+the decoder plays; just_audio's `positionStream` would tick every 200 ms (and
+leaks a timer per subscription if its interval were changed). media_kit sends
+a playback event every few milliseconds of playback; the engine replans the
+loudness boundary only for an event that is not the playhead moving on as
+expected.
+
+`SystemPowerSaver` (`platform/power.dart`) tells whether the system saves
+power, for the automatic setting; see
+[platform support](platform-support.md#low-power-mode) for what each system
+reports. `app/integration_test/power_profile.dart` measures the running
+app's CPU time, wakeups, writes, and frames in each state.
+
 ## Crash consistency
 
 The database uses write-ahead logging. A change writes only its rows in one

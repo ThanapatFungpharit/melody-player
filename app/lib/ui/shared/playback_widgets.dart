@@ -106,8 +106,9 @@ class PositionTicker {
 }
 
 /// Rebuilds with the playback position whenever the clock's second or the
-/// bar's device pixel changes, rather than every frame. It paints on its own
-/// layer, so those updates leave the rest of the window alone.
+/// bar's device pixel changes (only the second in Low Power Mode), rather
+/// than every frame. It paints on its own layer, so those updates leave the
+/// rest of the window alone.
 class LivePosition extends StatefulWidget {
   const LivePosition(this.app, {super.key, required this.builder});
 
@@ -142,6 +143,8 @@ class _LivePositionState extends State<LivePosition> {
 
   int _nextChange(int positionMs) {
     final second = (positionMs ~/ 1000 + 1) * 1000;
+    // Low Power Mode moves bars with the clock's seconds, not every pixel.
+    if (!widget.app.power.value.pixelProgress) return second;
     final duration = knownDurationMs(widget.app);
     // The physical pixels the position can span: at most the whole width.
     final box = context.findRenderObject();

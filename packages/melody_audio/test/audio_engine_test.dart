@@ -870,6 +870,45 @@ void main() {
   );
 
   test(
+    "a playing decoder's position is reported on the engine's own clock",
+    () async {
+      addTearDown(
+        () => engine.positionInterval = AudioEngine.defaultPositionInterval,
+      );
+      await setQueue(["a"], 0, autoplay: true);
+      await _settle();
+      final positions = <Duration>[];
+      void listener(AudioEngineEvent event) {
+        if (event is AudioPositionChanged) positions.add(event.position);
+      }
+
+      engine.attach(listener);
+      addTearDown(() => engine.detach(listener));
+
+      // The fake decoder sends no events while it plays; only the clock
+      // notices the playhead reaching the next second.
+      engine.positionInterval = const Duration(milliseconds: 50);
+      await Future<void>.delayed(const Duration(milliseconds: 1300));
+      expect(positions, isNotEmpty);
+      expect(positions.last, greaterThanOrEqualTo(const Duration(seconds: 1)));
+
+      // A longer interval takes effect at once.
+      positions.clear();
+      engine.positionInterval = const Duration(hours: 1);
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+      expect(positions, isEmpty);
+
+      // Paused, the clock stops.
+      engine.positionInterval = const Duration(milliseconds: 50);
+      await engine.pause();
+      await _settle();
+      positions.clear();
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+      expect(positions, isEmpty);
+    },
+  );
+
+  test(
     "every phase change anchors the system timeline at the exact playhead",
     () async {
       await setQueue(["a"], 0, autoplay: true);

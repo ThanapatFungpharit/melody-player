@@ -149,6 +149,7 @@ class _MelodyRootState extends State<MelodyRoot> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _app?.lifecycleChanged(state);
     if (state == AppLifecycleState.resumed) _app?.resumed();
     // Android reports detached whenever its activity is destroyed, but
     // MainActivity keeps this engine (and the playing decoder) cached and

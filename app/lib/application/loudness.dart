@@ -232,9 +232,24 @@ class LoudnessNormalizer {
         _pending.add(id);
       }
     }
-    if ((_pending.isNotEmpty || _priority.isNotEmpty) && _draining == null) {
-      unawaited(_drain());
-    }
+    _resume();
+  }
+
+  /// Whether the library's tracks wait to be measured, as in Low Power
+  /// Mode. Tracks queued [first], such as what plays next, are measured
+  /// regardless, so what is heard stays normalized.
+  bool get deferred => _deferred;
+  set deferred(bool value) {
+    if (value == _deferred) return;
+    _deferred = value;
+    if (!value) _resume();
+  }
+
+  bool _deferred = false;
+
+  void _resume() {
+    final waiting = _priority.isNotEmpty || (!_deferred && _pending.isNotEmpty);
+    if (waiting && _draining == null) unawaited(_drain());
   }
 
   /// Queues library tracks not measured since their file last changed,
@@ -293,7 +308,7 @@ class LoudnessNormalizer {
         if (_priority.isNotEmpty) {
           trackId = _priority.first;
           _priority.remove(trackId);
-        } else if (_pending.isNotEmpty) {
+        } else if (_pending.isNotEmpty && !_deferred) {
           trackId = _pending.first;
           _pending.remove(trackId);
         } else {

@@ -640,6 +640,93 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
 }
 
 // ---------------------------------------------------------------------------
+// Power
+// ---------------------------------------------------------------------------
+
+const _lowPowerDescriptions = {
+  "off": "Melody always works at full pace.",
+  "auto":
+      "On while Battery Saver, Low Power Mode, Energy Saver, or the "
+      "power saver profile is.",
+  "on": "Use less battery all the time.",
+};
+
+String _lowPowerStatus(MelodyApp app) =>
+    switch ((app.lowPower, app.systemSavingPower)) {
+      (true, true) => "Low Power Mode is on: the system is saving power.",
+      (true, false) => "Low Power Mode is on.",
+      (false, _) => "Low Power Mode is off.",
+    };
+
+SettingsSection powerSettings(BuildContext context, MelodyApp app) {
+  final controls = app.settingsControls;
+  final current = app.settings;
+  return SettingsSection(
+    icon: Icons.battery_saver_rounded,
+    title: "Power",
+    subtitle: "Use less battery while you listen.",
+    mobileTitle: "Power",
+    mobileSubtitle: current.lowPowerMode.label,
+    body: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      spacing: 16,
+      children: [
+        _dropdown(
+          "Low Power Mode",
+          current.lowPowerMode.id,
+          [
+            for (final setting in LowPowerSetting.values)
+              (setting.id, setting.label),
+          ],
+          (value) => controls.update(
+            (next) => next.lowPowerMode = LowPowerSetting.parse(value),
+          ),
+          descriptions: _lowPowerDescriptions,
+        ),
+        ValueListenableBuilder(
+          valueListenable: app.power,
+          builder: (context, _, _) => _note(context, _lowPowerStatus(app)),
+        ),
+        _note(
+          context,
+          "Low Power Mode updates the playback position and download "
+          "progress less often, moves progress bars by the second, and skips "
+          "lyric animations. Music, downloads, and your library work as "
+          "usual.",
+        ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SwitchListTile(
+              value: current.lowPowerLimitDownloads,
+              onChanged: (value) => controls.update(
+                (next) => next.lowPowerLimitDownloads = value,
+              ),
+              title: const Text("One download at a time"),
+              subtitle: const Text(
+                "Downloads already running finish as they are.",
+              ),
+              contentPadding: EdgeInsets.zero,
+            ),
+            SwitchListTile(
+              value: current.lowPowerDeferAnalysis,
+              onChanged: (value) =>
+                  controls.update((next) => next.lowPowerDeferAnalysis = value),
+              title: const Text("Pause library loudness measuring"),
+              subtitle: const Text(
+                "Songs about to play are still measured, so loudness "
+                "normalization keeps working.",
+              ),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Music source
 // ---------------------------------------------------------------------------
 

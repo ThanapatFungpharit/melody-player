@@ -21,6 +21,7 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Embed lyrics into tracks already in the library | Yes | Yes | Yes | No |
 | ytmusicapi and yt-dlp engine updates | Yes | Yes | Yes | Yes |
 | App icon follows the accent color | No | No | No | Yes, once Melody leaves the screen |
+| Low Power Mode follows the system's power saving | Energy Saver, read on return to Melody | Low Power Mode (`pmset`), read on return | Power saver profile (ACPI platform profile or power-profiles-daemon), read on return | Battery Saver, as it changes |
 
 "Disabled" means the setting is shown greyed out, with a note explaining why.
 
@@ -35,6 +36,16 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 - **File dialogs need a helper.** Importing music, uploading a cookie file,
   and exporting playlists use the desktop's file dialog through `zenity`,
   `kdialog`, or `qarma`. Install one if the dialogs do not open.
+
+### Low Power Mode
+
+**Settings → Power** sets Low Power Mode to off, always on, or on while the
+system saves power (the default). Only Android announces a change of its
+Battery Saver; on desktop Melody reads the system's state at launch and when
+its window comes back, at most every 30 seconds, rather than polling. A
+change made while Melody is in the background applies once it returns. A
+platform that cannot tell counts as not saving power. The macOS and Windows
+readings have not been checked on those systems yet.
 
 ### Windows and macOS
 

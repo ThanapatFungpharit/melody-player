@@ -410,6 +410,7 @@ class AudioEngine {
     _preparingPlayer = null;
     _cancelRamp();
     _cancelBoundary();
+    _cancelProgress();
     _queue = const [];
     _rows = const [];
     _rowSync = Future.value();
@@ -860,6 +861,7 @@ class AudioEngine {
       final active = rows.first;
       _preparingPlayer = null;
       _cancelSubscriptionsSoon();
+      _cancelProgress();
       _player = candidate;
       _queue = queue;
       _repeatMode = repeatMode;
@@ -919,23 +921,20 @@ class AudioEngine {
     // durationStream is distinct across items, so a transition to an equally
     // long track would never report its duration. Playback events carry the
     // index and duration together.
+    PlaybackEvent? previous;
     _subscriptions.add(
       player.playbackEventStream.listen((event) {
         if (player != _player) return;
+        final last = previous;
+        previous = event;
         _onIndex(player, event.currentIndex);
         _reportDuration(player, _generation);
+        // media_kit reports every few milliseconds of playback as an event;
+        // one that only moves the playhead on as expected changes no plan.
+        if (last != null && _steady(player, last, event)) return;
         // The playhead may have jumped (a seek, a stall, a native skip).
         _planBoundary();
-      }, onError: (Object error) => _playerError(player, error)),
-    );
-    _subscriptions.add(
-      player.positionStream.listen((position) {
-        if (player != _player) return;
-        _onIndex(player, player.currentIndex);
-        final bucket = position.inMilliseconds ~/ 1000;
-        if (bucket == _positionBucket) return;
-        _positionBucket = bucket;
-        _event(AudioPositionChanged(position, _generation));
+        _reportPosition(player);
       }, onError: (Object error) => _playerError(player, error)),
     );
     _subscriptions.add(
@@ -955,6 +954,7 @@ class AudioEngine {
         _onIndex(player, player.currentIndex);
         // Playing, pausing, buffering, and completing move the boundary.
         _planBoundary();
+        _scheduleProgress(player);
         if (state.processingState == ProcessingState.ready &&
             _pendingLoadedGeneration == _generation) {
           _pendingLoadedGeneration = null;
@@ -990,6 +990,87 @@ class AudioEngine {
         _event(AudioStateChanged(phase, _generation));
       }, onError: (Object error) => _playerError(player, error)),
     );
+  }
+
+  /// Whether [event] only moves the playhead on from [last] as playback
+  /// would, with nothing else about the decoder changed.
+  static bool _steady(
+    AudioPlayer player,
+    PlaybackEvent last,
+    PlaybackEvent event,
+  ) {
+    if (event.processingState != last.processingState ||
+        event.currentIndex != last.currentIndex ||
+        event.duration != last.duration ||
+        !player.playing) {
+      return false;
+    }
+    final elapsed = event.updateTime.difference(last.updateTime);
+    final expected = last.updatePosition + elapsed * player.speed;
+    return (event.updatePosition - expected).abs() <= _steadySlack;
+  }
+
+  static const _steadySlack = Duration(milliseconds: 250);
+
+  /// How often a playing decoder's position is reported, at most once per
+  /// second of playback. Views extrapolate between reports, so a longer
+  /// interval costs only how soon they notice a stall.
+  Duration get positionInterval => _positionInterval;
+  set positionInterval(Duration value) {
+    if (value <= Duration.zero || value == _positionInterval) return;
+    _positionInterval = value;
+    final player = _player;
+    if (player != null) _scheduleProgress(player, restart: true);
+  }
+
+  static const defaultPositionInterval = Duration(milliseconds: 500);
+  Duration _positionInterval = defaultPositionInterval;
+
+  /// Reports the position every [positionInterval] while the active decoder
+  /// plays, and not at all otherwise.
+  Timer? _progressTimer;
+  Duration? _progressPeriod;
+
+  void _scheduleProgress(AudioPlayer player, {bool restart = false}) {
+    final running =
+        player == _player &&
+        player.playing &&
+        player.processingState == ProcessingState.ready;
+    if (!running) {
+      _cancelProgress();
+      return;
+    }
+    if (_progressTimer != null &&
+        !restart &&
+        _progressPeriod == _positionInterval) {
+      return;
+    }
+    _cancelProgress();
+    _progressPeriod = _positionInterval;
+    _progressTimer = Timer.periodic(_positionInterval, (_) {
+      if (player != _player || !player.playing) {
+        _cancelProgress();
+        return;
+      }
+      _reportPosition(player);
+    });
+  }
+
+  void _cancelProgress() {
+    _progressTimer?.cancel();
+    _progressTimer = null;
+    _progressPeriod = null;
+  }
+
+  /// Reports the playhead once per second of playback it reaches.
+  void _reportPosition(AudioPlayer player) {
+    if (player != _player) return;
+    _onIndex(player, player.currentIndex);
+    final position = player.position;
+    final bucket = position.inMilliseconds ~/ 1000;
+    if (bucket == _positionBucket) return;
+    _positionBucket = bucket;
+    _event(AudioPositionChanged(position, _generation));
   }
 
   void _onIndex(AudioPlayer player, int? index) {

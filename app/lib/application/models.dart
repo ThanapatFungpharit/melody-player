@@ -3,8 +3,10 @@ import "dart:math";
 import "../core/downloader/downloader.dart";
 import "../core/media.dart";
 import "../core/storage.dart";
+import "power.dart";
 
 export "../core/downloader/downloader.dart" show DownloadStatus;
+export "power.dart" show LowPowerSetting;
 
 enum RepeatMode {
   off("off"),
@@ -153,6 +155,9 @@ class AppSettings {
     this.normalizeLoudness = true,
     this.loudnessTarget = -14,
     this.musicSource = MusicSource.youtubeMusic,
+    this.lowPowerMode = LowPowerSetting.automatic,
+    this.lowPowerLimitDownloads = true,
+    this.lowPowerDeferAnalysis = true,
   });
 
   String downloadDirectory;
@@ -179,6 +184,16 @@ class AppSettings {
 
   /// Where search, playlists, recommendations, and new downloads come from.
   MusicSource musicSource;
+
+  /// When Melody works in Low Power Mode (`application/power.dart`).
+  LowPowerSetting lowPowerMode;
+
+  /// Whether Low Power Mode runs one download at a time.
+  bool lowPowerLimitDownloads;
+
+  /// Whether Low Power Mode leaves the library's loudness measurements for
+  /// later, measuring only what plays next.
+  bool lowPowerDeferAnalysis;
 
   DownloadFormat get downloadFormat => DownloadFormat.parse(audioFormat);
 
@@ -227,6 +242,15 @@ class AppSettings {
         _ => defaults.loudnessTarget,
       },
       musicSource: MusicSource.parse(data["music_source"]),
+      lowPowerMode: LowPowerSetting.parse(data["low_power_mode"]),
+      lowPowerLimitDownloads: _bool(
+        data["low_power_limit_downloads"],
+        defaults.lowPowerLimitDownloads,
+      ),
+      lowPowerDeferAnalysis: _bool(
+        data["low_power_defer_analysis"],
+        defaults.lowPowerDeferAnalysis,
+      ),
     );
   }
 
@@ -246,6 +270,9 @@ class AppSettings {
     "normalize_loudness": normalizeLoudness,
     "loudness_target": loudnessTarget,
     "music_source": musicSource.id,
+    "low_power_mode": lowPowerMode.id,
+    "low_power_limit_downloads": lowPowerLimitDownloads,
+    "low_power_defer_analysis": lowPowerDeferAnalysis,
   };
 
   AppSettings copy() => AppSettings.fromJson(

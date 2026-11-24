@@ -36,6 +36,7 @@ import "package:melody/ui/mobile/shell.dart";
 import "package:melody/ui/shared/dialogs.dart";
 import "package:melody/ui/shared/actions.dart"
     show playlistActions, queueDropSlot;
+import "package:melody/platform/power.dart";
 import "package:melody/ui/shared/theme.dart";
 import "package:melody/ui/startup.dart";
 import "package:melody/worker/worker_client.dart";
@@ -126,6 +127,7 @@ const _loadsGiveUp = Duration(seconds: 52);
 Future<MelodyApp> _app(
   Directory root, {
   required bool mobile,
+  bool systemSaving = false,
   String? defaultMusic,
   FakeWorkerTransport? transport,
   List<DownloadRecord> extraDownloads = const [],
@@ -230,7 +232,12 @@ Future<MelodyApp> _app(
     ),
     availableTrackIds: ids.toSet(),
   );
-  return MelodyApp(services, mobile: mobile);
+  return MelodyApp(
+    services,
+    mobile: mobile,
+    // Never the machine's own power mode: screens look the same everywhere.
+    powerSaver: SystemPowerSaver(read: () async => systemSaving),
+  );
 }
 
 void main() {
@@ -276,6 +283,7 @@ void main() {
     String theme = "light",
     FakeWorkerTransport? transport,
     List<DownloadRecord> extraDownloads = const [],
+    bool systemSaving = false,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -286,6 +294,7 @@ void main() {
         mobile: mobile,
         transport: transport,
         extraDownloads: extraDownloads,
+        systemSaving: systemSaving,
       ),
     ))!;
     addTearDown(app.close);
@@ -1328,6 +1337,74 @@ void main() {
       expect(painted, lessThan(60));
       expect(find.text("1:05"), findsWidgets);
       expect(tester.binding.hasScheduledFrame, isFalse);
+    });
+  }
+
+  for (final mobile in [false, true]) {
+    testWidgets("${mobile ? "mobile" : "desktop"} Low Power Mode follows the "
+        "system's battery saver until Settings turns it off", (tester) async {
+      final app = await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(390, 844) : const Size(1540, 960),
+        systemSaving: true,
+      );
+      await tester.runAsync(() => pumpEventQueue());
+      await tester.pump();
+      expect(app.lowPower, isTrue);
+      expect(app.playback.positionSaveInterval, const Duration(seconds: 30));
+      expect(app.services.downloads.workerLimit, 1);
+      expect(app.services.loudness.deferred, isTrue);
+      expect(app.power.value.pixelProgress, isFalse);
+
+      // Off screen, the position is saved at once and reports slow down.
+      app.lifecycleChanged(AppLifecycleState.hidden);
+      expect(app.power.value.visible, isFalse);
+      expect(
+        app.power.value.positionReportInterval,
+        const Duration(seconds: 5),
+      );
+      app.lifecycleChanged(AppLifecycleState.resumed);
+
+      if (mobile) {
+        await tester.tap(find.byTooltip("Settings"));
+        await tester.pumpAndSettle();
+        final section = find.text("Power");
+        await tester.ensureVisible(section);
+        await tester.pumpAndSettle();
+        await tester.tap(section);
+      } else {
+        app.openPanel(AppPanel.settings);
+      }
+      await tester.pumpAndSettle();
+      final status = find.text(
+        "Low Power Mode is on: the system is saving power.",
+      );
+      await tester.scrollUntilVisible(
+        status,
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(status, findsOneWidget);
+
+      final field = find.widgetWithText(
+        DropdownButtonFormField<String>,
+        "Low Power Mode",
+      );
+      await tester.ensureVisible(field);
+      await tester.pumpAndSettle();
+      await tester.tap(field);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Off").last);
+      await tester.pumpAndSettle();
+
+      expect(app.settings.lowPowerMode, LowPowerSetting.off);
+      expect(app.services.store.settings.lowPowerMode, LowPowerSetting.off);
+      expect(app.lowPower, isFalse);
+      expect(app.playback.positionSaveInterval, const Duration(seconds: 5));
+      expect(app.services.downloads.workerLimit, isNull);
+      expect(app.services.loudness.deferred, isFalse);
+      expect(find.text("Low Power Mode is off."), findsOneWidget);
     });
   }
 

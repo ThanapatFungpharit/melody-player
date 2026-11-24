@@ -109,6 +109,7 @@ class SettingsController extends ChangeNotifier {
       app.syncSystemMedia(refreshMetadata: false);
     }
     app.appearance.value = (settings.theme, settings.accentColor);
+    app.powerSettingsChanged();
     if (settings.musicSource != old.musicSource) {
       app.search.sourceChanged();
       app.home.sourceChanged();
