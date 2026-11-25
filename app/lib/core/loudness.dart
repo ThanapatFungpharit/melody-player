@@ -215,14 +215,77 @@ double normalizationGainDb(
 }) {
   if (measurement.silent) return 0;
   final toTarget = targetLufs - measurement.integratedLufs;
-  final peak = measurement.truePeakDb;
-  final toCeiling = peak.isFinite ? truePeakCeilingDb - peak : 0.0;
+  final toCeiling = _peakRoomDb(measurement);
   final ceiling = max(maxBoostDb, 0.0);
   var gain = min(toTarget, toCeiling);
   // The limiter only runs while it boosts: a cut must keep the peaks clear.
   final limited = min(toTarget, toCeiling + max(limiterHeadroomDb, 0.0));
   if (ceiling > 0 && limited > 0) gain = limited;
   return min(gain, ceiling).clamp(minimumGainDb, ceiling);
+}
+
+/// [gainDb] (normalization's gain, 0 without it) moved by the listener's
+/// [offsetDb], within what plays without clipping.
+///
+/// A cut always applies. A raise stops where the true peak reaches
+/// [truePeakCeilingDb] (past it by [limiterHeadroomDb] where the engine limits
+/// a boost), and at [maxBoostDb]; with peaks unknown, at the level the track
+/// was made at. A raise never lowers what normalization gave.
+double adjustedGainDb(
+  double gainDb,
+  double offsetDb, {
+  LoudnessMeasurement? measurement,
+  double maxBoostDb = 0,
+  double limiterHeadroomDb = 0,
+}) {
+  if (offsetDb == 0 || !offsetDb.isFinite) return gainDb;
+  final ceiling = max(maxBoostDb, 0.0);
+  final wanted = gainDb + offsetDb;
+  if (offsetDb < 0) return wanted.clamp(minimumGainDb, ceiling).toDouble();
+  var limit = _peakRoomDb(measurement);
+  // The limiter only runs while it boosts.
+  if (wanted > 0) limit += max(limiterHeadroomDb, 0.0);
+  final raised = min(wanted, max(gainDb, min(limit, ceiling)));
+  return raised.clamp(minimumGainDb, max(ceiling, gainDb)).toDouble();
+}
+
+/// How far a gain may raise [measurement] before its true peak reaches
+/// [truePeakCeilingDb]; 0 when its peaks are unknown, so a track with no
+/// measurement plays no louder than it was made.
+double _peakRoomDb(LoudnessMeasurement? measurement) {
+  final peak = measurement?.truePeakDb;
+  return peak != null && peak.isFinite ? truePeakCeilingDb - peak : 0.0;
+}
+
+/// The gain one queue row plays at, in dB. Every level control goes through
+/// this one chain, in order:
+///
+/// 1. [normalizationDb]: loudness normalization's gain for the track (0 when
+///    it is off), which matches tracks to one another;
+/// 2. the listener's [offsetDb] for the track and its album, within what
+///    plays without clipping ([adjustedGainDb]);
+/// 3. less [equalizerHeadroomDb], what the equalizer's largest boost needs
+///    kept free.
+///
+/// A silent track keeps normalization's gain: there is nothing to raise and
+/// nothing to clip.
+double playbackGainDb({
+  required double normalizationDb,
+  double offsetDb = 0,
+  double equalizerHeadroomDb = 0,
+  LoudnessMeasurement? measurement,
+  double maxBoostDb = 0,
+  double limiterHeadroomDb = 0,
+}) {
+  if (measurement != null && measurement.silent) return normalizationDb;
+  final adjusted = adjustedGainDb(
+    normalizationDb,
+    offsetDb,
+    measurement: measurement,
+    maxBoostDb: maxBoostDb,
+    limiterHeadroomDb: limiterHeadroomDb,
+  );
+  return adjusted - max(0.0, equalizerHeadroomDb);
 }
 
 /// A gain in dB as the linear volume factor the decoder takes.

@@ -11,6 +11,7 @@ import "pages/library_page.dart";
 import "pages/playlists_page.dart";
 import "pages/search_page.dart";
 import "pages/settings_page.dart";
+import "pages/statistics_page.dart";
 import "player.dart";
 
 /// Header, content, mini player, and bottom navigation for touch devices.
@@ -78,6 +79,16 @@ class MobileShell extends StatelessWidget {
                             ),
                           );
                         },
+                      ),
+                      TouchIconButton(
+                        Icons.insights_rounded,
+                        "Statistics",
+                        () => pushPanel(
+                          context,
+                          app,
+                          AppPanel.statistics,
+                          MobileStatistics(app),
+                        ),
                       ),
                       TouchIconButton(
                         Icons.settings_outlined,

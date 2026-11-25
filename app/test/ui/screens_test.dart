@@ -37,6 +37,8 @@ import "package:melody/ui/shared/dialogs.dart";
 import "package:melody/ui/shared/actions.dart"
     show playlistActions, queueDropSlot;
 import "package:melody/platform/power.dart";
+import "package:melody/ui/shared/listening_settings.dart"
+    show showVolumeAdjustment;
 import "package:melody/ui/shared/theme.dart";
 import "package:melody/ui/startup.dart";
 import "package:melody/worker/worker_client.dart";
@@ -701,8 +703,10 @@ void main() {
         await shoot(tester, "mobile_settings_collapsed_${name}_$theme");
         for (final section in [
           "Appearance",
+          "Sound",
           "Downloads",
           "Music source",
+          "Scrobbling",
           "Maintenance",
           "Data management",
         ]) {
@@ -2112,6 +2116,138 @@ void main() {
     expect(queueDropSlot(rows, 3, 2), 4);
     expect(queueDropSlot(rows, 3, 0), 0);
   });
+
+  /// Fills two weeks of listening and waits for the statistics to load.
+  Future<void> showStatistics(WidgetTester tester, MelodyApp app) async {
+    final tracks = app.services.manager.listTracks();
+    final now = DateTime.now();
+    for (var day = 0; day < 14; day++) {
+      for (var play = 0; play < (day % 4) + 1; play++) {
+        final track = tracks[(day + play) % tracks.length];
+        app.services.store.recordListen(
+          Listen(
+            trackId: track.id,
+            startedAt: now.subtract(Duration(days: day, minutes: play * 5)),
+            listenedMs: 180000,
+            durationMs: 200000,
+            title: "A rather long song title number ${play + 1} of the day",
+            artist: "Artist ${play + 1} with a long name",
+            album: "Album ${day % 3}",
+          ),
+        );
+      }
+    }
+    app.statistics.listened();
+  }
+
+  Future<void> statisticsLoaded(WidgetTester tester, MelodyApp app) async {
+    await tester.pump();
+    for (var attempt = 0; attempt < 200; attempt++) {
+      if (app.statistics.stats != null && !app.statistics.loading) break;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    expect(app.statistics.error, isNull);
+    expect(app.statistics.stats, isNotNull);
+  }
+
+  for (final (name, size) in [
+    ("wide", const Size(1540, 960)),
+    ("narrow", const Size(1100, 760)),
+  ]) {
+    testWidgets("desktop statistics fit a $name window", (tester) async {
+      final app = await pumpShell(tester, mobile: false, size: size);
+      app.openPanel(AppPanel.statistics);
+      await statisticsLoaded(tester, app);
+      expect(app.statistics.stats!.listens, 0);
+      await shoot(tester, "desktop_statistics_empty_$name");
+      await showStatistics(tester, app);
+      await statisticsLoaded(tester, app);
+      expect(find.text("Top tracks"), findsOneWidget);
+      await shoot(tester, "desktop_statistics_$name");
+      await tester.tap(find.text("Month"));
+      await statisticsLoaded(tester, app);
+      await shoot(tester, "desktop_statistics_month_$name");
+    });
+  }
+
+  for (final (name, size) in [
+    ("phone", const Size(390, 844)),
+    ("small_phone", const Size(320, 568)),
+  ]) {
+    testWidgets("mobile statistics fit a $name", (tester) async {
+      final app = await pumpShell(tester, mobile: true, size: size);
+      await showStatistics(tester, app);
+      await tester.tap(find.byTooltip("Statistics"));
+      await statisticsLoaded(tester, app);
+      expect(find.text("Top tracks"), findsOneWidget);
+      await shoot(tester, "mobile_statistics_$name");
+    });
+  }
+
+  for (final mobile in [false, true]) {
+    final layout = mobile ? "mobile" : "desktop";
+    testWidgets("$layout Sound, Scrobbling, and Adjust loudness render", (
+      tester,
+    ) async {
+      final app = await pumpShell(
+        tester,
+        mobile: mobile,
+        size: mobile ? const Size(320, 3000) : const Size(1100, 3200),
+      );
+      if (mobile) {
+        await tester.tap(find.byTooltip("Settings"));
+        await tester.pumpAndSettle();
+        for (final section in ["Sound", "Scrobbling"]) {
+          final title = find.text(section);
+          await tester.ensureVisible(title);
+          await tester.pumpAndSettle();
+          await tester.tap(title);
+          await tester.pumpAndSettle();
+        }
+      } else {
+        app.openPanel(AppPanel.settings);
+        await tester.pumpAndSettle();
+      }
+      expect(find.text("Normalize loudness"), findsOneWidget);
+      expect(find.text("Use equalizer"), findsOneWidget);
+      // Normalization lives with the equalizer, not with Appearance.
+      expect(find.text("STARTUP & PLAYBACK"), findsNothing);
+      expect(find.text("ListenBrainz user token"), findsOneWidget);
+      expect(find.text("1 kHz"), findsNothing);
+      await shoot(tester, "${layout}_settings_sound");
+      final bassBoost = find.text("Bass boost");
+      await tester.ensureVisible(bassBoost);
+      await tester.pumpAndSettle();
+      await tester.tap(bassBoost);
+      await tester.pumpAndSettle();
+      expect(app.adjustments.equalizer.enabled, isTrue);
+      expect(find.text("1 kHz"), findsOneWidget);
+      if (mobile) {
+        expect(find.text("Normalized · Equalizer: Bass boost"), findsOneWidget);
+      }
+      await shoot(tester, "${layout}_settings_equalizer");
+      final track = app.services.manager.listTracks().first;
+      unawaited(
+        showVolumeAdjustment(
+          tester.element(find.byType(Scaffold).first),
+          app,
+          track.id,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text("Adjust loudness"), findsOneWidget);
+      // The dialog's actions share one row.
+      expect(
+        tester.getTopLeft(find.text("Save")).dy,
+        tester.getTopLeft(find.text("Reset")).dy,
+      );
+      await shoot(tester, "${layout}_adjust_loudness");
+    });
+  }
 
   testWidgets("small phone fits Now Playing", (tester) async {
     await pumpShell(tester, mobile: true, size: const Size(320, 568));

@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../shared/listening_settings.dart";
 import "../../shared/settings_sections.dart";
 import "../../shared/theme.dart";
 import "../controls.dart";
@@ -59,6 +60,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       spacing: 16,
                       children: [
                         card(appearanceSettings(context, app)),
+                        card(soundSettings(context, app)),
                         card(powerSettings(context, app)),
                         card(maintenanceSettings(context, app)),
                       ],
@@ -71,6 +73,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       children: [
                         card(downloadSettings(context, app, mobile: false)),
                         card(youtubeSettings(context, app)),
+                        card(scrobblingSettings(context, app)),
                         card(dataManagementSettings(context, app)),
                       ],
                     ),

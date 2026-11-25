@@ -32,6 +32,7 @@ SearchResult _result({
   thumbnail: thumbnail,
   url: url,
   source: "YouTube Music",
+  album: "Search album",
 );
 
 /// Waits for what a running download does next, however slow the disk is.
@@ -141,6 +142,9 @@ void main() {
       expect(details.uploader, "Uploader");
       expect(details.duration, 200);
       expect(details.sourceName, "YouTube Music");
+      expect(details.album, "Search album");
+      // The record keeps the album for a retry after a restart.
+      expect(record.toJson()["album"], "Search album");
       // The cache is derived from the verified embedded cover.
       expect(thumbnails.cachedPath(track.id), isNotNull);
       expect(coordinator.activeCount(), 0);

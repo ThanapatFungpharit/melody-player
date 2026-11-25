@@ -26,9 +26,9 @@ melody-integration = "tools.checks.integration:main"
 dev = [
     "melody-worker",
     "pillow>=13.0.0",
-    "pytest>=8",
-    "ruff>=0.17.2",
-    "ty>=0.0.91",
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+    "ty>=0.0.110",
 ]
 
 [build-system]

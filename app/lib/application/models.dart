@@ -133,6 +133,9 @@ bool _bool(Object? value, bool fallback) => value is bool ? value : fallback;
 /// How long finished downloads stay listed, in days; 0 means forever.
 const downloadHistoryChoices = [1, 7, 30, 90, 0];
 
+/// The largest gain offset, in dB, a track or album can be given either way.
+const maxGainOffsetDb = 12.0;
+
 /// Loudness normalization targets in LUFS, loudest first.
 const loudnessTargetChoices = [-11, -14, -16, -18, -23];
 
@@ -296,6 +299,8 @@ class TrackDetails {
     this.playCount = 0,
     this.lastPlayed = 0,
     this.sourceName = "Local",
+    this.album = "",
+    this.gainDb = 0,
   });
 
   String uploader;
@@ -306,6 +311,13 @@ class TrackDetails {
   double lastPlayed;
   String sourceName;
 
+  /// The album its source or tags named; empty when none did.
+  String album;
+
+  /// The listener's gain offset for this track, in dB, on top of loudness
+  /// normalization (see `application/audio_adjustments.dart`).
+  double gainDb;
+
   factory TrackDetails.fromJson(Map<String, Object?> data) => TrackDetails(
     uploader: _string(data["uploader"], ""),
     duration: _seconds(data["duration"]),
@@ -314,6 +326,11 @@ class TrackDetails {
     playCount: _count(data["play_count"]),
     lastPlayed: _seconds(data["last_played"]),
     sourceName: _string(data["source_name"], "Local"),
+    album: _string(data["album"], ""),
+    gainDb: _double(
+      data["gain_db"],
+      0,
+    ).clamp(-maxGainOffsetDb, maxGainOffsetDb),
   );
 
   Map<String, Object?> toJson() => {
@@ -324,6 +341,10 @@ class TrackDetails {
     "play_count": playCount,
     "last_played": lastPlayed,
     "source_name": sourceName,
+    // Written only when set, so rows of tracks without them stay as earlier
+    // releases wrote them.
+    if (album.isNotEmpty) "album": album,
+    if (gainDb != 0) "gain_db": gainDb,
   };
 
   /// The visible credit line for a track.
@@ -346,6 +367,7 @@ class SearchResult {
     required this.source,
     this.providerId = youtubeProviderId,
     this.playlistTitle = "",
+    this.album = "",
   });
 
   final String id;
@@ -358,6 +380,9 @@ class SearchResult {
   final String providerId;
   final String playlistTitle;
 
+  /// The album the source lists the track on; empty when it names none.
+  final String album;
+
   SearchResult withPlaylistTitle(String title) => SearchResult(
     id: id,
     title: this.title,
@@ -368,6 +393,7 @@ class SearchResult {
     source: source,
     providerId: providerId,
     playlistTitle: title,
+    album: album,
   );
 
   MediaIdentity? get identity =>
@@ -397,6 +423,7 @@ class DownloadRecord {
     this.batchId = "",
     this.batchPosition = 0,
     this.batchSize = 0,
+    this.album = "",
   }) : createdAt = createdAt ?? unixSeconds(),
        trackIds = trackIds ?? [];
 
@@ -425,6 +452,9 @@ class DownloadRecord {
   int batchPosition;
   int batchSize;
 
+  /// The album the source listed, for the library track's details.
+  String album;
+
   factory DownloadRecord.fromJson(Map<String, Object?> data) => DownloadRecord(
     id: _string(data["id"], ""),
     url: _string(data["url"], ""),
@@ -450,6 +480,7 @@ class DownloadRecord {
     batchId: _string(data["batch_id"], ""),
     batchPosition: _count(data["batch_position"]),
     batchSize: _count(data["batch_size"]),
+    album: _string(data["album"], ""),
   );
 
   Map<String, Object?> toJson() => {
@@ -473,7 +504,65 @@ class DownloadRecord {
     "batch_id": batchId,
     "batch_position": batchPosition,
     "batch_size": batchSize,
+    if (album.isNotEmpty) "album": album,
   };
 
   DownloadRecord copy() => DownloadRecord.fromJson(toJson());
+}
+
+/// A play that lasted long enough to count: half the track or four minutes,
+/// whichever comes first (the rule ListenBrainz and Last.fm use). It keeps the
+/// title, artist, and album the track had then.
+class Listen {
+  Listen({
+    required this.trackId,
+    required this.startedAt,
+    required this.listenedMs,
+    required this.durationMs,
+    required this.title,
+    this.artist = "",
+    this.album = "",
+    this.source = "",
+  });
+
+  final String trackId;
+
+  /// When the play began.
+  final DateTime startedAt;
+
+  /// How much of the track was heard, not counting skipped parts.
+  final int listenedMs;
+
+  /// The track's length; 0 when unknown.
+  final int durationMs;
+  final String title;
+  final String artist;
+  final String album;
+
+  /// The track's stored link; empty for an imported file.
+  final String source;
+
+  /// The listener's calendar day the play began on, as days since
+  /// 1970-01-01, so statistics group by local days whatever the time zone.
+  int get day => localDay(startedAt);
+}
+
+/// [time]'s local calendar day as days since 1970-01-01.
+int localDay(DateTime time) {
+  final local = time.toLocal();
+  return DateTime.utc(
+        local.year,
+        local.month,
+        local.day,
+      ).millisecondsSinceEpoch ~/
+      Duration.millisecondsPerDay;
+}
+
+/// The local midnight starting [day] (days since 1970-01-01).
+DateTime dayStart(int day) {
+  final utc = DateTime.fromMillisecondsSinceEpoch(
+    day * Duration.millisecondsPerDay,
+    isUtc: true,
+  );
+  return DateTime(utc.year, utc.month, utc.day);
 }

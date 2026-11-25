@@ -1,6 +1,7 @@
 import "package:flutter/material.dart";
 
 import "../../app_state.dart";
+import "../../shared/listening_settings.dart";
 import "../../shared/settings_sections.dart";
 import "../../shared/theme.dart";
 import "../controls.dart";
@@ -56,28 +57,34 @@ class _MobileSettingsState extends State<MobileSettings> {
       );
     }
 
-    return ListenableBuilder(
-      listenable: app.settingsControls,
-      builder: (context, _) => scrollPage([
-        MobileHeading(
-          "Settings",
-          subtitle: "Make Melody feel like yours.",
-          large: true,
-          actions: [
-            TouchIconButton(
-              Icons.arrow_back_rounded,
-              "Back",
-              () => Navigator.of(context).maybePop(),
-            ),
-          ],
-        ),
-        tile(appearanceSettings(context, app)),
-        tile(downloadSettings(context, app, mobile: true)),
-        tile(powerSettings(context, app)),
-        tile(youtubeSettings(context, app)),
-        tile(maintenanceSettings(context, app)),
-        tile(dataManagementSettings(context, app)),
-      ]),
+    // Section subtitles summarize the equalizer and scrobbling too.
+    return StreamBuilder<void>(
+      stream: app.adjustments.changes,
+      builder: (context, _) => ListenableBuilder(
+        listenable: Listenable.merge([app.settingsControls, app.scrobbler]),
+        builder: (context, _) => scrollPage([
+          MobileHeading(
+            "Settings",
+            subtitle: "Make Melody feel like yours.",
+            large: true,
+            actions: [
+              TouchIconButton(
+                Icons.arrow_back_rounded,
+                "Back",
+                () => Navigator.of(context).maybePop(),
+              ),
+            ],
+          ),
+          tile(appearanceSettings(context, app)),
+          tile(soundSettings(context, app)),
+          tile(downloadSettings(context, app, mobile: true)),
+          tile(powerSettings(context, app)),
+          tile(youtubeSettings(context, app)),
+          tile(scrobblingSettings(context, app)),
+          tile(maintenanceSettings(context, app)),
+          tile(dataManagementSettings(context, app)),
+        ]),
+      ),
     );
   }
 }

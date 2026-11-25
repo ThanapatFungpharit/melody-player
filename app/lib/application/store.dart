@@ -1,9 +1,10 @@
 import "dart:async";
 import "dart:convert";
+import "dart:math" show max;
 
 import "package:sqlite3/sqlite3.dart";
 
-import "../core/library/manager.dart" show trackDetailsSchema;
+import "../core/library/manager.dart" show listensSchema, trackDetailsSchema;
 import "../core/storage.dart";
 import "models.dart";
 
@@ -13,6 +14,37 @@ const applicationStateSchema =
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 $trackDetailsSchema
 """;
+
+/// Listens waiting to reach a scrobbling service, oldest first. A listen is
+/// queued once per service (`listened_at` is the second it began), and goes
+/// when the service accepts it or refuses it for good.
+const scrobbleQueueSchema = """
+CREATE TABLE IF NOT EXISTS scrobble_queue (
+    id INTEGER PRIMARY KEY,
+    service TEXT NOT NULL,
+    listened_at INTEGER NOT NULL,
+    listen TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (service, listened_at)
+) STRICT;
+""";
+
+/// A listen waiting in the scrobble queue.
+class PendingScrobble {
+  const PendingScrobble(this.id, this.listenedAt, this.listen, this.attempts);
+
+  final int id;
+
+  /// Seconds since the Unix epoch when the listen began.
+  final int listenedAt;
+
+  /// The service's own form of the listen.
+  final Map<String, Object?> listen;
+
+  /// How many submissions of it have failed so far.
+  final int attempts;
+}
+
 const _upsertState =
     "INSERT INTO state (key, value) VALUES (?, ?) "
     "ON CONFLICT (key) DO UPDATE SET value = excluded.value";
@@ -102,14 +134,30 @@ class ApplicationStore {
 
   Future<void> close() => _db.close();
 
+  /// The most listens statistics keep; the oldest go first.
+  static const maxListens = 200000;
+
+  /// The most listens waiting for a scrobbling service; the oldest go first,
+  /// so months offline cannot grow the queue without bound.
+  static const maxQueuedScrobbles = 10000;
+
   Map<String, Object?> _open() {
-    if (_db.hasTable("state")) return _load();
-    final data = _defaults();
+    final data = _db.hasTable("state") ? _load() : null;
     _db.transaction((db) {
-      db.execute(applicationStateSchema);
-      _writeRows(db, data, const {}, const {});
+      if (data == null) db.execute(applicationStateSchema);
+      // Tables later releases added; earlier ones leave them alone.
+      db.execute(listensSchema);
+      db.execute(scrobbleQueueSchema);
+      db.execute(
+        "DELETE FROM listens WHERE id <= "
+        "(SELECT id FROM listens ORDER BY id DESC LIMIT 1 OFFSET ?)",
+        [maxListens],
+      );
     });
-    return data;
+    if (data != null) return data;
+    final defaults = _defaults();
+    _db.transaction((db) => _writeRows(db, defaults, const {}, const {}));
+    return defaults;
   }
 
   Map<String, Object?> _load() {
@@ -213,7 +261,12 @@ class ApplicationStore {
           .where((item) => item != trackId)
           .toList(),
     };
-    _commit(lists, trackDetails: {trackId: _missing});
+    _commit(
+      lists,
+      trackDetails: {trackId: _missing},
+      also: (db) =>
+          db.execute("DELETE FROM listens WHERE track_id = ?", [trackId]),
+    );
     _deletedTrackIds.add(trackId);
   }
 
@@ -244,7 +297,7 @@ class ApplicationStore {
       "playback_history": <Object?>[],
       "favorites_order": <Object?>[],
       "playback": cleared,
-    });
+    }, also: (db) => db.execute("DELETE FROM listens"));
     _deletedTrackIds.addAll(removed);
   }
 
@@ -316,14 +369,28 @@ class ApplicationStore {
       for (final key in _details.keys)
         if (!validIds.contains(key)) key: _missing,
     };
-    final staleHistory = <String>{};
+    final staleHistory = <String>{
+      for (final row in _db.query("SELECT DISTINCT track_id FROM listens"))
+        if (!validIds.contains(row["track_id"])) row["track_id"] as String,
+    };
+    final staleListens = staleHistory.toList();
     final histories = <String, Object?>{};
     for (final (name, _) in _playHistories) {
       final items = _stringList(name);
       staleHistory.addAll(items.where((item) => !validIds.contains(item)));
       histories[name] = items.where(validIds.contains).toList();
     }
-    _commit(histories, trackDetails: stale);
+    _commit(
+      histories,
+      trackDetails: stale,
+      also: staleListens.isEmpty
+          ? null
+          : (db) {
+              for (final id in staleListens) {
+                db.execute("DELETE FROM listens WHERE track_id = ?", [id]);
+              }
+            },
+    );
     _deletedTrackIds
       ..addAll(stale.keys)
       ..addAll(staleHistory);
@@ -380,10 +447,121 @@ class ApplicationStore {
     _commit(updates, trackDetails: details);
   }
 
+  // -- listens ---------------------------------------------------------------
+
+  /// Records a listen for statistics. A track removed meanwhile keeps none.
+  void recordListen(Listen listen) {
+    if (_deletedTrackIds.contains(listen.trackId)) return;
+    _db.transaction(
+      (db) => db.execute(
+        "INSERT INTO listens (track_id, started_at, day, listened_ms, title, "
+        "artist, album) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+          listen.trackId,
+          listen.startedAt.millisecondsSinceEpoch ~/ 1000,
+          listen.day,
+          max(0, listen.listenedMs),
+          listen.title,
+          listen.artist,
+          listen.album,
+        ],
+      ),
+    );
+  }
+
+  // -- scrobble queue --------------------------------------------------------
+
+  /// Queues [listen] for [service]; false when it was queued already.
+  bool enqueueScrobble(
+    String service,
+    int listenedAt,
+    Map<String, Object?> listen,
+  ) => _db.transaction((db) {
+    db.execute(
+      "INSERT OR IGNORE INTO scrobble_queue (service, listened_at, listen) "
+      "VALUES (?, ?, ?)",
+      [service, listenedAt, jsonEncode(listen)],
+    );
+    final added = db.updatedRows > 0;
+    if (added) {
+      db.execute(
+        "DELETE FROM scrobble_queue WHERE service = ? AND id <= "
+        "(SELECT id FROM scrobble_queue WHERE service = ? "
+        "ORDER BY id DESC LIMIT 1 OFFSET ?)",
+        [service, service, maxQueuedScrobbles],
+      );
+    }
+    return added;
+  });
+
+  /// The oldest listens waiting for [service], at most [limit].
+  List<PendingScrobble> pendingScrobbles(String service, {int limit = 50}) => [
+    for (final row in _db.query(
+      "SELECT id, listened_at, listen, attempts FROM scrobble_queue "
+      "WHERE service = ? ORDER BY listened_at, id LIMIT ?",
+      [service, limit],
+    ))
+      if (_decodeListen(row["listen"]) case final listen?)
+        PendingScrobble(
+          row["id"] as int,
+          row["listened_at"] as int,
+          listen,
+          row["attempts"] as int,
+        ),
+  ];
+
+  static Map<String, Object?>? _decodeListen(Object? text) {
+    try {
+      final value = jsonDecode(text as String);
+      return value is Map ? value.cast<String, Object?>() : null;
+    } on Object {
+      return null;
+    }
+  }
+
+  int pendingScrobbleCount(String service) =>
+      _db.query("SELECT count(*) AS n FROM scrobble_queue WHERE service = ?", [
+            service,
+          ]).first["n"]
+          as int;
+
+  /// Removes listens the service accepted, or refused for good.
+  void removeScrobbles(Iterable<int> ids) {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    _db.transaction((db) {
+      for (final id in list) {
+        db.execute("DELETE FROM scrobble_queue WHERE id = ?", [id]);
+      }
+    });
+  }
+
+  /// Counts a failed submission of each of [ids].
+  void recordScrobbleAttempt(Iterable<int> ids) {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    _db.transaction((db) {
+      for (final id in list) {
+        db.execute(
+          "UPDATE scrobble_queue SET attempts = attempts + 1 WHERE id = ?",
+          [id],
+        );
+      }
+    });
+  }
+
+  /// Forgets every listen waiting for [service].
+  void clearScrobbles(String service) => _db.transaction(
+    (db) =>
+        db.execute("DELETE FROM scrobble_queue WHERE service = ?", [service]),
+  );
+
   /// Persists changed entries once, preserving the old state on failure.
+  /// [also] writes other tables in the same transaction.
   void _commit(
     Map<String, Object?> changes, {
     Map<String, Object?> trackDetails = const {},
+    void Function(Database db)? also,
   }) {
     final updates = <String, Object?>{};
     final encoded = <String, String>{};
@@ -406,8 +584,11 @@ class ApplicationStore {
                   !_sameJson(current[entry.key], entry.value))
           entry.key: entry.value,
     };
-    if (updates.isEmpty && changedDetails.isEmpty) return;
-    _db.transaction((db) => _writeRows(db, updates, encoded, changedDetails));
+    if (updates.isEmpty && changedDetails.isEmpty && also == null) return;
+    _db.transaction((db) {
+      _writeRows(db, updates, encoded, changedDetails);
+      also?.call(db);
+    });
     // Committed. A failure above leaves the model as it was.
     _data = {..._data, ...updates};
     if (changedDetails.isNotEmpty) {

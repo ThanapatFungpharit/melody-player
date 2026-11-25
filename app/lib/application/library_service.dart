@@ -175,7 +175,11 @@ class LibraryService {
             try {
               store.saveTrackDetails(
                 trackId,
-                TrackDetails(uploader: file.artist, sourceName: "Local file"),
+                TrackDetails(
+                  uploader: file.artist,
+                  album: file.tags.album,
+                  sourceName: "Local file",
+                ),
               );
               await thumbnails?.store(trackId, file.artwork);
             } catch (_) {
@@ -529,7 +533,11 @@ class LibraryService {
     try {
       store.saveTrackDetails(
         trackId,
-        TrackDetails(uploader: file.artist, sourceName: "Local file"),
+        TrackDetails(
+          uploader: file.artist,
+          album: file.tags.album,
+          sourceName: "Local file",
+        ),
       );
       await thumbnails?.store(trackId, file.artwork);
     } catch (_) {
@@ -604,8 +612,12 @@ class LibraryService {
       manager.updateTrack(track.id, title: file.tags.title);
     }
     final current = details(track.id);
-    if (current.uploader.isEmpty && file.artist.isNotEmpty) {
-      store.saveTrackDetails(track.id, current..uploader = file.artist);
+    final artist = current.uploader.isEmpty && file.artist.isNotEmpty;
+    final album = current.album.isEmpty && file.tags.album.isNotEmpty;
+    if (artist || album) {
+      if (artist) current.uploader = file.artist;
+      if (album) current.album = file.tags.album;
+      store.saveTrackDetails(track.id, current);
     }
   }
 

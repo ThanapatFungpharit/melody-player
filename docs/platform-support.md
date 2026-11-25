@@ -21,9 +21,17 @@ a control that does nothing. The checks live in `app/lib/platform/features.dart`
 | Embed lyrics into tracks already in the library | Yes | Yes | Yes | No |
 | ytmusicapi and yt-dlp engine updates | Yes | Yes | Yes | Yes |
 | App icon follows the accent color | No | No | No | Yes, once Melody leaves the screen |
+| Equalizer (Settings → Sound) | No | No | No | Yes (the system `Equalizer` effect, mapped onto the device's bands) |
+| Track and album loudness (track menu → Adjust loudness) | Cuts; raises up to the 6 dB mpv allows, within the track's peaks | Cuts only | Cuts; raises up to the 6 dB mpv allows, within the track's peaks | Cuts; raises up to 12 dB with the limiter |
+| Listening statistics, ListenBrainz scrobbling | Yes | Yes | Yes | Yes |
 | Low Power Mode follows the system's power saving | Energy Saver, read on return to Melody | Low Power Mode (`pmset`), read on return | Power saver profile (ACPI platform profile or power-profiles-daemon), read on return | Battery Saver, as it changes |
 
 "Disabled" means the setting is shown greyed out, with a note explaining why.
+Where there is no equalizer, Settings → Sound says so and keeps its
+Loudness group (normalization, and a pointer to the per-track offsets): the bundled libmpv on Windows and Linux has no FFmpeg
+filters, and AVPlayer on macOS has no equalizer. On Android the equalizer and
+its interaction with audio focus and other apps' effects still need a check on
+a physical device; the headless tests drive a fake decoder.
 
 ## Details
 

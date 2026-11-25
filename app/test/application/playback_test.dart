@@ -4,6 +4,7 @@ import "dart:io";
 import "dart:math";
 
 import "package:flutter_test/flutter_test.dart";
+import "package:melody/application/audio_adjustments.dart";
 import "package:melody/application/library_service.dart";
 import "package:melody/application/loudness.dart";
 import "package:melody/application/models.dart";
@@ -14,7 +15,8 @@ import "package:melody/application/store.dart";
 import "package:melody/audio/audio_backend.dart";
 import "package:melody/core/library/manager.dart";
 import "package:melody/core/loudness.dart";
-import "package:melody_audio/melody_audio.dart" show AudioQueueItem;
+import "package:melody_audio/melody_audio.dart"
+    show AudioQueueItem, EqualizerSettings;
 import "package:path/path.dart" as p;
 
 class FakeBackend implements TrackPlayerBackend {
@@ -1297,5 +1299,77 @@ void main() {
         );
       },
     );
+
+    test("gain offsets and equalizer headroom reach every row", () async {
+      final ids = await tracks(["a.mp3", "b.mp3"]);
+      lufs.addAll({"a.mp3": -14, "b.mp3": -14});
+      await measure(ids);
+      final sent = <EqualizerSettings>[];
+      final adjustments = AudioAdjustments(
+        store,
+        equalizerSupported: true,
+        applyEqualizer: sent.add,
+      );
+      addTearDown(adjustments.close);
+      final playback = PlaybackController(
+        manager,
+        LibraryService(manager, store),
+        store,
+        backend,
+        persistence: persistence,
+        loudness: loudness,
+        adjustments: adjustments,
+      )..playTracks(ids);
+      expect(backend.queues.last.$1.map((item) => item.gain), [1, 1]);
+
+      adjustments.setTrackGain(ids[1], -6);
+      expect(
+        backend.queueUpdates.last.$1[1].gain,
+        closeTo(linearGain(-6), 1e-9),
+      );
+
+      // An album's offset applies to the playing track too (with a fade).
+      store.saveTrackDetails(ids[0], store.trackDetails(ids[0])..album = "LP");
+      adjustments.setAlbumGain("LP", -3);
+      expect(
+        backend.queueUpdates.last.$1[0].gain,
+        closeTo(linearGain(-3), 1e-9),
+      );
+
+      // This engine cannot boost: a raise stops at the track's own level.
+      adjustments.setTrackGain(ids[1], 6);
+      expect(backend.queueUpdates.last.$1[1].gain, 1);
+
+      // A boosting equalizer lowers every row by its largest boost.
+      adjustments.setEqualizer(
+        EqualizerState(enabled: true, gains: [4, 2, 0, 0, 0, 0, 0, 0, 0, -3]),
+      );
+      final items = backend.queueUpdates.last.$1;
+      expect(items[0].gain, closeTo(linearGain(-3 - 4), 1e-9));
+      expect(items[1].gain, closeTo(linearGain(-4), 1e-9));
+      expect(sent.last.enabled, isTrue);
+      expect(playback.volume, 25);
+    });
+
+    test("without an equalizer on the device, no headroom is taken", () async {
+      final ids = await tracks(["a.mp3"]);
+      lufs["a.mp3"] = -14;
+      await measure(ids);
+      final adjustments = AudioAdjustments(store, equalizerSupported: false);
+      addTearDown(adjustments.close);
+      adjustments.setEqualizer(
+        EqualizerState(enabled: true, gains: List.filled(10, 6.0)),
+      );
+      PlaybackController(
+        manager,
+        LibraryService(manager, store),
+        store,
+        backend,
+        persistence: persistence,
+        loudness: loudness,
+        adjustments: adjustments,
+      ).playTracks(ids);
+      expect(backend.queues.last.$1.single.gain, 1);
+    });
   });
 }
