@@ -10,6 +10,7 @@ import "../../core/library/models.dart";
 import "../controllers/playlists_controller.dart";
 import "dialogs.dart";
 import "format.dart";
+import "listening_settings.dart" show showVolumeAdjustment;
 
 /// One entry in a track, result, or collection action menu. Desktop shows
 /// these in popup menus; mobile shows them in a bottom sheet.
@@ -109,6 +110,11 @@ List<MenuAction> libraryTrackActions(
     "View details",
     Icons.info_outline_rounded,
     () => showTrackDetailsDialog(context, app, track),
+  ),
+  MenuAction(
+    "Adjust loudness…",
+    Icons.volume_up_rounded,
+    () => showVolumeAdjustment(context, app, track.id),
   ),
   ?_copyLink(app, track),
   MenuAction(

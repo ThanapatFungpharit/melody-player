@@ -19,6 +19,8 @@ export "src/audio_engine.dart"
         AudioStateChanged,
         AudioTrackChanged,
         MediaCommand;
+export "src/equalizer.dart"
+    show EqualizerBand, EqualizerSettings, equalizerGainAt;
 export "src/notification_artwork.dart" show useNotificationArtworkDirectory;
 export "src/system_media_session.dart"
     show

@@ -8,6 +8,7 @@ import "../../application/package_runtime.dart";
 import "../../core/media.dart";
 import "../../platform/features.dart";
 import "dialogs.dart";
+import "listening_settings.dart" show EqualizerControls;
 import "theme.dart";
 
 /// A settings group: header metadata plus its fields.
@@ -470,6 +471,89 @@ String _loudnessTargetLabel(int target) => switch (target) {
   _ => "$target LUFS",
 };
 
+/// Everything that changes how music sounds, in two groups that do
+/// different jobs: loudness (how loud each track plays, matched by
+/// normalization and moved per track or album) and the equalizer (the tone
+/// of everything). Both reach playback through `playbackGainDb`.
+SettingsSection soundSettings(BuildContext context, MelodyApp app) {
+  final controls = app.settingsControls;
+  final current = app.settings;
+  final adjustments = app.adjustments;
+
+  final loudness = app.services.loudness;
+  final maxBoostDb = loudness.maxBoostDb.round();
+  final loudnessHelper = loudness.limiterHeadroomDb > 0
+      ? "Quiet tracks are boosted by up to $maxBoostDb dB, with a limiter "
+            "to prevent clipping."
+      : loudness.maxBoostDb > 0
+      ? "Quiet tracks are boosted by up to $maxBoostDb dB, as far as their "
+            "peaks allow."
+      : "Quiet tracks aren't boosted on this device. A lower target evens "
+            "out more tracks.";
+
+  final equalizer = adjustments.equalizer;
+  final equalizerSummary = !adjustments.equalizerSupported
+      ? null
+      : equalizer.enabled
+      ? "Equalizer: ${equalizer.preset ?? "Custom"}"
+      : "Equalizer off";
+  final loudnessSummary = current.normalizeLoudness
+      ? "Normalized"
+      : "Not normalized";
+
+  return SettingsSection(
+    icon: Icons.graphic_eq_rounded,
+    title: "Sound",
+    subtitle: "Even out loudness and shape the tone.",
+    mobileTitle: "Sound",
+    mobileSubtitle: equalizerSummary == null
+        ? loudnessSummary
+        : "$loudnessSummary · $equalizerSummary",
+    body: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      spacing: 16,
+      children: [
+        _label(context, "LOUDNESS"),
+        SwitchListTile(
+          value: current.normalizeLoudness,
+          onChanged: (value) =>
+              controls.update((next) => next.normalizeLoudness = value),
+          title: const Text("Normalize loudness"),
+          subtitle: const Text(
+            "Play every track at a similar volume, so you don't reach for "
+            "the volume between songs. Your files stay the same.",
+          ),
+          contentPadding: EdgeInsets.zero,
+        ),
+        _dropdown(
+          "Target loudness",
+          "${current.loudnessTarget}",
+          [
+            for (final target in loudnessTargetChoices)
+              ("$target", _loudnessTargetLabel(target)),
+          ],
+          current.normalizeLoudness
+              ? (value) => controls.update(
+                  (next) => next.loudnessTarget = int.parse(value),
+                )
+              : null,
+          helper: loudnessHelper,
+        ),
+        if (current.normalizeLoudness) _note(context, controls.loudnessStatus),
+        _note(
+          context,
+          "Still too loud or too quiet? Choose Adjust loudness from a "
+          "track's menu to move that track or its album. It works with "
+          "normalization on or off.",
+        ),
+        _sectionDivider,
+        _label(context, "EQUALIZER"),
+        EqualizerControls(adjustments),
+      ],
+    ),
+  );
+}
+
 /// One selectable accent color. The selected one carries a check, so the
 /// choice doesn't rest on color alone, and each names itself in a tooltip.
 class _AccentSwatch extends StatelessWidget {
@@ -534,23 +618,12 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
   final controls = app.settingsControls;
   final current = app.settings;
 
-  final loudness = app.services.loudness;
-  final maxBoostDb = loudness.maxBoostDb.round();
-  final loudnessHelper = loudness.limiterHeadroomDb > 0
-      ? "Quiet tracks are boosted by up to $maxBoostDb dB, with a limiter "
-            "to prevent clipping."
-      : loudness.maxBoostDb > 0
-      ? "Quiet tracks are boosted by up to $maxBoostDb dB, as far as their "
-            "peaks allow."
-      : "Quiet tracks aren't boosted on this device. A lower target evens "
-            "out more tracks.";
-
   return SettingsSection(
     icon: Icons.tune_rounded,
     title: "Appearance",
     subtitle: "Set the mood for your music.",
     mobileTitle: "Appearance",
-    mobileSubtitle: "Theme, accent, startup and playback",
+    mobileSubtitle: "Theme, accent and startup",
     body: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
@@ -583,45 +656,14 @@ SettingsSection appearanceSettings(BuildContext context, MelodyApp app) {
           ),
         ]),
         _sectionDivider,
-        _label(context, "STARTUP & PLAYBACK"),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SwitchListTile(
-              value: current.resumeSession,
-              onChanged: (value) =>
-                  controls.update((next) => next.resumeSession = value),
-              title: const Text("Resume queue and playback state"),
-              contentPadding: EdgeInsets.zero,
-            ),
-            SwitchListTile(
-              value: current.normalizeLoudness,
-              onChanged: (value) =>
-                  controls.update((next) => next.normalizeLoudness = value),
-              title: const Text("Normalize loudness"),
-              subtitle: const Text(
-                "Play songs at a similar volume. Your files and volume "
-                "setting stay the same.",
-              ),
-              contentPadding: EdgeInsets.zero,
-            ),
-          ],
+        _label(context, "STARTUP"),
+        SwitchListTile(
+          value: current.resumeSession,
+          onChanged: (value) =>
+              controls.update((next) => next.resumeSession = value),
+          title: const Text("Resume queue and playback state"),
+          contentPadding: EdgeInsets.zero,
         ),
-        _dropdown(
-          "Target loudness",
-          "${current.loudnessTarget}",
-          [
-            for (final target in loudnessTargetChoices)
-              ("$target", _loudnessTargetLabel(target)),
-          ],
-          current.normalizeLoudness
-              ? (value) => controls.update(
-                  (next) => next.loudnessTarget = int.parse(value),
-                )
-              : null,
-          helper: loudnessHelper,
-        ),
-        if (current.normalizeLoudness) _note(context, controls.loudnessStatus),
         if (PlatformFeatures.notificationShortcuts) ...[
           _sectionDivider,
           _label(context, "NOTIFICATIONS"),
@@ -671,17 +713,19 @@ SettingsSection powerSettings(BuildContext context, MelodyApp app) {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       spacing: 16,
       children: [
-        _dropdown(
-          "Low Power Mode",
-          current.lowPowerMode.id,
-          [
-            for (final setting in LowPowerSetting.values)
-              (setting.id, setting.label),
-          ],
-          (value) => controls.update(
-            (next) => next.lowPowerMode = LowPowerSetting.parse(value),
+        _topField(
+          _dropdown(
+            "Low Power Mode",
+            current.lowPowerMode.id,
+            [
+              for (final setting in LowPowerSetting.values)
+                (setting.id, setting.label),
+            ],
+            (value) => controls.update(
+              (next) => next.lowPowerMode = LowPowerSetting.parse(value),
+            ),
+            descriptions: _lowPowerDescriptions,
           ),
-          descriptions: _lowPowerDescriptions,
         ),
         ValueListenableBuilder(
           valueListenable: app.power,

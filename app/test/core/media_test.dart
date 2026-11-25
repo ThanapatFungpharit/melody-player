@@ -19,6 +19,29 @@ void main() {
     expect(youtubePlaylistUrl("https://example.com/?list=PL1"), isNull);
   });
 
+  test("YouTube Music playlist pages name their playlist too", () {
+    expect(
+      youtubePlaylistId("https://music.youtube.com/browse/VLPLabc_-1"),
+      "PLabc_-1",
+    );
+    expect(
+      youtubePlaylistUrl("https://music.youtube.com/browse/VLPL1?si=x"),
+      "https://music.youtube.com/playlist?list=PL1",
+    );
+    // An album or artist page is not a playlist.
+    expect(
+      youtubePlaylistId("https://music.youtube.com/browse/MPREb_x"),
+      isNull,
+    );
+    expect(youtubePlaylistId("https://music.youtube.com/browse/VL"), isNull);
+    expect(youtubePlaylistId("https://example.com/browse/VLPL1"), isNull);
+    // Characters no playlist ID has are refused rather than sent on.
+    expect(
+      youtubePlaylistId("https://music.youtube.com/playlist?list=a%20b"),
+      isNull,
+    );
+  });
+
   group("URL predicates", () {
     test("isHttpUrl accepts only HTTP schemes", () {
       expect(isHttpUrl(" HTTPS://example.com "), isTrue);

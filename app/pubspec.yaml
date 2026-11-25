@@ -7,7 +7,7 @@ environment:
   sdk: ^3.12.2
 
 dependencies:
-  crypto: ^3.0.7
+  crypto: ^3.0.8
   file_picker: ^11.0.3
   flutter:
     sdk: flutter
@@ -16,7 +16,7 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.6
   serious_python: 6.0.0
-  sqlite3: ^3.5.2
+  sqlite3: ^3.9.2
   uuid: ^4.6.0
 
 dev_dependencies:

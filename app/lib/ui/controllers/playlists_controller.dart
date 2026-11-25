@@ -25,6 +25,7 @@ class _ImportSession {
     Map<String, String> resolved = const {},
     this.resolveMetadata = false,
     this.skipped = 0,
+    this.unavailable = 0,
     this.locate,
   }) : resolved = {...resolved},
        pending = Queue.of(
@@ -49,6 +50,9 @@ class _ImportSession {
 
   /// Entries of the source that matched nothing and cannot be downloaded.
   final int skipped;
+
+  /// Entries of a remote playlist that cannot be played or saved.
+  final int unavailable;
 
   /// The summary's action that finds the [skipped] entries.
   final (String, VoidCallback)? Function(_ImportSession session)? locate;
@@ -303,6 +307,11 @@ class PlaylistsController extends ChangeNotifier {
     );
   }
 
+  static String _unavailable(int count) => count > 0
+      ? " ${plural(count, "track")} ${count == 1 ? "is" : "are"} unavailable "
+            "and ${count == 1 ? "was" : "were"} skipped."
+      : "";
+
   static String _notFound(int count) => count > 0
       ? " ${plural(count, "track")} ${count == 1 ? "was" : "were"} not found."
       : "";
@@ -417,10 +426,22 @@ class PlaylistsController extends ChangeNotifier {
         (remote.title.trim().isNotEmpty
             ? remote.title.trim()
             : "Imported ${app.settings.musicSource.label} playlist");
-    final unique = <String, SearchResult>{
-      for (final item in remote.tracks)
-        if (item.url.isNotEmpty) sourceKey(item.url): item,
-    };
+    // Keyed by media identity alone: two entries are the same song only
+    // when they name the same video, never because their titles match.
+    final unique = <String, SearchResult>{};
+    for (final item in remote.tracks) {
+      final identity = item.identity;
+      if (identity != null) unique.putIfAbsent(identity.key, () => item);
+    }
+    if (unique.isEmpty && existing == null) {
+      // Nothing to fill a new playlist with: say why rather than create one.
+      app.showError(
+        remote.unavailable.isEmpty
+            ? "“$name” has no tracks to import."
+            : "None of the tracks in “$name” are available.",
+      );
+      return Future.value();
+    }
     return _run(
       name,
       unique.keys.toList(),
@@ -428,6 +449,7 @@ class PlaylistsController extends ChangeNotifier {
       generation,
       into: existing?.id,
       source: source,
+      unavailable: remote.unavailable.length,
     );
   }
 
@@ -449,6 +471,7 @@ class PlaylistsController extends ChangeNotifier {
     Map<String, String> resolved = const {},
     bool resolveMetadata = false,
     int skipped = 0,
+    int unavailable = 0,
     (String, VoidCallback)? Function(_ImportSession session)? locate,
   }) async {
     if (_session != null) {
@@ -473,6 +496,7 @@ class PlaylistsController extends ChangeNotifier {
       resolved: resolved,
       resolveMetadata: resolveMetadata,
       skipped: skipped,
+      unavailable: unavailable,
       locate: locate,
     );
     _session = session;
@@ -622,7 +646,8 @@ class PlaylistsController extends ChangeNotifier {
     final summary =
         "Imported $imported of ${session.total} tracks into “${session.name}”: "
         "reused ${session.reused}, downloaded ${session.downloaded}."
-        "${_notFound(session.skipped)}";
+        "${_notFound(session.skipped)}"
+        "${_unavailable(session.unavailable)}";
     final action = session.locate?.call(session);
     if (session.failed > 0) {
       app.showMessage(

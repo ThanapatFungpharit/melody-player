@@ -53,19 +53,39 @@ bool isYoutubeUrl(String value) {
   return _isHttp(uri) && youtubeHosts.contains(uri!.host.toLowerCase());
 }
 
-/// Whether [value] identifies a specific YouTube playlist.
-bool isYoutubePlaylistUrl(String value) {
-  if (!isYoutubeUrl(value)) return false;
-  final list = _parse(value)!.queryParametersAll["list"];
-  return list != null && list.any((item) => item.isNotEmpty);
+final _playlistId = RegExp(r"^[A-Za-z0-9_-]+$");
+
+/// The ID of the playlist [value] links to: its `list` parameter
+/// (`/playlist?list=`, or a `/watch` link played from a playlist), or a
+/// YouTube Music `/browse/VL<id>` page. Null when it names none.
+String? youtubePlaylistId(String value) {
+  if (!isYoutubeUrl(value)) return null;
+  final uri = _parse(value)!;
+  final list = uri.queryParametersAll["list"]?.firstWhere(
+    (item) => item.isNotEmpty,
+    orElse: () => "",
+  );
+  if (list != null && list.isNotEmpty) {
+    return _playlistId.hasMatch(list) ? list : null;
+  }
+  final parts = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+  if (parts.length == 2 &&
+      parts[0] == "browse" &&
+      parts[1].startsWith("VL") &&
+      parts[1].length > 2 &&
+      _playlistId.hasMatch(parts[1])) {
+    return parts[1].substring(2);
+  }
+  return null;
 }
+
+/// Whether [value] identifies a specific YouTube playlist.
+bool isYoutubePlaylistUrl(String value) => youtubePlaylistId(value) != null;
 
 /// The canonical link of the playlist [value] names, or null when it names none.
 String? youtubePlaylistUrl(String value) {
-  if (!isYoutubePlaylistUrl(value)) return null;
-  final id = _parse(
-    value,
-  )!.queryParametersAll["list"]!.firstWhere((item) => item.isNotEmpty);
+  final id = youtubePlaylistId(value);
+  if (id == null) return null;
   return Uri.https(youtubeMusicHost, "/playlist", {"list": id}).toString();
 }
 

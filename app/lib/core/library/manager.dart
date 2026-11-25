@@ -48,6 +48,27 @@ CREATE TABLE IF NOT EXISTS track_details (
 ) STRICT;
 """;
 
+/// Listens: one row per play that lasted long enough to count, with the title,
+/// artist, and album it had then, so statistics are a single aggregate query.
+/// Like [trackDetailsSchema], it lives beside the library so a track's listens
+/// can go in the transaction that deletes it. `day` is the listener's local
+/// calendar day (days since 1970-01-01) the listen started on.
+const listensSchema = """
+CREATE TABLE IF NOT EXISTS listens (
+    id INTEGER PRIMARY KEY,
+    track_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    day INTEGER NOT NULL,
+    listened_ms INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS listens_by_time ON listens (started_at);
+CREATE INDEX IF NOT EXISTS listens_by_day ON listens (day);
+CREATE INDEX IF NOT EXISTS listens_by_track ON listens (track_id);
+""";
+
 /// SQL for a stored track ID in [column] in the text form [Track.id] has.
 String trackIdAsText(String column) =>
     "lower(substr(hex($column), 1, 8) || '-' || substr(hex($column), 9, 4) || "
@@ -61,6 +82,15 @@ final _detailsGoWithTheirTrack =
 CREATE TRIGGER IF NOT EXISTS track_details_go_with_track
 AFTER DELETE ON tracks BEGIN
     DELETE FROM track_details WHERE track_id = ${trackIdAsText("OLD.id")};
+END;
+""";
+
+/// A track's listens go with it too: statistics describe the library.
+final _listensGoWithTheirTrack =
+    """
+CREATE TRIGGER IF NOT EXISTS listens_go_with_track
+AFTER DELETE ON tracks BEGIN
+    DELETE FROM listens WHERE track_id = ${trackIdAsText("OLD.id")};
 END;
 """;
 
@@ -431,6 +461,8 @@ class MusicManager {
     _db.transaction((db) {
       db.execute(trackDetailsSchema);
       db.execute(_detailsGoWithTheirTrack);
+      db.execute(listensSchema);
+      db.execute(_listensGoWithTheirTrack);
     });
     _rebuildIndexes();
   }

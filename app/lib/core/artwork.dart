@@ -9,8 +9,9 @@
 /// `LYRICS`, `UNSYNCEDLYRICS`, or `USLT`), MP4 `©lyr`, and `LYRICS` or
 /// `UNSYNCEDLYRICS` Vorbis comments in FLAC and Ogg.
 ///
-/// Titles and artists come from ID3 `TIT2`/`TPE1` (`TT2`/`TP1` in v2.2), MP4
-/// `©nam`/`©ART`, and `TITLE`/`ARTIST` Vorbis comments.
+/// Titles, artists, and albums come from ID3 `TIT2`/`TPE1`/`TALB`
+/// (`TT2`/`TP1`/`TAL` in v2.2), MP4 `©nam`/`©ART`/`©alb`, and
+/// `TITLE`/`ARTIST`/`ALBUM` Vorbis comments.
 library;
 
 import "dart:convert";
@@ -78,12 +79,13 @@ String readEmbeddedLyricsSync(String path) {
   }
 }
 
-/// A track's title and artist as its file names them; empty when it does not.
-typedef AudioTags = ({String title, String artist});
+/// A track's title, artist, and album as its file names them; empty when it
+/// does not.
+typedef AudioTags = ({String title, String artist, String album});
 
-const AudioTags noAudioTags = (title: "", artist: "");
+const AudioTags noAudioTags = (title: "", artist: "", album: "");
 
-/// The title and artist tagged in [path]. Runs off the UI isolate.
+/// The title, artist, and album tagged in [path]. Runs off the UI isolate.
 Future<AudioTags> readEmbeddedTags(String path) =>
     Isolate.run(() => readEmbeddedTagsSync(path));
 
@@ -212,10 +214,18 @@ AudioTags _id3Tags(String path) {
       if (ids.contains(id) && frame.isNotEmpty)
         decodeId3Text(Uint8List.sublistView(frame, 1), frame[0]),
   ]);
-  final frames = _id3Frames(path, const {"TIT2", "TT2", "TPE1", "TP1"});
+  final frames = _id3Frames(path, const {
+    "TIT2",
+    "TT2",
+    "TPE1",
+    "TP1",
+    "TALB",
+    "TAL",
+  });
   return (
     title: text(frames, const {"TIT2", "TT2"}),
     artist: text(frames, const {"TPE1", "TP1"}),
+    album: text(frames, const {"TALB", "TAL"}),
   );
 }
 
@@ -357,7 +367,11 @@ AudioTags _mp4Tags(String path) {
     ]);
   }
 
-  return (title: text("\u00a9nam"), artist: text("\u00a9ART"));
+  return (
+    title: text("\u00a9nam"),
+    artist: text("\u00a9ART"),
+    album: text("\u00a9alb"),
+  );
 }
 
 /// The iTunes metadata list (`moov/udta/meta/ilst`), or null.
@@ -528,7 +542,7 @@ AudioTags _vorbisTags(List<(String, Uint8List)> comments) {
     for (final (name, value) in comments)
       if (name == key) utf8.decode(value, allowMalformed: true),
   ]);
-  return (title: text("title"), artist: text("artist"));
+  return (title: text("title"), artist: text("artist"), album: text("album"));
 }
 
 // -- Ogg Opus / Vorbis --------------------------------------------------------

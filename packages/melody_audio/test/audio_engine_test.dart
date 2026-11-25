@@ -2,6 +2,7 @@ import "dart:async";
 import "dart:collection";
 
 import "package:melody_audio/src/audio_engine.dart";
+import "package:melody_audio/src/equalizer.dart";
 import "package:melody_audio/src/system_media_session.dart";
 import "package:flutter/foundation.dart";
 import "package:flutter/services.dart";
@@ -68,6 +69,61 @@ void main() {
     await SystemMediaSession.instance.deactivateForStop();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(audioSessionChannel, null);
+  });
+
+  test("the equalizer follows the settings on the playing decoder", () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() async {
+      await engine.setEqualizer(EqualizerSettings.off);
+      debugDefaultTargetPlatformOverride = null;
+    });
+    expect(AudioEngine.equalizerSupported, isTrue);
+    await setQueue(["a"], 0, autoplay: true);
+    final player = audio.last;
+    await _settle();
+    // Flat and off: the effect stays off, so playback is as before.
+    expect(player.equalizerEnabled, isFalse);
+
+    await engine.setEqualizer(
+      const EqualizerSettings(
+        enabled: true,
+        bands: [(frequency: 60, gainDb: 6), (frequency: 14000, gainDb: -30)],
+      ),
+    );
+    await _settle();
+    expect(player.equalizerEnabled, isTrue);
+    expect(player.bandGains[0], 6);
+    // Beyond the device's range: its limit.
+    expect(player.bandGains[4], -15);
+    // The level is the app's business (it leaves headroom in each gain).
+    expect(player.volumes.last, 1);
+
+    // The next decoder starts with the same curve.
+    await setQueue(["b"], 0, generation: 4, autoplay: true);
+    await _settle();
+    expect(audio.last.equalizerEnabled, isTrue);
+    expect(audio.last.bandGains[0], 6);
+
+    await engine.setEqualizer(EqualizerSettings.off);
+    await _settle();
+    expect(audio.last.equalizerEnabled, isFalse);
+  });
+
+  test("desktop decoders get no equalizer effect", () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    expect(AudioEngine.equalizerSupported, isFalse);
+    await engine.setEqualizer(
+      const EqualizerSettings(
+        enabled: true,
+        bands: [(frequency: 60, gainDb: 6)],
+      ),
+    );
+    await setQueue(["a"], 0, autoplay: true);
+    await _settle();
+    expect(audio.last.equalizerEnabled, isFalse);
+    expect(audio.last.bandGains, isEmpty);
+    await engine.setEqualizer(EqualizerSettings.off);
   });
 
   test(

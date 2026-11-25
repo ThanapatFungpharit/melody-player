@@ -188,12 +188,26 @@ class LoudnessNormalizer {
     if (!_changes.isClosed) _changes.add(LoudnessChange.settings);
   }
 
-  /// The linear volume factor for [trackId] (1 when normalization is off).
-  double gainFor(String trackId) {
-    if (!_enabled) return 1;
+  /// The linear volume factor for [trackId]: normalization's gain (none
+  /// when it is off) through the rest of the level chain
+  /// ([playbackGainDb]): the listener's [offsetDb], and [headroomDb] kept
+  /// free for the equalizer's boosts.
+  double gainFor(String trackId, {double offsetDb = 0, double headroomDb = 0}) {
     final measurement = _entries[trackId]?.measurement;
+    final base = !_enabled
+        ? 0.0
+        : measurement == null
+        ? _typicalGain()
+        : _gainDb(measurement);
     return linearGain(
-      measurement == null ? _typicalGain() : _gainDb(measurement),
+      playbackGainDb(
+        normalizationDb: base,
+        offsetDb: offsetDb,
+        equalizerHeadroomDb: headroomDb,
+        measurement: measurement,
+        maxBoostDb: maxBoostDb,
+        limiterHeadroomDb: limiterHeadroomDb,
+      ),
     );
   }
 

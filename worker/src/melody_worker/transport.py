@@ -71,7 +71,7 @@ def _serve_bridge(port: int, **options: Any) -> None:
 
 def _connect_bridge(port: int, **options: Any) -> Worker:
     # Provided by serious_python's embedded runtime only.
-    import dart_bridge  # ty: ignore[unresolved-import]
+    import dart_bridge  # ty: ignore[import-not-found]
 
     channel = {"port": port}
     worker = Worker(

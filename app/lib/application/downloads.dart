@@ -790,6 +790,7 @@ class DownloadCoordinator extends ChangeNotifier {
       duration: metadata.duration,
       thumbnail: thumbnail,
       sourceName: metadata.source,
+      album: metadata.album,
     );
     final existing =
         manager.findTrackBySource(source) ??
@@ -993,6 +994,7 @@ class _DownloadMetadata {
     this.batchId = "",
     this.batchPosition = 0,
     this.batchSize = 0,
+    this.album = "",
   });
 
   /// A search result, with the details its source listed for it.
@@ -1004,6 +1006,7 @@ class _DownloadMetadata {
         thumbnail: result.thumbnail,
         source: result.source,
         duration: result.duration,
+        album: result.album,
       );
 
   /// A bare URL, under a placeholder [title] until yt-dlp reports the
@@ -1036,6 +1039,7 @@ class _DownloadMetadata {
       uploader: original.uploader,
       thumbnail: original.thumbnail,
       source: original.source,
+      album: original.album,
       progress: original.progress,
       downloadedBytes: original.downloadedBytes,
       totalBytes: original.totalBytes,
@@ -1059,6 +1063,9 @@ class _DownloadMetadata {
 
   /// In seconds; 0 when unknown.
   final double duration;
+
+  /// The album the source listed; empty when unknown.
+  final String album;
 
   /// How far earlier attempts got.
   final double progress;
@@ -1088,5 +1095,6 @@ class _DownloadMetadata {
     batchId: batchId,
     batchPosition: batchPosition,
     batchSize: batchSize,
+    album: album,
   );
 }

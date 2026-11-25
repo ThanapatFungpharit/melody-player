@@ -321,8 +321,46 @@ class FakeAudioPlayer extends AudioPlayerPlatform {
   Future<AudioEffectSetEnabledResponse> audioEffectSetEnabled(
     AudioEffectSetEnabledRequest request,
   ) async {
-    boostEnabled = request.enabled;
+    if (request.type == "AndroidEqualizer") {
+      equalizerEnabled = request.enabled;
+    } else {
+      boostEnabled = request.enabled;
+    }
     return AudioEffectSetEnabledResponse();
+  }
+
+  /// The Android Equalizer attached to this decoder: five bands of ±15 dB,
+  /// like most devices'.
+  bool equalizerEnabled = false;
+  final Map<int, double> bandGains = {};
+  static const bandCenters = [60.0, 230.0, 910.0, 3600.0, 14000.0];
+
+  @override
+  Future<AndroidEqualizerGetParametersResponse> androidEqualizerGetParameters(
+    AndroidEqualizerGetParametersRequest request,
+  ) async => AndroidEqualizerGetParametersResponse(
+    parameters: AndroidEqualizerParametersMessage(
+      minDecibels: -15,
+      maxDecibels: 15,
+      bands: [
+        for (final (index, center) in bandCenters.indexed)
+          AndroidEqualizerBandMessage(
+            index: index,
+            lowerFrequency: center / 2,
+            upperFrequency: center * 2,
+            centerFrequency: center,
+            gain: bandGains[index] ?? 0,
+          ),
+      ],
+    ),
+  );
+
+  @override
+  Future<AndroidEqualizerBandSetGainResponse> androidEqualizerBandSetGain(
+    AndroidEqualizerBandSetGainRequest request,
+  ) async {
+    bandGains[request.bandIndex] = request.gain;
+    return AndroidEqualizerBandSetGainResponse();
   }
 
   @override

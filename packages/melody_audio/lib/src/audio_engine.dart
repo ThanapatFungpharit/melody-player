@@ -5,6 +5,7 @@ import "package:audio_session/audio_session.dart";
 import "package:flutter/foundation.dart";
 import "package:just_audio/just_audio.dart";
 
+import "equalizer.dart";
 import "native_queue_policy.dart";
 import "system_media_session.dart";
 
@@ -690,13 +691,69 @@ class AudioEngine {
   /// Each Android decoder's gain stage for boosts.
   final _enhancers = Expando<AndroidLoudnessEnhancer>();
 
+  /// Each Android decoder's equalizer effect.
+  final _equalizers = Expando<AndroidEqualizer>();
+
+  EqualizerSettings _equalizer = EqualizerSettings.off;
+
+  /// Whether this platform's decoder has an equalizer. Android's
+  /// ExoPlayer takes the system `Equalizer` effect on its audio session; the
+  /// bundled libmpv on Windows and Linux has no FFmpeg filters, and AVPlayer
+  /// has no equalizer.
+  static bool get equalizerSupported => _android;
+
+  /// The equalizer settings decoders follow.
+  EqualizerSettings get equalizer => _equalizer;
+
+  /// Applies [settings] to the playing decoder and every later one. Where
+  /// [equalizerSupported] is false it is remembered and does nothing. The
+  /// effect is off while the settings are flat, so flat playback takes the
+  /// same path as without it. It never changes the level: the app leaves
+  /// headroom for boosted bands in each row's gain.
+  Future<void> setEqualizer(EqualizerSettings settings) async {
+    if (settings == _equalizer) return;
+    _equalizer = settings;
+    for (final player in {?_player, ?_preparingPlayer}) {
+      await _applyEqualizer(player);
+    }
+  }
+
+  Future<void> _applyEqualizer(AudioPlayer player) async {
+    final effect = _equalizers[player];
+    if (effect == null) return;
+    final settings = _equalizer;
+    try {
+      if (!settings.active) {
+        if (effect.enabled) await effect.setEnabled(false);
+        return;
+      }
+      // Known once the decoder has a source; until then this waits.
+      final parameters = await effect.parameters;
+      if (!identical(settings, _equalizer)) return;
+      for (final band in parameters.bands) {
+        final gain = equalizerGainAt(
+          settings.bands,
+          band.centerFrequency,
+        ).clamp(parameters.minDecibels, parameters.maxDecibels).toDouble();
+        if ((band.gain - gain).abs() > 0.01) await band.setGain(gain);
+      }
+      if (!effect.enabled) await effect.setEnabled(true);
+    } on Object catch (error) {
+      // A device without the effect plays on unequalized.
+      debugPrint("The equalizer could not be applied: $error");
+    }
+  }
+
   AudioPlayer _newPlayer() {
     if (!_android) return AudioPlayer();
     final enhancer = AndroidLoudnessEnhancer();
+    final equalizer = AndroidEqualizer();
     final player = AudioPlayer(
-      audioPipeline: AudioPipeline(androidAudioEffects: [enhancer]),
+      audioPipeline: AudioPipeline(androidAudioEffects: [equalizer, enhancer]),
     );
     _enhancers[player] = enhancer;
+    _equalizers[player] = equalizer;
+    unawaited(_applyEqualizer(player));
     return player;
   }
 

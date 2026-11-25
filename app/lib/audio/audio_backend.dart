@@ -50,6 +50,9 @@ double get audioMaxBoostDb => AudioEngine.maxBoostDb;
 /// engine limits them on this platform (0 where it has no limiter).
 double get audioLimiterHeadroomDb => AudioEngine.limiterHeadroomDb;
 
+/// Whether the audio engine has an equalizer on this platform.
+bool get audioEqualizerSupported => AudioEngine.equalizerSupported;
+
 AudioRepeatMode audioRepeatMode(RepeatMode mode) => switch (mode) {
   RepeatMode.off => AudioRepeatMode.off,
   RepeatMode.track => AudioRepeatMode.track,
@@ -279,6 +282,17 @@ class NativeAudioBackend implements TrackPlayerBackend {
       return;
     }
     _scheduleTransport(() => _engine.seek(_milliseconds(position)));
+  }
+
+  /// Hands the listener's equalizer to the engine, which applies it to the
+  /// playing decoder and every later one (`AudioEngine.setEqualizer`).
+  void setEqualizer(EqualizerSettings settings) {
+    if (_closing) return;
+    unawaited(
+      _engine.setEqualizer(settings).catchError((Object error) {
+        debugPrint("The equalizer could not be set: $error");
+      }),
+    );
   }
 
   /// How often the engine reports a playing track's position (see

@@ -4,20 +4,25 @@ import "dart:math";
 import "package:flutter/material.dart";
 import "package:melody_audio/melody_audio.dart";
 
+import "../application/audio_adjustments.dart";
 import "../application/download_report.dart";
+import "../application/listening.dart";
 import "../application/lyrics.dart";
 import "../application/models.dart";
 import "../application/playback.dart";
 import "../application/power.dart";
+import "../application/scrobbling.dart";
 import "../application/sleep_timer.dart";
 import "../audio/audio_backend.dart";
 import "../core/errors.dart";
+import "../core/listenbrainz.dart";
 import "../services.dart";
 import "controllers/home_controller.dart";
 import "controllers/library_controller.dart";
 import "controllers/playlists_controller.dart";
 import "controllers/search_controller.dart";
 import "controllers/settings_controller.dart";
+import "controllers/statistics_controller.dart";
 import "../platform/download_keep_alive.dart";
 import "../platform/power.dart";
 import "shared/app_icon.dart";
@@ -40,7 +45,7 @@ class AppMessage {
 }
 
 /// Utility destinations shown beside or over the main content.
-enum AppPanel { queue, lyrics, downloads, settings, player }
+enum AppPanel { queue, lyrics, downloads, settings, player, statistics }
 
 /// What to do with library tracks once they are available.
 enum TrackAction { play, playNext, queue, addToPlaylist, favorite }
@@ -65,6 +70,11 @@ class MelodyApp {
     settings = services.store.settings;
     persistence = PlaybackPersistence(services.store, showError);
     backend = NativeAudioBackend(useDeviceVolume: mobile);
+    adjustments = AudioAdjustments(
+      services.store,
+      equalizerSupported: audioEqualizerSupported,
+      applyEqualizer: backend.setEqualizer,
+    );
     playback = PlaybackController(
       services.manager,
       services.library,
@@ -72,6 +82,7 @@ class MelodyApp {
       backend,
       persistence: persistence,
       loudness: services.loudness,
+      adjustments: adjustments,
       availableTrackIds: services.availableTrackIds,
       onError: showError,
     );
@@ -87,12 +98,27 @@ class MelodyApp {
       ..onMediaAction = _mediaAction;
     _playbackSubscription = playback.changes.listen(_playbackChanged);
     sleepTimer = SleepTimer(playback)..onChanged = sleepTimerState.emit;
+    // Both only watch playback: a listen is counted from what the controller
+    // reports, and scrobbling sees nothing but finished listens.
+    listening = ListeningTracker.forPlayback(
+      playback,
+      services.manager,
+      services.library,
+      services.store,
+    );
+    scrobbler = Scrobbler(services.store, ListenBrainzClient());
+    _listenSubscription = listening.listens.listen((listen) {
+      scrobbler.add(listen);
+      statistics.listened();
+    });
+    unawaited(scrobbler.sendPending());
     services.downloads.onRecord = _downloadChanged;
     home = HomeController(this);
     search = MusicSearchController(this);
     library = LibraryController(this);
     playlists = PlaylistsController(this);
     settingsControls = SettingsController(this);
+    statistics = StatisticsController(this);
     services.lyricsEmbedder?.isPlaying = (trackId) =>
         playback.currentTrackId == trackId;
     // Measuring waits for the first view to settle; FFmpeg then runs one
@@ -155,6 +181,8 @@ class MelodyApp {
     // What a process ended off screen would lose; the next saves are spaced
     // further apart there.
     if (!visible) playback.savePosition();
+    // Back on screen is a good moment to see whether the connection is back.
+    if (visible) scrobbler.retryNow();
     _applyPower();
   }
 
@@ -215,6 +243,11 @@ class MelodyApp {
   late final LibraryController library;
   late final PlaylistsController playlists;
   late final SettingsController settingsControls;
+  late final StatisticsController statistics;
+  late final AudioAdjustments adjustments;
+  late final ListeningTracker listening;
+  late final Scrobbler scrobbler;
+  late final StreamSubscription<Listen> _listenSubscription;
   late final StreamSubscription<PlaybackChange> _playbackSubscription;
   Timer? _loudnessStart;
   Timer? _metadataStart;
@@ -441,8 +474,8 @@ class MelodyApp {
         (
           track.displayTitle,
           details.uploader,
-          // Melody stores no album tags; the source is useful context.
-          details.sourceName,
+          // Without an album, the source is useful context.
+          details.album.isNotEmpty ? details.album : details.sourceName,
           services.library.artworkUri(id),
         ),
         details.favorite,
@@ -711,9 +744,14 @@ class MelodyApp {
     _closed = true;
     playlists.abandonImport();
     sleepTimer.close();
+    unawaited(_listenSubscription.cancel());
+    unawaited(listening.close());
+    scrobbler.dispose();
+    statistics.dispose();
     backend.close();
     playback.close();
     persistence.close();
+    unawaited(adjustments.close());
     services.lyricsEmbedder?.close();
     _loudnessStart?.cancel();
     _metadataStart?.cancel();

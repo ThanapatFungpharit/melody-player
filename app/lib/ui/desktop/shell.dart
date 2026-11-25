@@ -16,6 +16,7 @@ import "pages/playlists_page.dart";
 import "pages/queue_page.dart";
 import "pages/search_page.dart";
 import "pages/settings_page.dart";
+import "pages/statistics_page.dart";
 import "player_bar.dart";
 
 class _Intent extends Intent {
@@ -210,6 +211,13 @@ List<_Shortcut> _shortcuts(BuildContext context, MelodyApp app) {
       "Ctrl+D",
       "Downloads",
       () => app.openPanel(AppPanel.downloads),
+      control: true,
+    ),
+    key(
+      LogicalKeyboardKey.keyI,
+      "Ctrl+I",
+      "Statistics",
+      () => app.openPanel(AppPanel.statistics),
       control: true,
     ),
     key(
@@ -424,6 +432,7 @@ class _Workspace extends StatelessWidget {
     AppPanel.lyrics => LyricsPanel(app),
     AppPanel.downloads => DownloadsPanel(app),
     AppPanel.settings || AppPanel.player => SettingsPanel(app),
+    AppPanel.statistics => StatisticsPanel(app),
   };
 }
 
@@ -471,7 +480,9 @@ class _Sidebar extends StatelessWidget {
         builder: (context) {
           final panel = app.activePanel.value;
           final utility =
-              panel == AppPanel.downloads || panel == AppPanel.settings;
+              panel == AppPanel.downloads ||
+              panel == AppPanel.settings ||
+              panel == AppPanel.statistics;
           final active = app.services.downloads.activeCount();
           final page = app.selectedNavigation.value;
           final openPlaylist = page == 3 && !utility
@@ -533,6 +544,14 @@ class _Sidebar extends StatelessWidget {
                       ? "Downloads, $active active (Ctrl+D)"
                       : "Downloads (Ctrl+D)",
                   onPressed: () => app.openPanel(AppPanel.downloads),
+                ),
+                _SidebarButton(
+                  label: "Statistics",
+                  icon: Icons.insights_rounded,
+                  selected: panel == AppPanel.statistics,
+                  extended: extended,
+                  tooltip: "Statistics (Ctrl+I)",
+                  onPressed: () => app.openPanel(AppPanel.statistics),
                 ),
                 _SidebarButton(
                   label: "Settings",

@@ -55,12 +55,16 @@ committed, as Flutter's templates expect, and so are the `pubspec.lock` and
 - `core/` owns independently usable capabilities: SQLite and filesystem
   primitives (`storage.dart`), the music library (`library/`), canonical media
   identity (`media.dart`), embedded-artwork reading, failure classification
-  (`errors.dart`), and the downloader. It never imports `application/` or UI.
+  (`errors.dart`), the downloader, and the ListenBrainz HTTP client
+  (`listenbrainz.dart`). It never imports `application/` or UI.
 - `application/` owns use cases that cross capabilities: the application store
   and settings models, the music catalog, saved lyrics, the download
   coordinator, the library service, the queue and playback controller, the
   sleep timer, the thumbnail cache, cookie validation, the ytmusicapi and yt-dlp runtime
-  status, and upgrades of older storage layouts (`storage_upgrade.dart`).
+  status, listening history and statistics (`listening.dart`), scrobbling
+  (`scrobbling.dart`), the equalizer and gain offsets
+  (`audio_adjustments.dart`), and upgrades of older storage layouts
+  (`storage_upgrade.dart`).
   It never imports UI.
 - `services.dart` opens everything in order and exposes it as `AppServices`.
 - `ui/app_state.dart` (`MelodyApp`) is the UI's root state: messages,
@@ -185,6 +189,9 @@ them to the playback controller.
 | Saved lyrics, keyed by media identity | `LyricsLibrary` (`lyrics/<provider>_<id>.json`) | Saved on download completion and first play; keeps lyrics showing for files that do not hold them; tracks without lyrics are rechecked weekly |
 | Lyrics embedded in downloaded audio | The media file, written in staging before artwork verification and hashing | MP3 gets a `USLT` frame from `core/id3_lyrics.dart` (FFmpeg can only write a non-standard `TXXX`); other formats get FFmpeg's tag through the worker |
 | Lyrics written into older library audio (desktop) | `LyricsEmbedder`, when asked in **Settings → Maintenance** | Written into a `.melody-tmp-*` copy, swapped in under the library mutation lock, then rehashed; a playing file or one that cannot take lyrics is left as it is and counted in the result; Loudness is measured again for a rewritten file |
+| Listens (plays that counted) | `ListeningTracker` (`application/listening.dart`) decides; `ApplicationStore` stores them in the `listens` table | The tracker only reads `PlaybackController` state; statistics are read by `loadListeningStats` on a read-only connection in a background isolate |
+| Listens waiting for ListenBrainz, its token | `Scrobbler` (`application/scrobbling.dart`), in the `scrobble_queue` table and the `scrobbling` state row | Receives finished listens only; nothing in playback waits for it |
+| Equalizer, track and album gain offsets | `AudioAdjustments` (`application/audio_adjustments.dart`): `equalizer` and `album_gains` state rows, a track's `gain_db` in its details | `PlaybackController` folds offsets and equalizer headroom into each row's gain; `AudioEngine.setEqualizer` applies the curve (Android) |
 | Loudness measurements and normalization gains | `LoudnessNormalizer` (`application/loudness.dart`), cached in `cache/loudness.json` by track ID with the file's size and modification time | FFmpeg's `ebur128` filter measures integrated loudness and true peak (`core/loudness.dart`), one file at a time in its own process, from 10 seconds after launch, for new tracks, and for what plays next; a file whose size or time changed is hashed first (its audio packets, with FFmpeg's `streamhash`, no decoding), so a rewrite of only tags, lyrics, or cover art keeps its measurement and only new audio is measured again; a corrupted or unsupported one is recorded so it is not retried until it changes; each `AudioQueueItem` carries its gain, which the engine multiplies with the volume |
 | `.lrc` files beside library audio | Read by `LyricsLibrary`; no longer written | Melody's old ones (marked `[re:Melody]`) are removed when that pass finds the audio carries the lyrics; a user's `.lrc` is never changed; deleting or replacing the audio removes it; imports copy a `.lrc` beside the original |
 
@@ -193,7 +200,11 @@ it into `library.db` in one transaction, before anything opens either (a failure
 leaves both as they were, and Melody says so), and keeps the old file for one more
 launch. This is one-way: an earlier release opening `library.db` finds its tracks
 but not its settings. Beyond that the library's schema only gained
-`playlists.source`. Fixtures written by earlier releases are part of the test
+`playlists.source`, and the file gained the `listens` and `scrobble_queue`
+tables (created when either owner opens it; earlier releases ignore them, and
+the trigger that removes a deleted track's listens works under them too).
+Track details may carry `album` and `gain_db`, written only when set, so an
+earlier release reads them as before (and drops them if it rewrites the row). Fixtures written by earlier releases are part of the test
 suite. The `playback` row holds the queue and repeat mode, and the small
 `playback_position` row holds the place in the queue, laid over it when read, so
 moving through the queue never rewrites the queue. A `playback` row saved before
@@ -288,6 +299,39 @@ from its next play. Switching normalization or the target fades the playing
 track over 1.5 seconds. Unmeasured and unmeasurable tracks use
 the median gain of the measured library, and silent tracks are left alone.
 
+Every row's level goes through one chain, `playbackGainDb`
+(`core/loudness.dart`), so the clipping rules are written once:
+
+1. normalization's gain (0 with it off), which matches tracks to each other;
+2. the listener's offset, a track's own plus its album's, each within ±12 dB
+   (`adjustedGainDb`). A cut always applies. A raise stops where the
+   track's measured true peak reaches the ceiling (past it by the limiter's
+   headroom on Android) and at `AudioEngine.maxBoostDb`; with peaks unknown it
+   goes no higher than the track's own level, so an offset never clips;
+3. less the equalizer's largest boost, so its curve cannot clip either.
+
+An offset or equalizer change reaches the playing track like a normalization
+setting, with the same fade.
+
+Normalization and the equalizer stay separate owners on purpose. They do
+different jobs: normalization is measured, automatic, and per track (how loud
+each track plays), while the equalizer is a preference over every track (its
+tone), applied as a decoder effect. `LoudnessNormalizer` is a background
+measurement service with a cache; `AudioAdjustments` holds the listener's
+equalizer and offsets in `ApplicationStore`. They meet only in the chain
+above. Settings shows them together, under Sound, in two groups: Loudness
+(normalization, its target, and a pointer to the per-track Adjust loudness)
+and Equalizer.
+
+The equalizer is a ten-band curve (31 Hz to 16 kHz) the app owns.
+`AudioEngine.setEqualizer` applies it to the active and preparing decoders and
+every later one; on Android each decoder carries an `AndroidEqualizer` beside
+its `AndroidLoudnessEnhancer`, and each device band takes the curve's gain at
+its center frequency (interpolated on a log scale, clamped to the device's
+range). The effect is switched off while the curve is flat or the equalizer is
+off, so that playback takes the same path as before. Elsewhere it is remembered
+but does nothing (see [platform support](platform-support.md)).
+
 Shuffle is a one-time in-place reorder of the whole queue: the current track
 moves to the top and stays current, and every other row follows it, whether it
 has played or not. An edit like any other, it never replaces the decoder, and it
@@ -322,7 +366,14 @@ with, and a higher limit starts waiting ones at once. Settings apply and are
 saved the moment they change, except a new music folder, which can move the
 whole library and so waits for a button and a confirmation.
 
-An imported playlist keeps its link (`playlists.source`), in one canonical form.
+An imported playlist keeps its link (`playlists.source`), in one canonical form
+(`youtubePlaylistUrl`, which also reads YouTube Music's `/browse/VL<id>` pages).
+Its entries become tracks only through their `MediaIdentity` (`youtube:<id>`):
+entries are deduplicated by identity, reused from the library by identity, and
+an entry without a video, or one YouTube Music marks unavailable
+(`isAvailable: false`), or a removed, private, or live video on regular
+YouTube, is never matched by its title. It is skipped, and the import's summary
+counts it.
 Importing that link again, or Update on the playlist, fills the same playlist:
 songs added there join it in their order, what failed or was interrupted gets
 another try, and a name or tracks given here stay. Stopping an import keeps what
@@ -368,7 +419,7 @@ installs upgrade in place; inside it:
 
 | Path | Contents | Owner |
 | --- | --- | --- |
-| `library.db` | Tracks, file references, hashes, playlists; and settings, track details, history, queue, download history, small app state | `MusicManager`; `ApplicationStore` |
+| `library.db` | Tracks, file references, hashes, playlists; and settings, track details, history, queue, download history, listens, the scrobble queue, small app state | `MusicManager`; `ApplicationStore` |
 | `cookies.txt` | Uploaded cookies; present means yt-dlp uses them | Settings (upload/remove) |
 | `music-move.json` | The files of a music folder move in progress | `MusicManager` |
 | `lyrics/` | Saved lyrics, `<provider>_<id>.json` | `LyricsLibrary` |
@@ -443,7 +494,8 @@ outcome and again at the next launch if the process ended first:
 - **Runtime packages.** The worker's updater keeps the current and previous
   release of each package and removes its own interrupted downloads.
 - **Databases.** History lists are capped (250 downloads, 100 plays, 20
-  searches), deleted tracks take their rows with them, and a database whose
+  searches, 200,000 listens, 10,000 listens waiting per scrobbling service,
+  oldest first), deleted tracks take their rows (listens included) with them, and a database whose
   free pages exceed a quarter of a file of 4 MB or more is compacted
   (`VACUUM`) when it opens.
 
@@ -495,6 +547,46 @@ repaired by downloading the song again.
 | Saved lyrics | `lyrics/`; written atomically; removed with the last track of the same song, and at launch when no library track uses them |
 | `.lrc` beside an audio file | The user's (Melody's old ones are marked `[re:Melody]` and cleaned up); removed with its audio file |
 
+## Listening history and scrobbling
+
+`ListeningTracker` turns playback into listens without taking part in it: it
+subscribes to `PlaybackController.changes` and reads the controller's state.
+Only time heard counts, as the position moves forward in steps of at most 15
+seconds while playing, so a seek adds nothing. A play counts once, after half
+the track or four minutes, whichever is less; a new selection, repeat, or a
+rewind to the start after it counted is a new play. A listen keeps the title,
+artist, and album the track had then, and its local calendar day, so a
+statistics query groups, counts, and sums one table. Plays from before this
+table existed (the 100-entry `playback_history` and play counts) have no times,
+so statistics start with it.
+
+Statistics cover a calendar week (from Monday) or month, earlier ones too:
+listening time, plays, top tracks, artists, and albums (album names come from
+YouTube Music's listings and file tags; tracks without one are left out of
+albums), time per day, and streaks of consecutive days, the current one ending
+today or, until today's first listen, yesterday.
+
+`Scrobbler` sends listens to ListenBrainz, authenticated with the user token
+from the listener's ListenBrainz settings, stored in the `scrobbling` state
+row (the data folder already holds the cookie file at the same trust level).
+Each listen with an artist and a title is queued in `scrobble_queue` (unique
+per service and start second, so it is queued once) before any request, and
+goes only when the service accepts it or refuses it on its own:
+
+| Outcome | What happens |
+| --- | --- |
+| Accepted | Removed from the queue; the next batch of at most 50 follows |
+| No connection, timeout, server error | Kept and counted; tried again after 30 s, doubling to 30 min, and at the next listen or when Melody returns to the screen |
+| Rate limited | Tried again when the service's `X-RateLimit-Reset-In` says |
+| Batch refused as invalid | Sent again one listen at a time; a listen refused on its own is dropped |
+| Token refused | Sending stops and Settings asks for a new token; listens keep queueing and go once it works |
+
+A reply lost after the service stored a batch makes the batch go again;
+ListenBrainz ignores a listen it already has. Disconnecting forgets the token
+and the queue, which would otherwise go to the next account. A slow or failing
+service cannot affect playback: the scrobbler sees nothing but finished
+listens, and its requests run on their own.
+
 ## Power
 
 Melody does periodic work only while something needs it: views redraw when
@@ -543,8 +635,8 @@ with an integrity quick check. Cookies, saved lyrics, and
 artwork are written to a `.melody-tmp-*` file, flushed, and renamed; a
 temporary file a crash leaves behind is removed at a later launch.
 
-A track's details go with it in one transaction (a trigger on `tracks`), so they
-cannot outlive it. Other changes that touch both owners, such as registering a
+A track's details and listens go with it in one transaction (triggers on
+`tracks`), so they cannot outlive it. Other changes that touch both owners, such as registering a
 track and then saving its details, are separate transactions. Startup marks completed
 downloads whose library track lost its file as repairable (a track the user
 removed is not lost), carries on with interrupted downloads from what their
@@ -583,6 +675,11 @@ work stays out of builds and event handlers:
   are kept until the tracks change. Local lists have no pages: each builds only
   the rows in view, and takes their height from a prototype row, so a long list
   scrolls and jumps without measuring every row.
+- Listening statistics are aggregate queries over indexed columns, run by
+  `loadListeningStats` in a background isolate on a read-only connection of
+  its own, and only while a view shows them. Recording a listen and the
+  scrobble queue's reads are small single-row or `LIMIT 50` statements on the
+  store's connection.
 - Launch cleanup of cached artwork and saved lyrics runs in a background
   isolate, since it lists the folders and parses a URL for every library track.
 - The background pass that reads covers and tags opens a few files at a time in

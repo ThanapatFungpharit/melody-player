@@ -42,11 +42,24 @@ Future<int> pruneYtDlpCache(String directory) => pruneCacheDirectory(
 );
 
 class RemotePlaylist {
-  const RemotePlaylist(this.title, this.tracks);
+  const RemotePlaylist(this.title, this.tracks, {this.unavailable = const []});
 
   final String title;
+
+  /// The playlist's tracks that can be saved, each with a media identity.
   final List<SearchResult> tracks;
+
+  /// The titles of entries that cannot be played or saved (removed,
+  /// private, region-locked, or live), which an import skips and reports.
+  final List<String> unavailable;
 }
+
+/// A playlist's entries: those with a media identity that can be saved,
+/// and the titles of the rest.
+typedef PlaylistEntries = ({
+  List<SearchResult> tracks,
+  List<String> unavailable,
+});
 
 /// YouTube through the Python worker. Downloads go through the download
 /// coordinator instead.
@@ -171,20 +184,18 @@ class MusicCatalog {
 
   Future<RemotePlaylist> loadPlaylist(String url) async {
     final source = url.trim();
-    if (!isYoutubePlaylistUrl(source)) {
+    final playlistId = youtubePlaylistId(source);
+    if (playlistId == null) {
       throw ProviderError("Paste a complete ${_source().label} playlist URL.");
     }
-    final playlistId = Uri.parse(
-      source,
-    ).queryParametersAll["list"]!.firstWhere((item) => item.isNotEmpty);
     final String title;
-    final List<SearchResult> tracks;
+    final PlaylistEntries entries;
     if (playlistId.startsWith("RD")) {
       // Mixes are generated per listener and have no playlist page, on either
       // source; only YouTube Music can open one from its ID alone.
       final mix = await _watchPlaylist(playlistId: playlistId, limit: 100);
       title = "$youtubeMusicName mix";
-      tracks = mix.tracks;
+      entries = (tracks: mix.tracks, unavailable: const <String>[]);
     } else if (_regularYoutube) {
       final data = await _extract(
         Uri.https(youtubeHost, "/playlist", {"list": playlistId}).toString(),
@@ -196,7 +207,7 @@ class MusicCatalog {
         );
       }
       title = _text(data["title"]);
-      tracks = tracksFromYoutube(data["entries"]);
+      entries = playlistEntriesFromYoutube(data["entries"]);
     } else {
       final data = await _call("get_playlist", {
         "playlistId": playlistId,
@@ -210,14 +221,23 @@ class MusicCatalog {
         );
       }
       title = _text(data["title"]);
-      tracks = tracksFromYtMusic(data["tracks"]);
+      entries = playlistEntriesFromYtMusic(data["tracks"]);
     }
     final named = title.isNotEmpty
         ? title
         : "Imported ${_source().label} playlist";
-    return RemotePlaylist(named, [
-      for (final track in tracks) track.withPlaylistTitle(named),
-    ]);
+    // Identity is the only way an entry becomes a track: an entry without
+    // one is unavailable, however its title reads.
+    final unavailable = [...entries.unavailable];
+    final tracks = <SearchResult>[];
+    for (final track in entries.tracks) {
+      if (track.identity == null) {
+        unavailable.add(track.title);
+      } else {
+        tracks.add(track.withPlaylistTitle(named));
+      }
+    }
+    return RemotePlaylist(named, tracks, unavailable: unavailable);
   }
 
   /// The lyrics YouTube Music shows for a track, timed when available, or
@@ -348,10 +368,50 @@ List<SearchResult> tracksFromYtMusic(Object? items) {
         thumbnail: ytMusicThumbnail(item["thumbnails"] ?? item["thumbnail"]),
         url: youtubeMusicTrackUrl("", videoId),
         source: youtubeMusicName,
+        album: switch (item["album"]) {
+          {"name": final Object name} => _text(name),
+          _ => "",
+        },
       ),
     );
   }
   return results;
+}
+
+/// A playlist's entries from ytmusicapi's `get_playlist`. Entries without a
+/// video, or that YouTube Music marks unavailable (`isAvailable: false`:
+/// removed, or blocked where the listener is), are listed by title instead.
+PlaylistEntries playlistEntriesFromYtMusic(Object? items) {
+  if (items is! List) return (tracks: const [], unavailable: const []);
+  final playable = <Object?>[];
+  final unavailable = <String>[];
+  for (final value in items) {
+    if (value is! Map) continue;
+    final videoId = _text(value["videoId"]);
+    if (videoId.isEmpty || value["isAvailable"] == false) {
+      final title = _text(value["title"]);
+      unavailable.add(title.isNotEmpty ? title : "Untitled track");
+    } else {
+      playable.add(value);
+    }
+  }
+  return (tracks: tracksFromYtMusic(playable), unavailable: unavailable);
+}
+
+/// A playlist's entries from yt-dlp's flat extraction; removed, private,
+/// and live videos are listed by title instead.
+PlaylistEntries playlistEntriesFromYoutube(Object? entries) {
+  if (entries is! List) return (tracks: const [], unavailable: const []);
+  final tracks = tracksFromYoutube(entries);
+  final kept = {for (final track in tracks) track.id};
+  final unavailable = <String>[
+    for (final value in entries)
+      if (value is Map && !kept.contains(_text(value["id"])))
+        _text(value["title"]).isNotEmpty
+            ? _text(value["title"])
+            : "Untitled video",
+  ];
+  return (tracks: tracks, unavailable: unavailable);
 }
 
 const _unlistedTitles = {"[Deleted video]", "[Private video]"};

@@ -8,6 +8,8 @@ import "package:melody_audio/melody_audio.dart"
 
 import "../audio/audio_backend.dart";
 import "../core/library/manager.dart";
+import "../core/loudness.dart" show linearGain, playbackGainDb;
+import "audio_adjustments.dart";
 import "library_service.dart";
 import "loudness.dart";
 import "models.dart";
@@ -150,6 +152,7 @@ class PlaybackController {
     this.backend, {
     required this.persistence,
     this.loudness,
+    this.adjustments,
     Set<String>? availableTrackIds,
     this.onError,
   }) {
@@ -200,6 +203,11 @@ class PlaybackController {
     _applyVolume();
     if (!listEquals(queue.items, originalItems)) _persist();
     _loudnessSubscription = loudness?.changes.listen(_loudnessChanged);
+    // An offset or the equalizer's headroom moves the playing track too,
+    // with a fade, like a normalization setting.
+    _adjustmentSubscription = adjustments?.changes.listen(
+      (_) => _loudnessChanged(LoudnessChange.settings),
+    );
   }
 
   final MusicManager manager;
@@ -210,6 +218,9 @@ class PlaybackController {
 
   /// Per-track loudness gains; without it every track plays unscaled.
   final LoudnessNormalizer? loudness;
+
+  /// The listener's gain offsets and equalizer headroom.
+  final AudioAdjustments? adjustments;
   void Function(String message)? onError;
 
   final StreamController<PlaybackChange> _changes = StreamController.broadcast(
@@ -249,6 +260,7 @@ class PlaybackController {
   String? _pendingPlayRecordId;
   bool _mediaSessionActive = false;
   StreamSubscription<LoudnessChange>? _loudnessSubscription;
+  StreamSubscription<AdjustmentChange>? _adjustmentSubscription;
 
   /// The rows last given to the engine, whose gains it is applying.
   List<AudioQueueItem> _engineItems = const [];
@@ -928,7 +940,7 @@ class PlaybackController {
         source: manager.trackPath(trackId),
         title: manager.getTrack(trackId).displayTitle,
         artist: details.uploader,
-        album: details.sourceName,
+        album: details.album.isNotEmpty ? details.album : details.sourceName,
         artworkUri: library.artworkUri(trackId),
         gain: _gainFor(trackId, row, held),
       );
@@ -943,7 +955,23 @@ class PlaybackController {
     if (held != null && row == queue.currentIndex && held.trackId == trackId) {
       return held.gain;
     }
-    return loudness?.gainFor(trackId) ?? 1;
+    return _gainOf(trackId);
+  }
+
+  double _gainOf(String trackId) {
+    final adjustments = this.adjustments;
+    if (adjustments == null) return loudness?.gainFor(trackId) ?? 1;
+    final offset = adjustments.offsetDb(trackId);
+    final headroom = adjustments.headroomDb;
+    return loudness?.gainFor(trackId, offsetDb: offset, headroomDb: headroom) ??
+        // Without measurements nothing says how far a raise may go.
+        linearGain(
+          playbackGainDb(
+            normalizationDb: 0,
+            offsetDb: offset,
+            equalizerHeadroomDb: headroom,
+          ),
+        );
   }
 
   /// New measurements reach upcoming rows; a settings change also reaches
@@ -952,7 +980,7 @@ class PlaybackController {
     if (_closed) return;
     final trackId = currentTrackId;
     if (change == LoudnessChange.settings && trackId != null) {
-      _heldGain = (trackId: trackId, gain: loudness?.gainFor(trackId) ?? 1);
+      _heldGain = (trackId: trackId, gain: _gainOf(trackId));
     }
     _syncQueue();
   }
@@ -1033,6 +1061,7 @@ class PlaybackController {
     _persist();
     _closed = true;
     unawaited(_loudnessSubscription?.cancel());
+    unawaited(_adjustmentSubscription?.cancel());
     _cancelPendingLoad();
   }
 

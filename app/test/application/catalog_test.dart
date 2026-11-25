@@ -96,6 +96,44 @@ void main() {
     expect(playlist.tracks.single.playlistTitle, "Road trip");
   });
 
+  test(
+    "unavailable playlist entries are reported, never matched by title",
+    () async {
+      transport.ytMusicResults["get_playlist"] = {
+        "title": "Mixed",
+        "tracks": [
+          {
+            "videoId": "abcdefghijk",
+            "title": "Kept",
+            "album": {"name": "The Album", "id": "MPREb_1"},
+          },
+          {"videoId": null, "title": "Removed"},
+          {"videoId": "bbbbbbbbbbb", "title": "Blocked", "isAvailable": false},
+          // The same title as a playable entry, but no video: still missing.
+          {"title": "Kept"},
+        ],
+      };
+      final playlist = await catalog.loadPlaylist(
+        "https://music.youtube.com/browse/VLPL9",
+      );
+      expect((lastCall()["arguments"] as Map)["playlistId"], "PL9");
+      expect(playlist.tracks.map((track) => track.identity?.key), [
+        "youtube:abcdefghijk",
+      ]);
+      expect(playlist.tracks.single.album, "The Album");
+      expect(playlist.unavailable, ["Removed", "Blocked", "Kept"]);
+    },
+  );
+
+  test("a link that names no playlist is refused before any call", () async {
+    final calls = transport.sent.length;
+    await expectLater(
+      catalog.loadPlaylist("https://music.youtube.com/browse/MPREb_1"),
+      throwsA(isA<ProviderError>()),
+    );
+    expect(transport.sent.length, calls);
+  });
+
   test("timed lyrics are read through the watch playlist", () async {
     final lyrics = await catalog.lyrics("abcdefghijk");
     expect(lastCall()["arguments"], {
