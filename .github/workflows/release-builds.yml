@@ -8,7 +8,7 @@ on:
 
 # The builds only read the repository and upload workflow artifacts. Every
 # step sees GITHUB_TOKEN (below) beside the signing secrets, so it gets no
-# write access.
+# write access. Only the release job, which has no secrets, can write.
 permissions:
   contents: read
 
@@ -166,3 +166,41 @@ jobs:
           name: melody-android-${{ matrix.target }}-${{ needs.preflight.outputs.version }}
           path: build/${{ matrix.target }}
           if-no-files-found: error
+
+  # Runs only for a version tag, and only once every build above has passed.
+  # A manual run stops at the workflow artifacts.
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight, windows, linux, macos, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: melody-*
+          path: artifacts
+      - name: Name the release files
+        run: |
+          mkdir release
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "artifacts/melody-android-apk-$VERSION/melody-$abi.apk" \
+              "release/melody-android-$abi-$VERSION.apk"
+          done
+          cp "artifacts/melody-android-aab-$VERSION/melody-$VERSION.aab" \
+            "release/melody-android-$VERSION.aab"
+          for platform in linux-x86_64 macos-arm64 macos-x86_64; do
+            cp "artifacts/melody-$platform-$VERSION/melody-$platform-$VERSION.tar.gz" release/
+          done
+          (cd "artifacts/melody-windows-x86_64-$VERSION" &&
+            zip -qr "$GITHUB_WORKSPACE/release/melody-windows-x86_64-$VERSION.zip" .)
+      # The release stays a draft until every file has uploaded. This fails
+      # rather than replace the files of a release that already exists.
+      - name: Create the release
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --generate-notes

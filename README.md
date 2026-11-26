@@ -243,7 +243,9 @@ release signing through `MELODY_ANDROID_KEY_STORE`,
 commit it. `--allow-debug-signing` is for local testing only.
 
 The **Application builds** workflow builds Windows, Linux, Intel and Apple
-Silicon macOS, Android APKs, and the Android App Bundle on tagged releases.
+Silicon macOS, Android APKs, and the Android App Bundle on tagged releases. When
+every build passes, it publishes a GitHub release with those files and generated
+notes. A manual run only uploads workflow artifacts.
 
 ## License
 

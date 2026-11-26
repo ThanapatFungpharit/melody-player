@@ -15,7 +15,8 @@ and build number to `flutter build` explicitly.
 2. Refresh lock files (`flutter pub get`, `uv lock` in `worker/` and the root),
    run validation, and review compatibility changes together.
 3. Build through `uv run melody-build` from a clean checkout.
-4. Tag exactly `v<version>` to run the release workflow.
+4. Tag exactly `v<version>` to run the release workflow. It publishes the GitHub
+   release once every platform has built; if one fails, nothing is published.
 
 ## Identity
 
