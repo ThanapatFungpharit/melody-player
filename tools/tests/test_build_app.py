@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ from tools.build.app import (
     python_environment,
     serious_python_darwin,
 )
-from tools.common import WORKER
+from tools.common import APP, WORKER
 
 EXTRACT_VARIABLE = "SERIOUS_PYTHON_ANDROID_EXTRACT_PACKAGES"
 
@@ -85,6 +86,27 @@ class PythonEnvironmentTests(unittest.TestCase):
         for target in ("windows", "linux", "macos"):
             with self.subTest(target=target):
                 self.assertNotIn(EXTRACT_VARIABLE, python_environment(target, staging))
+
+
+class SeriousPythonVersionTests(unittest.TestCase):
+    def test_platform_packages_match_the_pinned_version(self) -> None:
+        # serious_python only constrains its platform packages with ^, so a lock
+        # refresh can move them past the packaging command they work with.
+        pinned = re.search(
+            r"^  serious_python: (\S+)$",
+            (APP / "pubspec.yaml").read_text("utf-8"),
+            re.MULTILINE,
+        )
+        assert pinned is not None
+        locked = dict(
+            re.findall(
+                r'^  (serious_python\w*):\n(?:    .*\n)*?    version: "([^"]+)"$',
+                (APP / "pubspec.lock").read_text("utf-8"),
+                re.MULTILINE,
+            )
+        )
+        self.assertIn("serious_python_darwin", locked)
+        self.assertEqual(locked, dict.fromkeys(locked, pinned[1]))
 
 
 class MacosRuntimeTests(unittest.TestCase):

@@ -30,7 +30,7 @@ installs upgrade in place and keep their data directory. Do not change it.
 | Component | Pinned in | Tested baseline |
 | --- | --- | --- |
 | Flutter / Dart | CI `FLUTTER_VERSION` | 3.47.7 / 3.13 |
-| serious_python | `app/pubspec.yaml` | 6.0.0 |
+| serious_python | `app/pubspec.yaml` | 6.1.3 |
 | Embedded CPython | `tools/build/app.py` `PYTHON_VERSION` | 3.14 |
 | Bundled yt-dlp | `worker/pyproject.toml` + `worker/uv.lock` | 2026.11.23, exact |
 | Bundled ytmusicapi (and its `requests` stack) | `worker/pyproject.toml` + `worker/uv.lock` | 1.12.4, exact |
@@ -38,6 +38,12 @@ installs upgrade in place and keep their data directory. Do not change it.
 | media_kit Windows audio / Linux libraries | `packages/melody_audio/pubspec.yaml` | 1.0.9 / 1.2.1, exact |
 | flutter_media_session | `packages/melody_audio/pubspec.yaml` | 3.0.9, exact |
 | FFmpeg | `tools/build/media.py` | provider SHA-256 verified on every fetch |
+
+`app/pubspec.yaml` pins only `serious_python` itself, which accepts any later
+compatible platform package (`serious_python_darwin` and the rest). Those must
+stay at the pinned version, because the packaging command and the native builds
+each carry their own runtime version table: change the pin and the lock together.
+`tools/tests/test_build_app.py` fails when they differ.
 
 The worker is packaged with exactly the requirements in `worker/uv.lock`
 (`uv export --frozen --no-dev`). Its own source ships as plain Python; its
