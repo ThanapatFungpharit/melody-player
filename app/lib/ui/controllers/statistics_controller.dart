@@ -3,6 +3,7 @@ import "dart:async";
 import "package:flutter/foundation.dart";
 
 import "../../application/listening.dart";
+import "../../application/models.dart" show localDay;
 import "../../core/errors.dart" show failureMessage;
 import "../app_state.dart";
 
@@ -31,6 +32,9 @@ class StatisticsController extends ChangeNotifier {
   bool _disposed = false;
 
   StatsRange get range => StatsRange.of(period, _clock(), offset: offset);
+
+  /// The listener's calendar day now, to tell past days from future ones.
+  int get today => localDay(_clock());
 
   /// Loads the statistics if they are not current. Views call it when
   /// they open.

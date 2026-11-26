@@ -250,7 +250,7 @@ void main() {
       }
     }
 
-    test("ranks tracks, artists, and albums within the period", () {
+    test("ranks tracks and artists within the period", () {
       final monday = DateTime(2026, 11, 23, 10);
       listen("a", monday, artist: "X", album: "First");
       listen("a", monday.add(const Duration(days: 1)), artist: "X");
@@ -275,7 +275,6 @@ void main() {
       expect(stats.topTracks.first.name, "Renamed");
       expect(stats.topTracks.first.listens, 3);
       expect(stats.topArtists.map((entry) => entry.name), ["X", "Y"]);
-      expect(stats.topAlbums.map((entry) => entry.name), ["First", "Second"]);
       expect(stats.days, hasLength(7));
       expect(stats.days.first.listens, 3);
       expect(stats.days.last.listens, 0);

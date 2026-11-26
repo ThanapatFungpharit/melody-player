@@ -561,9 +561,8 @@ table existed (the 100-entry `playback_history` and play counts) have no times,
 so statistics start with it.
 
 Statistics cover a calendar week (from Monday) or month, earlier ones too:
-listening time, plays, top tracks, artists, and albums (album names come from
-YouTube Music's listings and file tags; tracks without one are left out of
-albums), time per day, and streaks of consecutive days, the current one ending
+listening time, plays, top tracks and artists, time per day, and streaks of
+consecutive days, the current one ending
 today or, until today's first listen, yesterday.
 
 `Scrobbler` sends listens to ListenBrainz, authenticated with the user token

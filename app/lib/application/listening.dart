@@ -235,7 +235,7 @@ class StatsRange {
   int get hashCode => Object.hash(period, firstDay, lastDay);
 }
 
-/// A row of a top list: a track, artist, or album.
+/// A row of a top list: a track or artist.
 @immutable
 class StatsEntry {
   const StatsEntry({
@@ -246,10 +246,10 @@ class StatsEntry {
     this.trackId,
   });
 
-  /// The title, artist, or album.
+  /// The title or artist.
   final String name;
 
-  /// The artist of a track or album.
+  /// The artist of a track.
   final String detail;
   final int listens;
   final int listenedMs;
@@ -271,7 +271,6 @@ class ListeningStats {
     required this.tracks,
     required this.topTracks,
     required this.topArtists,
-    required this.topAlbums,
     required this.days,
     required this.currentStreak,
     required this.longestStreak,
@@ -288,7 +287,6 @@ class ListeningStats {
   final int tracks;
   final List<StatsEntry> topTracks;
   final List<StatsEntry> topArtists;
-  final List<StatsEntry> topAlbums;
 
   /// Every day of the range, oldest first, including days without listens.
   final List<DayTotal> days;
@@ -346,21 +344,6 @@ class ListeningStats {
           listenedMs: row["ms"] as int,
         ),
     ];
-    final topAlbums = [
-      for (final row in db.select(
-        "SELECT album, artist, max(started_at), count(*) AS listens, "
-        "sum(listened_ms) AS ms FROM listens $inRange AND album != '' "
-        "GROUP BY album ORDER BY listens DESC, ms DESC, album "
-        "LIMIT $topCount",
-        span,
-      ))
-        StatsEntry(
-          name: row["album"] as String,
-          detail: row["artist"] as String,
-          listens: row["listens"] as int,
-          listenedMs: row["ms"] as int,
-        ),
-    ];
     final perDay = {
       for (final row in db.select(
         "SELECT day, count(*) AS listens, sum(listened_ms) AS ms "
@@ -394,7 +377,6 @@ class ListeningStats {
       tracks: totals["tracks"] as int,
       topTracks: topTracks,
       topArtists: topArtists,
-      topAlbums: topAlbums,
       days: days,
       currentStreak: current,
       longestStreak: longest,
