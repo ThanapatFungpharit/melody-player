@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.build.app import ANDROID_EXTRACT_PACKAGES, collect, python_environment
+from tools.build.app import (
+    ANDROID_EXTRACT_PACKAGES,
+    PACKAGE_RETRY_DELAYS,
+    collect,
+    discard_incomplete_macos_runtime,
+    package_worker,
+    python_environment,
+    serious_python_darwin,
+)
 from tools.common import WORKER
 
 EXTRACT_VARIABLE = "SERIOUS_PYTHON_ANDROID_EXTRACT_PACKAGES"
@@ -75,6 +85,86 @@ class PythonEnvironmentTests(unittest.TestCase):
         for target in ("windows", "linux", "macos"):
             with self.subTest(target=target):
                 self.assertNotIn(EXTRACT_VARIABLE, python_environment(target, staging))
+
+
+class MacosRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.darwin = self.root / "darwin"
+        self.cache = self.root / "cache"
+        self.archives = [
+            self.cache / "python-build" / "v1" / "python-macos-dart-1.tar.gz",
+            self.cache / "dart-bridge" / "v1" / "dart_bridge-apple.xcframework.zip",
+        ]
+        for archive in self.archives:
+            archive.parent.mkdir(parents=True)
+            archive.touch()
+
+    def make_runtime(self, *names: str) -> None:
+        for name in names:
+            (self.darwin / "dist_macos" / name).mkdir(parents=True)
+
+    def test_a_complete_runtime_is_kept(self) -> None:
+        self.make_runtime(
+            "stdlib",
+            "xcframeworks/Python.xcframework",
+            "xcframeworks/dart_bridge.xcframework",
+        )
+        discard_incomplete_macos_runtime(self.darwin, self.cache)
+        self.assertTrue((self.darwin / "dist_macos" / "stdlib").is_dir())
+        self.assertTrue(all(archive.is_file() for archive in self.archives))
+
+    def test_an_incomplete_runtime_is_discarded_with_its_downloads(self) -> None:
+        # What a failed download leaves: a marker that says the runtime is ready.
+        self.make_runtime("site-packages")
+        (self.darwin / "dist_macos" / ".python_build_id").touch()
+        discard_incomplete_macos_runtime(self.darwin, self.cache)
+        self.assertFalse((self.darwin / "dist_macos").exists())
+        self.assertFalse(any(archive.exists() for archive in self.archives))
+
+    def test_plugin_directory_comes_from_the_package_config(self) -> None:
+        app = self.root / "app"
+        config = app / ".dart_tool" / "package_config.json"
+        config.parent.mkdir(parents=True)
+        self.assertIsNone(serious_python_darwin(app))
+        plugin = self.root / "pub cache" / "serious_python_darwin-1"
+        for root_uri in (plugin.as_uri(), "../../pub%20cache/serious_python_darwin-1"):
+            with self.subTest(root_uri=root_uri):
+                package = {"name": "serious_python_darwin", "rootUri": root_uri}
+                config.write_text(json.dumps({"packages": [package]}), "utf-8")
+                found = serious_python_darwin(app)
+                assert found is not None
+                self.assertEqual(found.resolve(), (plugin / "darwin").resolve())
+
+
+class PackageWorkerTests(unittest.TestCase):
+    def package(self, target: str, failures: int) -> tuple[int, int, list[float]]:
+        """(packaging runs, macOS cleanups, pauses) when ``failures`` runs fail."""
+        error = subprocess.CalledProcessError(1, ["dart"])
+        with (
+            mock.patch("tools.build.app.executable", side_effect=str),
+            mock.patch("tools.build.app.worker_requirements", return_value=[]),
+            mock.patch(
+                "tools.build.app.run", side_effect=[error] * failures + [0]
+            ) as run,
+            mock.patch("tools.build.app.clean_macos_runtime") as clean,
+            mock.patch("tools.build.app.time.sleep") as sleep,
+        ):
+            package_worker(target, [], {})
+        pauses = [call.args[0] for call in sleep.call_args_list]
+        return run.call_count, clean.call_count, pauses
+
+    def test_a_passing_failure_is_retried_after_cleaning_up(self) -> None:
+        self.assertEqual(self.package("macos", 1), (2, 2, [PACKAGE_RETRY_DELAYS[0]]))
+
+    def test_other_targets_do_not_touch_the_macos_runtime(self) -> None:
+        self.assertEqual(self.package("linux", 0), (1, 0, []))
+
+    def test_a_lasting_failure_fails_the_build(self) -> None:
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.package("linux", len(PACKAGE_RETRY_DELAYS) + 1)
 
 
 class CollectTests(unittest.TestCase):

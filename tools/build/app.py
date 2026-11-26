@@ -14,14 +14,18 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Generator
+import time
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+from urllib.request import url2pathname
 
 from tools.build.media import fetch_bundle
 from tools.build.version import build_number, release_version
@@ -40,6 +44,10 @@ from tools.common import (
 )
 
 PYTHON_VERSION = "3.14"
+# serious_python downloads the embedded runtime while packaging. These are the
+# pauses, in seconds, before each retry, so a short network outage on a build
+# machine doesn't fail the build.
+PACKAGE_RETRY_DELAYS = (30, 90)
 
 DESKTOP = {"windows": "Windows", "linux": "Linux", "macos": "Darwin"}
 SERIOUS_PLATFORMS = {**DESKTOP, "apk": "Android", "aab": "Android"}
@@ -129,6 +137,53 @@ def python_environment(target: str, staging: Path) -> dict[str, str]:
     return env
 
 
+def serious_python_darwin(app: Path = APP) -> Path | None:
+    """The resolved plugin's ``darwin/`` directory, found as serious_python does."""
+    config = app / ".dart_tool" / "package_config.json"
+    if not config.is_file():
+        return None
+    for package in json.loads(config.read_text("utf-8"))["packages"]:
+        if package["name"] == "serious_python_darwin":
+            root = urljoin(f"{config.parent.as_uri()}/", package["rootUri"])
+            return Path(url2pathname(urlsplit(root).path)) / "darwin"
+    return None
+
+
+def discard_incomplete_macos_runtime(darwin: Path, cache: Path) -> None:
+    """Remove what a failed serious_python runtime download leaves behind.
+
+    Its ``prepare_macos.sh`` ignores download and extraction errors and marks
+    ``dist_macos`` as ready regardless, so later builds would never download the
+    runtime again. A cut-off download can also stay in its cache as if complete.
+    """
+    dist = darwin / "dist_macos"
+    required = (
+        "stdlib",
+        "xcframeworks/Python.xcframework",
+        "xcframeworks/dart_bridge.xcframework",
+    )
+    if not dist.is_dir() or all((dist / name).is_dir() for name in required):
+        return
+    print(f"Discarding the incomplete Python runtime in {dist}", flush=True)
+    shutil.rmtree(dist)
+    for pattern in (
+        "python-build/*/python-macos-dart-*.tar.gz",
+        "dart-bridge/*/dart_bridge-apple.xcframework.zip",
+    ):
+        for archive in cache.glob(pattern):
+            archive.unlink()
+
+
+def clean_macos_runtime(env: Mapping[str, str]) -> None:
+    override = env.get("SERIOUS_PYTHON_DARWIN_DIR")
+    darwin = Path(override) if override else serious_python_darwin()
+    if darwin is not None:
+        cache = env.get("FLET_CACHE_DIR")
+        discard_incomplete_macos_runtime(
+            darwin, Path(cache) if cache else Path.home() / ".flet" / "cache"
+        )
+
+
 def package_worker(target: str, abis: list[str], env: dict[str, str]) -> None:
     command = [
         executable("dart"),
@@ -151,7 +206,17 @@ def package_worker(target: str, abis: list[str], env: dict[str, str]) -> None:
         command += ["--requirements", requirement]
     for abi in abis:
         command += ["--arch", abi]
-    run(command, cwd=APP, env=env)
+    for delay in (*PACKAGE_RETRY_DELAYS, None):
+        if target == "macos":
+            clean_macos_runtime(env)
+        try:
+            run(command, cwd=APP, env=env)
+            return
+        except subprocess.CalledProcessError:
+            if delay is None:
+                raise
+            print(f"Packaging failed; retrying in {delay} seconds", flush=True)
+            time.sleep(delay)
 
 
 @contextmanager
