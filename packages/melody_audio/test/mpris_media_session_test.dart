@@ -1,3 +1,10 @@
+// MPRIS exists only on Linux, and these tests need a private D-Bus server on
+// a Unix socket. Elsewhere the dbus package cannot complete its handshake, so
+// `activate()` never returns and `tearDown`'s `deactivate()`, queued behind
+// it, hangs the whole run (Windows CI hit its job timeout this way).
+@TestOn("linux")
+library;
+
 import "dart:async";
 import "dart:io";
 
