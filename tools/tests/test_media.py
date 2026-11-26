@@ -19,8 +19,8 @@ from tools.build.media import (
     Archive,
     ResolvedArchive,
     _extract_programs,
-    _latest_release,
     _resolve_archive,
+    _rolling_release,
     _validate_audio_encoders,
     fetch_bundle,
     main,
@@ -54,7 +54,7 @@ class MediaBinaryFetcherTests(unittest.TestCase):
     def test_windows_release_resolves_provider_digest(self) -> None:
         archive = ARCHIVES[("windows", "x86_64")]
         with mock.patch(
-            "tools.build.media._latest_release",
+            "tools.build.media._rolling_release",
             return_value=("latest", ((archive.filename, archive.url, "a" * 64),)),
         ):
             resolved = _resolve_archive(archive)
@@ -68,10 +68,15 @@ class MediaBinaryFetcherTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
             mock.patch("urllib.request.urlopen", return_value=response) as urlopen,
         ):
-            _latest_release("owner/repo")
+            _rolling_release("owner/repo")
 
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer token")
+        # Not releases/latest, whose filenames change with every build.
+        self.assertEqual(
+            request.full_url,
+            "https://api.github.com/repos/owner/repo/releases/tags/latest",
+        )
 
     def test_rejects_missing_audio_encoders(self) -> None:
         result = subprocess.CompletedProcess(

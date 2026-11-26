@@ -114,7 +114,14 @@ ARCHIVES: dict[tuple[str, str], Archive] = {
 }
 
 
-def _latest_release(repository: str) -> tuple[str, tuple[tuple[str, str, str], ...]]:
+def _rolling_release(
+    repository: str,
+) -> tuple[str, tuple[tuple[str, str, str], ...]]:
+    """The assets of ``repository``'s rolling release, the one tagged ``latest``.
+
+    GitHub's "latest release" is a different one: BtbN's dated builds, whose
+    filenames change with every build.
+    """
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "Melody-build/1",
@@ -123,7 +130,7 @@ def _latest_release(repository: str) -> tuple[str, tuple[tuple[str, str, str], .
     if token := os.environ.get("GITHUB_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
-        f"https://api.github.com/repos/{repository}/releases/latest",
+        f"https://api.github.com/repos/{repository}/releases/tags/latest",
         headers=headers,
     )
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -162,12 +169,12 @@ def _resolve_archive(archive: Archive) -> ResolvedArchive:
         )
     if archive.repository is None:
         raise ValueError(f"No release repository for {archive.filename}")
-    version, assets = _latest_release(archive.repository)
+    version, assets = _rolling_release(archive.repository)
     matches = [asset for asset in assets if asset[0] == archive.filename]
     if len(matches) != 1:
         raise RuntimeError(
             f"Expected one {archive.filename!r} asset in "
-            f"{archive.repository}'s latest release, found {len(matches)}"
+            f"{archive.repository}'s release tagged latest, found {len(matches)}"
         )
     _, url, sha256 = matches[0]
     return ResolvedArchive(
